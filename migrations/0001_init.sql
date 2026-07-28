@@ -1,4 +1,4 @@
--- Shirogane gallery schema
+-- Vitrine gallery schema
 CREATE TABLE IF NOT EXISTS works (
   id TEXT PRIMARY KEY,
   source TEXT NOT NULL,          -- pixiv | x | douyin

@@ -5,7 +5,7 @@ use serde_json::{json, Value};
 use wasm_bindgen::JsValue;
 use worker::*;
 
-/// Cloudflare Worker entrypoint for shirogane (Rust / workers-rs).
+/// Cloudflare Worker entrypoint for Vitrine (Rust / workers-rs).
 /// Read-path parity with the existing TypeScript Worker, plus Phase 2 ingest.
 #[event(fetch)]
 async fn main(req: Request, env: Env, _ctx: Context) -> Result<Response> {
@@ -14,7 +14,7 @@ async fn main(req: Request, env: Env, _ctx: Context) -> Result<Response> {
     match handle_request(req, env).await {
         Ok(res) => Ok(res),
         Err(err) => {
-            console_error!("shirogane error: {err}");
+            console_error!("vitrine error: {err}");
             Ok(with_cors(json_response(
                 &json!({ "ok": false, "error": err.to_string() }),
                 500,
@@ -34,7 +34,7 @@ async fn handle_request(req: Request, env: Env) -> Result<Response> {
 
     if path == "/api/health" {
         return Ok(with_cors(json_response(
-            &json!({ "ok": true, "service": "shirogane" }),
+            &json!({ "ok": true, "service": "vitrine" }),
             200,
         )?));
     }
@@ -66,7 +66,7 @@ async fn handle_request(req: Request, env: Env) -> Result<Response> {
         return assets.fetch_request(req).await;
     }
 
-    Response::ok("shirogane online")
+    Response::ok("vitrine online")
 }
 
 pub(crate) fn with_cors(res: Response) -> Response {
@@ -402,9 +402,9 @@ mod tests {
 
     #[test]
     fn health_payload_shape() {
-        let v = json!({ "ok": true, "service": "shirogane" });
+        let v = json!({ "ok": true, "service": "vitrine" });
         assert_eq!(v["ok"], true);
-        assert_eq!(v["service"], "shirogane");
+        assert_eq!(v["service"], "vitrine");
     }
 
     #[test]

@@ -1,5 +1,5 @@
 {
-  "name": "shirogane",
+  "name": "vitrine",
   "version": "0.1.0",
   "private": true,
   "scripts": {
@@ -9,8 +9,8 @@
     "deploy": "npm run build && wrangler deploy",
     "check": "cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo test && worker-build --dev",
     "test": "cargo test",
-    "db:local": "wrangler d1 migrations apply shirogane --local",
-    "db:remote": "wrangler d1 migrations apply shirogane --remote"
+    "db:local": "wrangler d1 migrations apply DB --local",
+    "db:remote": "wrangler d1 migrations apply DB --remote"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^5.20260722.1",

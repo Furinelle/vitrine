@@ -1,4 +1,4 @@
-# Shirogane · Cloudflare 自托管图库
+# Vitrine · Cloudflare 自托管图库
 
 配合 [hanabi](https://github.com/Furinelle/hanabi) 使用的二次元图库：
 
@@ -10,14 +10,16 @@
 ## 部署
 
 ```bash
-cd shirogane
+cd vitrine
 npm install
 
 # 1) 创建 D1 + R2（账号内执行一次）
-npx wrangler d1 create shirogane
-npx wrangler r2 bucket create shirogane-media
+npx wrangler d1 create vitrine
+npx wrangler r2 bucket create vitrine-media
 
 # 2) 把输出的 database_id 填进 wrangler.jsonc 的 d1_databases[0].database_id
+#    新部署同时把 database_name / bucket_name 改成上面的资源名。
+#    现有 gallery.fontaine.blue 生产环境保留原 D1/R2 名称，避免迁移数据。
 
 # 3) 远端建表
 npm run db:remote

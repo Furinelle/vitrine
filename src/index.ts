@@ -11,7 +11,7 @@ export default {
       }
 
       if (path === "/api/health") {
-        return json({ ok: true, service: "shirogane" });
+        return json({ ok: true, service: "vitrine" });
       }
 
       if (path === "/api/ingest" && request.method === "POST") {
@@ -38,10 +38,10 @@ export default {
       if (env.ASSETS) {
         return env.ASSETS.fetch(request);
       }
-      return new Response("shirogane online", { status: 200 });
+      return new Response("vitrine online", { status: 200 });
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      console.error("shirogane error", message);
+      console.error("vitrine error", message);
       return cors(json({ ok: false, error: message }, 500));
     }
   },

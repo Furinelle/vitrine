@@ -1,6 +1,6 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
-  "name": "shirogane",
+  "name": "vitrine",
   // Rust workers-rs entry produced by `worker-build` / `npm run build`.
   // TypeScript entry `src/index.ts` is preserved for reference but not used for local dev.
   "main": "build/worker/shim.mjs",
@@ -20,12 +20,14 @@
   "r2_buckets": [
     {
       "binding": "MEDIA",
+      // Existing production bucket retained so the rename does not copy or invalidate media.
       "bucket_name": "shirogane-media"
     }
   ],
   "d1_databases": [
     {
       "binding": "DB",
+      // Existing production database retained so the rename is metadata-only.
       "database_name": "shirogane",
       "database_id": "ca5265c6-89a5-41ed-9f1a-a7f91f8c6077",
       "migrations_dir": "migrations"
