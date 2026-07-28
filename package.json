@@ -3,8 +3,11 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "dev": "wrangler dev",
-    "deploy": "wrangler deploy",
+    "build": "worker-build --release",
+    "build:dev": "worker-build --dev",
+    "dev": "npm run build:dev && wrangler dev",
+    "check": "cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo test && worker-build --dev",
+    "test": "cargo test",
     "db:local": "wrangler d1 execute shirogane --local --file=./migrations/0001_init.sql",
     "db:remote": "wrangler d1 execute shirogane --remote --file=./migrations/0001_init.sql"
   },

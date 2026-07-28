@@ -73,7 +73,19 @@ Body: `multipart/form-data`
 
 ## 本地开发
 
+Worker 实现已迁到 **Rust / workers-rs**（`src/lib.rs`）。`src/index.ts` 与 `public/` 仍保留作对照与前端静态页。
+
 ```bash
+# 依赖
+npm install
+# 需已安装 Rust + wasm32-unknown-unknown + worker-build
+# rustup target add wasm32-unknown-unknown
+# cargo install worker-build
+
 npm run db:local
+npm run build:dev   # worker-build --dev → build/worker/shim.mjs
 npx wrangler dev
+
+# 质量检查（不部署）
+npm run check       # fmt + clippy -D warnings + cargo test + worker-build --dev
 ```

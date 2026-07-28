@@ -1,7 +1,9 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "shirogane",
-  "main": "src/index.ts",
+  // Rust workers-rs entry produced by `worker-build` / `npm run build`.
+  // TypeScript entry `src/index.ts` is preserved for reference but not used for local dev.
+  "main": "build/worker/shim.mjs",
   "compatibility_date": "2026-07-01",
   "workers_dev": true,
   "routes": [

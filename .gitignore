@@ -2,5 +2,8 @@ node_modules/
 .wrangler/
 .dev.vars
 dist/
+build/
+target/
 *.log
 .DS_Store
+pkg/
