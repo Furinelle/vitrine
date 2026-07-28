@@ -1,11 +1,12 @@
+mod ingest;
+
 use serde::Serialize;
 use serde_json::{json, Value};
 use wasm_bindgen::JsValue;
 use worker::*;
 
 /// Cloudflare Worker entrypoint for shirogane (Rust / workers-rs).
-/// Read-path parity with the existing TypeScript Worker: CORS/OPTIONS,
-/// health, works/tags/sources list APIs, media proxy, and ASSETS fallback.
+/// Read-path parity with the existing TypeScript Worker, plus Phase 2 ingest.
 #[event(fetch)]
 async fn main(req: Request, env: Env, _ctx: Context) -> Result<Response> {
     console_error_panic_hook::set_once();
@@ -38,6 +39,10 @@ async fn handle_request(req: Request, env: Env) -> Result<Response> {
         )?));
     }
 
+    if path == "/api/ingest" && method == Method::Post {
+        return ingest::handle_ingest(req, env).await;
+    }
+
     if path == "/api/works" && method == Method::Get {
         return Ok(with_cors(handle_list_works(&url, &env).await?));
     }
@@ -64,18 +69,18 @@ async fn handle_request(req: Request, env: Env) -> Result<Response> {
     Response::ok("shirogane online")
 }
 
-fn with_cors(res: Response) -> Response {
+pub(crate) fn with_cors(res: Response) -> Response {
     let headers = res.headers().clone();
     let _ = headers.set("Access-Control-Allow-Origin", "*");
     let _ = headers.set("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
     let _ = headers.set(
         "Access-Control-Allow-Headers",
-        "Authorization, Content-Type",
+        "Authorization, Content-Type, Idempotency-Key",
     );
     res.with_headers(headers)
 }
 
-fn json_response(data: &Value, status: u16) -> Result<Response> {
+pub(crate) fn json_response(data: &Value, status: u16) -> Result<Response> {
     let res = Response::from_json(data)?.with_status(status);
     let headers = res.headers().clone();
     let _ = headers.set("Content-Type", "application/json; charset=utf-8");
@@ -172,11 +177,10 @@ async fn handle_list_works(url: &Url, env: &Env) -> Result<Response> {
         binds.push(like);
     }
 
-    let where_sql = if where_parts.is_empty() {
-        String::new()
-    } else {
-        format!("WHERE {}", where_parts.join(" AND "))
-    };
+    // Hide soft-deleted works when deleted_at is present (migration 0002).
+    where_parts.push("(w.deleted_at IS NULL)");
+
+    let where_sql = format!("WHERE {}", where_parts.join(" AND "));
 
     let sql = format!(
         r#"
@@ -284,6 +288,7 @@ async fn handle_list_sources(env: &Env) -> Result<Response> {
             r#"
             SELECT source, COUNT(*) AS cnt
             FROM works
+            WHERE deleted_at IS NULL
             GROUP BY source
             ORDER BY cnt DESC
             "#,
