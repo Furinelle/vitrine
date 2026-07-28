@@ -30,11 +30,11 @@ npx wrangler secret put INGEST_TOKEN
 npm run deploy
 ```
 
-记下 `*.workers.dev` 地址，写到 hanabi：
+生产入口为 `https://gallery.fontaine.blue`，写到 hanabi：
 
 ```toml
 [gallery]
-endpoint = "https://shirogane.<subdomain>.workers.dev"
+endpoint = "https://gallery.fontaine.blue"
 # token 建议放环境变量 HANABI_GALLERY_TOKEN，勿提交仓库
 token = ""
 ```
