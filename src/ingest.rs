@@ -16,6 +16,13 @@ pub const DEFAULT_MAX_FILE_BYTES: u64 = 25 * 1024 * 1024;
 /// Default max total bytes across all files (100 MiB).
 pub const DEFAULT_MAX_TOTAL_BYTES: u64 = 100 * 1024 * 1024;
 
+/// Meta string field length caps (UTF-8 bytes).
+pub const MAX_TITLE_LEN: usize = 512;
+pub const MAX_AUTHOR_NAME_LEN: usize = 256;
+pub const MAX_SOURCE_URL_LEN: usize = 2048;
+pub const MAX_AUTHOR_URL_LEN: usize = 2048;
+pub const MAX_ORIGIN_LEN: usize = 128;
+
 /// Ingest size / count limits (from env or defaults).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct IngestLimits {
@@ -134,6 +141,7 @@ pub enum MetaError {
     InvalidSource,
     InvalidSourceId,
     InvalidField(&'static str),
+    FieldTooLong(&'static str),
 }
 
 impl MetaError {
@@ -144,6 +152,14 @@ impl MetaError {
             MetaError::MissingSourceId => "source and source_id required",
             MetaError::InvalidSource => "invalid source",
             MetaError::InvalidSourceId => "invalid source_id",
+            MetaError::FieldTooLong(f) => match *f {
+                "source_url" => "source_url too long",
+                "title" => "title too long",
+                "author_name" => "author_name too long",
+                "author_url" => "author_url too long",
+                "origin" => "origin too long",
+                _ => "meta field too long",
+            },
             MetaError::InvalidField(f) => match *f {
                 "source_url" => "invalid source_url",
                 "title" => "invalid title",
@@ -187,11 +203,31 @@ pub fn validate_meta(raw: IngestMetaRaw) -> std::result::Result<ValidatedMeta, M
         return Err(MetaError::InvalidSourceId);
     }
 
-    let source_url = opt_string(raw.source_url, "source_url")?.unwrap_or_default();
-    let title = opt_string(raw.title, "title")?.unwrap_or_default();
-    let author_name = opt_string(raw.author_name, "author_name")?.unwrap_or_default();
-    let author_url = opt_string(raw.author_url, "author_url")?.unwrap_or_default();
-    let origin = opt_string(raw.origin, "origin")?.unwrap_or_default();
+    let source_url = capped_string(
+        opt_string(raw.source_url, "source_url")?.unwrap_or_default(),
+        MAX_SOURCE_URL_LEN,
+        "source_url",
+    )?;
+    let title = capped_string(
+        opt_string(raw.title, "title")?.unwrap_or_default(),
+        MAX_TITLE_LEN,
+        "title",
+    )?;
+    let author_name = capped_string(
+        opt_string(raw.author_name, "author_name")?.unwrap_or_default(),
+        MAX_AUTHOR_NAME_LEN,
+        "author_name",
+    )?;
+    let author_url = capped_string(
+        opt_string(raw.author_url, "author_url")?.unwrap_or_default(),
+        MAX_AUTHOR_URL_LEN,
+        "author_url",
+    )?;
+    let origin = capped_string(
+        opt_string(raw.origin, "origin")?.unwrap_or_default(),
+        MAX_ORIGIN_LEN,
+        "origin",
+    )?;
     let is_r18 = opt_bool(raw.is_r18, "is_r18")?.unwrap_or(false);
     let tags = opt_tags(raw.tags)?;
 
@@ -206,6 +242,17 @@ pub fn validate_meta(raw: IngestMetaRaw) -> std::result::Result<ValidatedMeta, M
         is_r18,
         origin,
     })
+}
+
+fn capped_string(
+    s: String,
+    max: usize,
+    field: &'static str,
+) -> std::result::Result<String, MetaError> {
+    if s.len() > max {
+        return Err(MetaError::FieldTooLong(field));
+    }
+    Ok(s)
 }
 
 fn opt_string(
@@ -327,24 +374,108 @@ pub fn guess_content_type(name: &str) -> &'static str {
         "image/gif"
     } else if lower.ends_with(".bmp") {
         "image/bmp"
-    } else {
+    } else if lower.ends_with(".jpg") || lower.ends_with(".jpeg") {
         "image/jpeg"
+    } else {
+        // Unknown extension: leave as generic so MIME allowlist can reject.
+        "application/octet-stream"
     }
 }
 
-/// Extension from content-type.
-pub fn ext_from_content_type(ct: &str) -> &'static str {
-    let lower = ct.to_ascii_lowercase();
-    if lower.contains("png") {
-        "png"
-    } else if lower.contains("webp") {
-        "webp"
-    } else if lower.contains("gif") {
-        "gif"
-    } else if lower.contains("bmp") {
-        "bmp"
+/// Canonical allowed image MIME types for ingest /media serving safety.
+pub fn normalize_allowed_image_mime(
+    declared: &str,
+    filename: &str,
+) -> std::result::Result<&'static str, MimeError> {
+    let raw = if declared.trim().is_empty() {
+        guess_content_type(filename).to_string()
     } else {
-        "jpg"
+        declared.trim().to_ascii_lowercase()
+    };
+    // Strip parameters: "image/jpeg; charset=binary"
+    let base = raw.split(';').next().unwrap_or(&raw).trim();
+    match base {
+        "image/jpeg" | "image/jpg" => Ok("image/jpeg"),
+        "image/png" => Ok("image/png"),
+        "image/webp" => Ok("image/webp"),
+        "image/gif" => Ok("image/gif"),
+        "image/bmp" | "image/x-ms-bmp" => Ok("image/bmp"),
+        _ => Err(MimeError::NotAllowed(base.to_string())),
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MimeError {
+    NotAllowed(String),
+}
+
+impl MimeError {
+    pub fn message(&self) -> String {
+        match self {
+            MimeError::NotAllowed(ct) => {
+                format!("unsupported content type: {ct} (images only)")
+            }
+        }
+    }
+}
+
+/// Extension from content-type (canonical image MIME only).
+pub fn ext_from_content_type(ct: &str) -> &'static str {
+    match ct.to_ascii_lowercase().as_str() {
+        "image/png" => "png",
+        "image/webp" => "webp",
+        "image/gif" => "gif",
+        "image/bmp" => "bmp",
+        _ => "jpg",
+    }
+}
+
+/// Force `idempotent: true` on a stored success body for Idempotency-Key replay.
+pub fn mark_idempotent_replay(stored_json: &str) -> Value {
+    let mut body: Value = serde_json::from_str(stored_json)
+        .unwrap_or_else(|_| json!({ "ok": true, "idempotent": true }));
+    if let Some(obj) = body.as_object_mut() {
+        obj.insert("ok".into(), json!(true));
+        obj.insert("idempotent".into(), json!(true));
+    }
+    body
+}
+
+/// Detect SQLite/D1 unique constraint failures (idempotency race).
+pub fn is_unique_constraint_error(err: &str) -> bool {
+    let s = err.to_ascii_lowercase();
+    s.contains("unique constraint")
+        || s.contains("constraint failed")
+        || s.contains("already exists")
+}
+
+/// Outcome when resolving an idempotency receipt after a concurrent insert race.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum IdempotencyRaceOutcome {
+    Replay {
+        response_json: String,
+        status_code: u16,
+    },
+    Conflict,
+    Missing,
+}
+
+pub fn resolve_idempotency_race(
+    fingerprint: &str,
+    row: Option<(&str, &str, i64)>,
+) -> IdempotencyRaceOutcome {
+    match row {
+        None => IdempotencyRaceOutcome::Missing,
+        Some((stored_fp, response_json, status_code)) => {
+            if stored_fp == fingerprint {
+                IdempotencyRaceOutcome::Replay {
+                    response_json: response_json.to_string(),
+                    status_code: status_code.clamp(100, 599) as u16,
+                }
+            } else {
+                IdempotencyRaceOutcome::Conflict
+            }
+        }
     }
 }
 
@@ -570,16 +701,18 @@ pub async fn handle_ingest(mut req: Request, env: Env) -> Result<Response> {
     }
 
     let limits = limits_from_env(&env);
-    // Read file bodies first to know sizes/hashes.
+    // Read file bodies first to know sizes/hashes; normalize MIME to allowlist.
     let mut bodies: Vec<(String, String, Vec<u8>)> = Vec::new();
     for (i, f) in files.iter().enumerate() {
         let name = f.name();
-        let ct = {
-            let t = f.type_();
-            if t.is_empty() {
-                guess_content_type(&name).to_string()
-            } else {
-                t
+        let declared = f.type_();
+        let ct = match normalize_allowed_image_mime(&declared, &name) {
+            Ok(c) => c.to_string(),
+            Err(e) => {
+                return Ok(with_cors(json_response(
+                    &json!({ "ok": false, "error": e.message() }),
+                    400,
+                )?));
             }
         };
         let bytes = f
@@ -613,9 +746,7 @@ pub async fn handle_ingest(mut req: Request, env: Env) -> Result<Response> {
             .await?
         {
             if row.fingerprint == fingerprint {
-                let body: Value = serde_json::from_str(&row.response_json).unwrap_or_else(|_| {
-                    json!({ "ok": true, "work_id": wid, "idempotent": true })
-                });
+                let body = mark_idempotent_replay(&row.response_json);
                 return Ok(with_cors(json_response(&body, row.status_code as u16)?));
             }
             return Ok(with_cors(json_response(
@@ -631,7 +762,15 @@ pub async fn handle_ingest(mut req: Request, env: Env) -> Result<Response> {
 
     let now = js_iso_now();
     let mut entropy = [0u8; 16];
-    let _ = getrandom::getrandom(&mut entropy);
+    if let Err(e) = getrandom::getrandom(&mut entropy) {
+        return Ok(with_cors(json_response(
+            &json!({
+                "ok": false,
+                "error": format!("internal error: rng failed: {e}")
+            }),
+            500,
+        )?));
+    }
     let ingest_id = shape_ingest_id(&[&now, &wid, &fingerprint, &hex::encode(entropy)]);
 
     let mut prepared: Vec<PreparedFile> = Vec::with_capacity(bodies.len());
@@ -739,6 +878,75 @@ pub async fn handle_ingest(mut req: Request, env: Env) -> Result<Response> {
     {
         Ok(()) => Ok(with_cors(json_response(&response_body, 200)?)),
         Err(e) => {
+            let err_s = e.to_string();
+            // Concurrent Idempotency-Key race: peer may have committed the receipt.
+            if let Some(key) = idem_key.as_deref() {
+                if is_unique_constraint_error(&err_s) {
+                    best_effort_delete(&bucket, &uploaded_keys).await;
+                    let row = db
+                        .prepare(
+                            "SELECT fingerprint, response_json, status_code FROM idempotency_receipts WHERE idempotency_key = ?",
+                        )
+                        .bind(&[JsValue::from_str(key)])?
+                        .first::<IdempotencyRow>(None)
+                        .await?;
+                    let outcome = resolve_idempotency_race(
+                        &fingerprint,
+                        row.as_ref().map(|r| {
+                            (
+                                r.fingerprint.as_str(),
+                                r.response_json.as_str(),
+                                r.status_code,
+                            )
+                        }),
+                    );
+                    match outcome {
+                        IdempotencyRaceOutcome::Replay {
+                            response_json,
+                            status_code,
+                        } => {
+                            let body = mark_idempotent_replay(&response_json);
+                            return Ok(with_cors(json_response(&body, status_code)?));
+                        }
+                        IdempotencyRaceOutcome::Conflict => {
+                            return Ok(with_cors(json_response(
+                                &json!({
+                                    "ok": false,
+                                    "error": "idempotency key reuse with different payload",
+                                    "conflict": true,
+                                }),
+                                409,
+                            )?));
+                        }
+                        IdempotencyRaceOutcome::Missing => {
+                            let _ = write_audit(
+                                &db,
+                                &wid,
+                                &meta,
+                                &ingest_id,
+                                &fingerprint,
+                                Some(key),
+                                prepared.len(),
+                                total_bytes,
+                                "failed",
+                                Some(&format!(
+                                    "d1 batch unique conflict without receipt: {err_s}"
+                                )),
+                                &now,
+                            )
+                            .await;
+                            return Ok(with_cors(json_response(
+                                &json!({
+                                    "ok": false,
+                                    "error": format!("d1 batch failed: {err_s}")
+                                }),
+                                500,
+                            )?));
+                        }
+                    }
+                }
+            }
+
             best_effort_delete(&bucket, &uploaded_keys).await;
             let _ = write_audit(
                 &db,
@@ -750,12 +958,12 @@ pub async fn handle_ingest(mut req: Request, env: Env) -> Result<Response> {
                 prepared.len(),
                 total_bytes,
                 "failed",
-                Some(&e.to_string()),
+                Some(&err_s),
                 &now,
             )
             .await;
             Ok(with_cors(json_response(
-                &json!({ "ok": false, "error": format!("d1 batch failed: {e}") }),
+                &json!({ "ok": false, "error": format!("d1 batch failed: {err_s}") }),
                 500,
             )?))
         }
@@ -1131,9 +1339,91 @@ mod tests {
     fn content_type_and_ext() {
         assert_eq!(guess_content_type("a.PNG"), "image/png");
         assert_eq!(guess_content_type("a.webp"), "image/webp");
-        assert_eq!(guess_content_type("a"), "image/jpeg");
+        assert_eq!(guess_content_type("a.jpg"), "image/jpeg");
+        assert_eq!(guess_content_type("a"), "application/octet-stream");
         assert_eq!(ext_from_content_type("image/png"), "png");
         assert_eq!(ext_from_content_type("image/jpeg"), "jpg");
+    }
+
+    #[test]
+    fn rejects_non_image_mime() {
+        assert!(normalize_allowed_image_mime("text/html", "x.html").is_err());
+        assert!(normalize_allowed_image_mime("application/javascript", "x.js").is_err());
+        assert!(normalize_allowed_image_mime("image/svg+xml", "x.svg").is_err());
+        assert_eq!(
+            normalize_allowed_image_mime("image/jpg", "x.jpg").unwrap(),
+            "image/jpeg"
+        );
+        assert_eq!(
+            normalize_allowed_image_mime("", "photo.PNG").unwrap(),
+            "image/png"
+        );
+        assert_eq!(
+            normalize_allowed_image_mime("image/webp; charset=binary", "a.webp").unwrap(),
+            "image/webp"
+        );
+        assert!(normalize_allowed_image_mime("", "readme.txt").is_err());
+    }
+
+    #[test]
+    fn meta_field_length_limits() {
+        let long_title = "t".repeat(MAX_TITLE_LEN + 1);
+        let err = validate_meta_json(&format!(
+            r#"{{"source":"pixiv","source_id":"1","title":"{long_title}"}}"#
+        ))
+        .unwrap_err();
+        assert_eq!(err, MetaError::FieldTooLong("title"));
+
+        let long_url = format!("https://x/{}", "a".repeat(MAX_SOURCE_URL_LEN));
+        let err = validate_meta_json(&format!(
+            r#"{{"source":"pixiv","source_id":"1","source_url":"{long_url}"}}"#
+        ))
+        .unwrap_err();
+        assert_eq!(err, MetaError::FieldTooLong("source_url"));
+
+        let long_origin = "o".repeat(MAX_ORIGIN_LEN + 1);
+        let err = validate_meta_json(&format!(
+            r#"{{"source":"pixiv","source_id":"1","origin":"{long_origin}"}}"#
+        ))
+        .unwrap_err();
+        assert_eq!(err, MetaError::FieldTooLong("origin"));
+
+        let ok = validate_meta_json(r#"{"source":"pixiv","source_id":"1","title":"ok"}"#).unwrap();
+        assert_eq!(ok.title, "ok");
+    }
+
+    #[test]
+    fn idempotent_replay_forces_true() {
+        let stored = r#"{"ok":true,"work_id":"pixiv:1","pages":1,"tags":[],"images":[],"ingest_id":"x","idempotent":false}"#;
+        let v = mark_idempotent_replay(stored);
+        assert_eq!(v["idempotent"], true);
+        assert_eq!(v["ok"], true);
+        assert_eq!(v["work_id"], "pixiv:1");
+    }
+
+    #[test]
+    fn idempotency_race_resolution() {
+        assert_eq!(
+            resolve_idempotency_race(
+                "fp1",
+                Some(("fp1", r#"{"ok":true,"idempotent":false}"#, 200))
+            ),
+            IdempotencyRaceOutcome::Replay {
+                response_json: r#"{"ok":true,"idempotent":false}"#.into(),
+                status_code: 200,
+            }
+        );
+        assert_eq!(
+            resolve_idempotency_race("fp1", Some(("fp2", "{}", 200))),
+            IdempotencyRaceOutcome::Conflict
+        );
+        assert_eq!(
+            resolve_idempotency_race("fp1", None),
+            IdempotencyRaceOutcome::Missing
+        );
+        assert!(is_unique_constraint_error(
+            "D1_ERROR: UNIQUE constraint failed: idempotency_receipts.idempotency_key"
+        ));
     }
 
     #[test]

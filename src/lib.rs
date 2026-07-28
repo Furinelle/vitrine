@@ -261,22 +261,23 @@ struct SourceRow {
     cnt: i64,
 }
 
-async fn handle_list_tags(env: &Env) -> Result<Response> {
-    let db = env.d1("DB")?;
-    let rows = db
-        .prepare(
-            r#"
-            SELECT t.name, COUNT(wt.work_id) AS cnt
+/// Tag list query: counts only work_tags attached to non-deleted works.
+pub fn tags_list_sql() -> &'static str {
+    r#"
+            SELECT t.name, COUNT(w.id) AS cnt
             FROM tags t
             LEFT JOIN work_tags wt ON wt.tag = t.name
+            LEFT JOIN works w ON w.id = wt.work_id AND w.deleted_at IS NULL
             GROUP BY t.name
             HAVING cnt > 0
             ORDER BY cnt DESC, t.name ASC
             LIMIT 200
-            "#,
-        )
-        .all()
-        .await?;
+            "#
+}
+
+async fn handle_list_tags(env: &Env) -> Result<Response> {
+    let db = env.d1("DB")?;
+    let rows = db.prepare(tags_list_sql()).all().await?;
     let tags = rows.results::<TagRow>()?;
     json_response(&json!({ "ok": true, "tags": tags }), 200)
 }
@@ -299,6 +300,41 @@ async fn handle_list_sources(env: &Env) -> Result<Response> {
     json_response(&json!({ "ok": true, "sources": sources }), 200)
 }
 
+/// Build media response header pairs from R2 HTTP metadata.
+/// `Headers::clone()` is a deep copy in worker 0.8, so we must not write into a clone.
+pub fn media_header_pairs(
+    content_type: Option<&str>,
+    content_language: Option<&str>,
+    content_disposition: Option<&str>,
+    content_encoding: Option<&str>,
+    cache_control: Option<&str>,
+    etag: &str,
+) -> Vec<(String, String)> {
+    let mut pairs = Vec::new();
+    if let Some(v) = content_type.filter(|s| !s.is_empty()) {
+        pairs.push(("Content-Type".into(), v.to_string()));
+    }
+    if let Some(v) = content_language.filter(|s| !s.is_empty()) {
+        pairs.push(("Content-Language".into(), v.to_string()));
+    }
+    if let Some(v) = content_disposition.filter(|s| !s.is_empty()) {
+        pairs.push(("Content-Disposition".into(), v.to_string()));
+    }
+    if let Some(v) = content_encoding.filter(|s| !s.is_empty()) {
+        pairs.push(("Content-Encoding".into(), v.to_string()));
+    }
+    // Always override with immutable long-cache; ignore stored cache_control for media.
+    let _ = cache_control;
+    pairs.push((
+        "Cache-Control".into(),
+        "public, max-age=31536000, immutable".into(),
+    ));
+    if !etag.is_empty() {
+        pairs.push(("etag".into(), etag.to_string()));
+    }
+    pairs
+}
+
 async fn handle_media(key: &str, env: &Env) -> Result<Response> {
     let decoded = urlencoding::decode(key)
         .map(|s| s.into_owned())
@@ -314,10 +350,20 @@ async fn handle_media(key: &str, env: &Env) -> Result<Response> {
         .ok_or_else(|| Error::RustError("empty object body".into()))?;
     let response_body = body.response_body()?;
 
+    let meta = obj.http_metadata();
+    let pairs = media_header_pairs(
+        meta.content_type.as_deref(),
+        meta.content_language.as_deref(),
+        meta.content_disposition.as_deref(),
+        meta.content_encoding.as_deref(),
+        meta.cache_control.as_deref(),
+        &obj.http_etag(),
+    );
+
     let headers = Headers::new();
-    obj.write_http_metadata(headers.clone())?;
-    let _ = headers.set("etag", &obj.http_etag());
-    let _ = headers.set("Cache-Control", "public, max-age=31536000, immutable");
+    for (name, value) in pairs {
+        let _ = headers.set(&name, &value);
+    }
 
     Ok(Response::from_body(response_body)?.with_headers(headers))
 }
@@ -398,5 +444,40 @@ mod tests {
         );
         assert_eq!(cover_url_from_key(Some("")), None);
         assert_eq!(cover_url_from_key(None), None);
+    }
+
+    #[test]
+    fn media_headers_copy_content_type_and_override_cache() {
+        let pairs = media_header_pairs(
+            Some("image/png"),
+            Some("en"),
+            None,
+            None,
+            Some("no-cache"),
+            "\"abc\"",
+        );
+        let map: std::collections::HashMap<_, _> = pairs.into_iter().collect();
+        assert_eq!(
+            map.get("Content-Type").map(String::as_str),
+            Some("image/png")
+        );
+        assert_eq!(map.get("Content-Language").map(String::as_str), Some("en"));
+        assert_eq!(
+            map.get("Cache-Control").map(String::as_str),
+            Some("public, max-age=31536000, immutable")
+        );
+        assert_eq!(map.get("etag").map(String::as_str), Some("\"abc\""));
+    }
+
+    #[test]
+    fn tags_list_sql_excludes_soft_deleted_works() {
+        let sql = tags_list_sql();
+        assert!(sql.contains("deleted_at IS NULL"));
+        assert!(
+            sql.contains("JOIN works w")
+                || sql.contains("join works w")
+                || sql.contains("works w ON")
+        );
+        assert!(sql.contains("COUNT(w.id)"));
     }
 }

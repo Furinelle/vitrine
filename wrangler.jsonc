@@ -27,7 +27,8 @@
     {
       "binding": "DB",
       "database_name": "shirogane",
-      "database_id": "ca5265c6-89a5-41ed-9f1a-a7f91f8c6077"
+      "database_id": "ca5265c6-89a5-41ed-9f1a-a7f91f8c6077",
+      "migrations_dir": "migrations"
     }
   ],
   "vars": {

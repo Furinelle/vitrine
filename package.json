@@ -8,8 +8,8 @@
     "dev": "npm run build:dev && wrangler dev",
     "check": "cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo test && worker-build --dev",
     "test": "cargo test",
-    "db:local": "wrangler d1 execute shirogane --local --file=./migrations/0001_init.sql && wrangler d1 execute shirogane --local --file=./migrations/0002_reliability.sql",
-    "db:remote": "wrangler d1 execute shirogane --remote --file=./migrations/0001_init.sql && wrangler d1 execute shirogane --remote --file=./migrations/0002_reliability.sql"
+    "db:local": "wrangler d1 migrations apply shirogane --local",
+    "db:remote": "wrangler d1 migrations apply shirogane --remote"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^5.20260722.1",
