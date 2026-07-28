@@ -1,0 +1,16 @@
+{
+  "name": "shirogane",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "db:local": "wrangler d1 execute shirogane --local --file=./migrations/0001_init.sql",
+    "db:remote": "wrangler d1 execute shirogane --remote --file=./migrations/0001_init.sql"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^5.20260722.1",
+    "typescript": "^5.8.3",
+    "wrangler": "^4.114.0"
+  }
+}

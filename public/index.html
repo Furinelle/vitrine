@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Shirogane · 图库</title>
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <header class="top">
+    <div class="brand">
+      <h1>Shirogane</h1>
+      <p>hanabi 入库图库 · 标签 / 来源筛选</p>
+    </div>
+    <div class="filters">
+      <select id="source"></select>
+      <input id="tag" list="taglist" placeholder="标签，如 原神" />
+      <datalist id="taglist"></datalist>
+      <input id="q" placeholder="搜索标题/作者/ID" />
+      <button id="apply">筛选</button>
+      <button id="reset" class="ghost">重置</button>
+    </div>
+  </header>
+
+  <main>
+    <section id="status" class="status">加载中…</section>
+    <section id="grid" class="grid"></section>
+    <div class="more">
+      <button id="more" class="ghost" hidden>加载更多</button>
+    </div>
+  </main>
+
+  <dialog id="lightbox">
+    <form method="dialog">
+      <button class="close" value="close">×</button>
+    </form>
+    <img id="lb-img" alt="" />
+    <div id="lb-meta" class="lb-meta"></div>
+  </dialog>
+
+  <script src="/app.js"></script>
+</body>
+</html>
