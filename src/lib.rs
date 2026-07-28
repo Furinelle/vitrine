@@ -329,6 +329,8 @@ pub fn media_header_pairs(
         "Cache-Control".into(),
         "public, max-age=31536000, immutable".into(),
     ));
+    // Prevent browsers from MIME-sniffing image responses into executable contexts.
+    pairs.push(("X-Content-Type-Options".into(), "nosniff".into()));
     if !etag.is_empty() {
         pairs.push(("etag".into(), etag.to_string()));
     }
@@ -465,6 +467,10 @@ mod tests {
         assert_eq!(
             map.get("Cache-Control").map(String::as_str),
             Some("public, max-age=31536000, immutable")
+        );
+        assert_eq!(
+            map.get("X-Content-Type-Options").map(String::as_str),
+            Some("nosniff")
         );
         assert_eq!(map.get("etag").map(String::as_str), Some("\"abc\""));
     }

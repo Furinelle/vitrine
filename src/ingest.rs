@@ -407,6 +407,10 @@ pub fn normalize_allowed_image_mime(
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MimeError {
     NotAllowed(String),
+    MagicMismatch {
+        declared: String,
+        detected: Option<&'static str>,
+    },
 }
 
 impl MimeError {
@@ -415,7 +419,56 @@ impl MimeError {
             MimeError::NotAllowed(ct) => {
                 format!("unsupported content type: {ct} (images only)")
             }
+            MimeError::MagicMismatch { declared, detected } => match detected {
+                Some(d) => {
+                    format!("content type mismatch: declared {declared}, magic detected {d}")
+                }
+                None => format!(
+                    "content type mismatch: declared {declared}, unknown or non-image bytes"
+                ),
+            },
         }
+    }
+}
+
+/// Detect image type from magic bytes (sniff only; not a full decoder).
+///
+/// - JPEG: `FF D8 FF`
+/// - PNG: `89 50 4E 47 0D 0A 1A 0A`
+/// - GIF: `GIF87a` / `GIF89a`
+/// - WebP: `RIFF....WEBP`
+/// - BMP: `BM`
+pub fn detect_image_mime_from_magic(bytes: &[u8]) -> Option<&'static str> {
+    if bytes.len() >= 3 && bytes[0] == 0xFF && bytes[1] == 0xD8 && bytes[2] == 0xFF {
+        return Some("image/jpeg");
+    }
+    if bytes.len() >= 8 && bytes[0..8] == [0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A] {
+        return Some("image/png");
+    }
+    if bytes.len() >= 6 && (bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a")) {
+        return Some("image/gif");
+    }
+    if bytes.len() >= 12 && bytes.starts_with(b"RIFF") && &bytes[8..12] == b"WEBP" {
+        return Some("image/webp");
+    }
+    if bytes.len() >= 2 && bytes.starts_with(b"BM") {
+        return Some("image/bmp");
+    }
+    None
+}
+
+/// Ensure declared canonical MIME matches file magic bytes.
+pub fn verify_image_magic(
+    canonical_mime: &str,
+    bytes: &[u8],
+) -> std::result::Result<(), MimeError> {
+    let detected = detect_image_mime_from_magic(bytes);
+    match detected {
+        Some(d) if d == canonical_mime => Ok(()),
+        other => Err(MimeError::MagicMismatch {
+            declared: canonical_mime.to_string(),
+            detected: other,
+        }),
     }
 }
 
@@ -719,6 +772,13 @@ pub async fn handle_ingest(mut req: Request, env: Env) -> Result<Response> {
             .bytes()
             .await
             .map_err(|e| Error::RustError(format!("failed to read file {i}: {e}")))?;
+        // Do not trust multipart Content-Type alone — require magic bytes to match.
+        if let Err(e) = verify_image_magic(&ct, &bytes) {
+            return Ok(with_cors(json_response(
+                &json!({ "ok": false, "error": e.message() }),
+                400,
+            )?));
+        }
         bodies.push((name, ct, bytes));
     }
 
@@ -1363,6 +1423,47 @@ mod tests {
             "image/webp"
         );
         assert!(normalize_allowed_image_mime("", "readme.txt").is_err());
+    }
+
+    #[test]
+    fn magic_bytes_detect_and_match_canonical_mime() {
+        let jpeg = [0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10];
+        let png = [0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A, 0, 0];
+        let gif87 = b"GIF87a......";
+        let gif89 = b"GIF89a......";
+        let mut webp = b"RIFF....WEBP".to_vec();
+        webp[4..8].copy_from_slice(&[0, 0, 0, 0]);
+        let bmp = b"BM......";
+        let html = b"<!DOCTYPE html><html>";
+
+        assert_eq!(detect_image_mime_from_magic(&jpeg), Some("image/jpeg"));
+        assert_eq!(detect_image_mime_from_magic(&png), Some("image/png"));
+        assert_eq!(detect_image_mime_from_magic(gif87), Some("image/gif"));
+        assert_eq!(detect_image_mime_from_magic(gif89), Some("image/gif"));
+        assert_eq!(detect_image_mime_from_magic(&webp), Some("image/webp"));
+        assert_eq!(detect_image_mime_from_magic(bmp), Some("image/bmp"));
+        assert_eq!(detect_image_mime_from_magic(html), None);
+        assert_eq!(detect_image_mime_from_magic(&[]), None);
+
+        assert!(verify_image_magic("image/jpeg", &jpeg).is_ok());
+        assert!(verify_image_magic("image/png", &png).is_ok());
+        assert!(verify_image_magic("image/gif", gif89).is_ok());
+        assert!(verify_image_magic("image/webp", &webp).is_ok());
+        assert!(verify_image_magic("image/bmp", bmp).is_ok());
+
+        // HTML bytes declared as image/png must fail.
+        assert!(matches!(
+            verify_image_magic("image/png", html),
+            Err(MimeError::MagicMismatch { detected: None, .. })
+        ));
+        // Real PNG declared as JPEG must fail (detected png).
+        assert!(matches!(
+            verify_image_magic("image/jpeg", &png),
+            Err(MimeError::MagicMismatch {
+                detected: Some("image/png"),
+                ..
+            })
+        ));
     }
 
     #[test]

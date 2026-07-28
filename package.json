@@ -6,6 +6,7 @@
     "build": "worker-build --release",
     "build:dev": "worker-build --dev",
     "dev": "npm run build:dev && wrangler dev",
+    "deploy": "npm run build && wrangler deploy",
     "check": "cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo test && worker-build --dev",
     "test": "cargo test",
     "db:local": "wrangler d1 migrations apply shirogane --local",
