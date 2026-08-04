@@ -57,6 +57,8 @@ Body: `multipart/form-data`
 | `meta` | JSON：`source`, `source_id`, `source_url`, `title`, `author_name`, `author_url`, `tags[]`, `is_r18`, `origin` |
 | `files` | 一张或多张图片（可重复字段名） |
 
+入库限制：最多 40 个文件、单文件 50 MiB、单次请求总计 100 MiB。
+
 ### `GET /api/works?source=&tag=&q=&limit=&offset=`
 
 ### `GET /api/tags` · `GET /api/sources`

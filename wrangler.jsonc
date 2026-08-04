@@ -37,7 +37,7 @@
     "PUBLIC_BASE_URL": "",
     // Ingest limits (optional; safe defaults applied in Rust if unset/invalid)
     "MAX_FILE_COUNT": "40",
-    "MAX_FILE_BYTES": "26214400",
+    "MAX_FILE_BYTES": "52428800",
     "MAX_TOTAL_BYTES": "104857600"
   }
 }

@@ -11,8 +11,8 @@ use worker::*;
 
 /// Default max number of files per ingest request.
 pub const DEFAULT_MAX_FILE_COUNT: u32 = 40;
-/// Default max bytes per single file (25 MiB).
-pub const DEFAULT_MAX_FILE_BYTES: u64 = 25 * 1024 * 1024;
+/// Default max bytes per single file (50 MiB, matching Telegram's original-file ceiling).
+pub const DEFAULT_MAX_FILE_BYTES: u64 = 50 * 1024 * 1024;
 /// Default max total bytes across all files (100 MiB).
 pub const DEFAULT_MAX_TOTAL_BYTES: u64 = 100 * 1024 * 1024;
 
@@ -1343,6 +1343,14 @@ mod tests {
             Err(LimitError::TotalTooLarge { .. })
         ));
         assert!(check_file_limits(2, &[5, 5], &limits).is_ok());
+    }
+
+    #[test]
+    fn default_limits_allow_telegram_sized_originals() {
+        let limits = IngestLimits::default();
+        assert_eq!(limits.max_file_bytes, 50 * 1024 * 1024);
+        assert!(check_file_limits(1, &[29_160_992], &limits).is_ok());
+        assert!(check_file_limits(1, &[50 * 1024 * 1024 + 1], &limits).is_err());
     }
 
     #[test]
