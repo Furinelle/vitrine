@@ -5,7 +5,7 @@ use crate::{json_response, normalize_tag, with_cors};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
-use std::collections::HashMap;
+use std::{collections::HashMap, time::Duration};
 use wasm_bindgen::JsValue;
 use worker::*;
 
@@ -667,6 +667,73 @@ struct PreparedFile {
     byte_size: u64,
 }
 
+const R2_PUT_MAX_ATTEMPTS: u32 = 3;
+const R2_PUT_INITIAL_BACKOFF_MS: u64 = 100;
+
+/// Return the delay after a failed R2 put, limited to transient service errors.
+fn r2_put_retry_delay_ms(error: &str, failed_attempt: u32) -> Option<u64> {
+    let retryable = error.contains("(10001)") || error.contains("(10043)");
+    if !retryable || failed_attempt == 0 || failed_attempt >= R2_PUT_MAX_ATTEMPTS {
+        return None;
+    }
+
+    Some(R2_PUT_INITIAL_BACKOFF_MS << (failed_attempt - 1))
+}
+
+fn r2_put_failure_cleanup_keys(uploaded_keys: &[String], current_key: &str) -> Vec<String> {
+    let mut cleanup_keys = Vec::with_capacity(uploaded_keys.len() + 1);
+    for key in uploaded_keys
+        .iter()
+        .map(String::as_str)
+        .chain(std::iter::once(current_key))
+    {
+        if !cleanup_keys.iter().any(|existing| existing == key) {
+            cleanup_keys.push(key.to_string());
+        }
+    }
+    cleanup_keys
+}
+
+async fn put_prepared_file(
+    bucket: &Bucket,
+    file: &PreparedFile,
+    work_id: &str,
+    ingest_id: &str,
+) -> Result<()> {
+    let mut failed_attempt = 0;
+
+    loop {
+        let mut custom = HashMap::new();
+        custom.insert("work_id".to_string(), work_id.to_string());
+        custom.insert("page_index".to_string(), file.page.to_string());
+        custom.insert("ingest_id".to_string(), ingest_id.to_string());
+        custom.insert("sha256".to_string(), file.sha256.clone());
+
+        let result = bucket
+            .put(file.r2_key.clone(), file.bytes.clone())
+            .http_metadata(HttpMetadata {
+                content_type: Some(file.content_type.clone()),
+                cache_control: Some("public, max-age=31536000, immutable".into()),
+                ..Default::default()
+            })
+            .custom_metadata(custom)
+            .execute()
+            .await;
+
+        match result {
+            Ok(_) => return Ok(()),
+            Err(error) => {
+                failed_attempt += 1;
+                let Some(delay_ms) = r2_put_retry_delay_ms(&error.to_string(), failed_attempt)
+                else {
+                    return Err(error);
+                };
+                Delay::from(Duration::from_millis(delay_ms)).await;
+            }
+        }
+    }
+}
+
 /// Entry for POST /api/ingest.
 pub async fn handle_ingest(mut req: Request, env: Env) -> Result<Response> {
     let token = match env.secret("INGEST_TOKEN") {
@@ -863,25 +930,12 @@ pub async fn handle_ingest(mut req: Request, env: Env) -> Result<Response> {
     let mut uploaded_keys: Vec<String> = Vec::new();
 
     for file in &prepared {
-        let mut custom = HashMap::new();
-        custom.insert("work_id".to_string(), wid.clone());
-        custom.insert("page_index".to_string(), file.page.to_string());
-        custom.insert("ingest_id".to_string(), ingest_id.clone());
-        custom.insert("sha256".to_string(), file.sha256.clone());
-
-        let put = bucket
-            .put(file.r2_key.clone(), file.bytes.clone())
-            .http_metadata(HttpMetadata {
-                content_type: Some(file.content_type.clone()),
-                cache_control: Some("public, max-age=31536000, immutable".into()),
-                ..Default::default()
-            })
-            .custom_metadata(custom);
-
-        match put.execute().await {
-            Ok(_) => uploaded_keys.push(file.r2_key.clone()),
+        match put_prepared_file(&bucket, file, &wid, &ingest_id).await {
+            Ok(()) => uploaded_keys.push(file.r2_key.clone()),
             Err(e) => {
-                best_effort_delete(&bucket, &uploaded_keys).await;
+                let cleanup_keys =
+                    r2_put_failure_cleanup_keys(&uploaded_keys, file.r2_key.as_str());
+                best_effort_delete(&bucket, &cleanup_keys).await;
                 let _ = write_audit(
                     &db,
                     &wid,
@@ -1533,6 +1587,53 @@ mod tests {
         assert!(is_unique_constraint_error(
             "D1_ERROR: UNIQUE constraint failed: idempotency_receipts.idempotency_key"
         ));
+    }
+
+    #[test]
+    fn r2_put_retry_policy_is_finite_and_exponential() {
+        let internal = "Error: put: We encountered an internal error. Please try again. (10001)";
+        let unavailable = "R2 service unavailable (10043)";
+
+        assert_eq!(r2_put_retry_delay_ms(internal, 1), Some(100));
+        assert_eq!(r2_put_retry_delay_ms(internal, 2), Some(200));
+        assert_eq!(r2_put_retry_delay_ms(internal, 3), None);
+        assert_eq!(r2_put_retry_delay_ms(unavailable, 1), Some(100));
+        assert_eq!(r2_put_retry_delay_ms(unavailable, 2), Some(200));
+        assert_eq!(r2_put_retry_delay_ms(unavailable, 3), None);
+    }
+
+    #[test]
+    fn r2_put_retry_policy_rejects_non_service_errors() {
+        for error in [
+            "unauthorized (10000)",
+            "invalid argument (10020)",
+            "InternalError without a Cloudflare error code",
+            "unrelated code (110001)",
+        ] {
+            assert_eq!(r2_put_retry_delay_ms(error, 1), None, "{error}");
+        }
+    }
+
+    #[test]
+    fn r2_put_failure_cleanup_includes_ambiguous_current_key_once() {
+        let uploaded = vec![
+            "source/1/ingest/00.jpg".to_string(),
+            "source/1/ingest/00.jpg".to_string(),
+            "source/1/ingest/01.jpg".to_string(),
+        ];
+
+        assert_eq!(
+            r2_put_failure_cleanup_keys(&uploaded, "source/1/ingest/02.jpg"),
+            vec![
+                "source/1/ingest/00.jpg",
+                "source/1/ingest/01.jpg",
+                "source/1/ingest/02.jpg",
+            ]
+        );
+        assert_eq!(
+            r2_put_failure_cleanup_keys(&uploaded, "source/1/ingest/01.jpg"),
+            vec!["source/1/ingest/00.jpg", "source/1/ingest/01.jpg"]
+        );
     }
 
     #[test]
