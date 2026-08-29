@@ -47,6 +47,13 @@ async fn handle_request(req: Request, env: Env) -> Result<Response> {
         return Ok(with_cors(handle_list_works(&url, &env).await?));
     }
 
+    if path == "/api/catalog" && method == Method::Get {
+        if let Some(response) = require_catalog_auth(&req, &env)? {
+            return Ok(response);
+        }
+        return Ok(with_cors(handle_list_catalog(&url, &env).await?));
+    }
+
     if path == "/api/tags" && method == Method::Get {
         return Ok(with_cors(handle_list_tags(&env).await?));
     }
@@ -275,6 +282,78 @@ pub fn tags_list_sql() -> &'static str {
             "#
 }
 
+pub fn catalog_list_sql() -> &'static str {
+    r#"
+        SELECT i.work_id,w.source,w.source_id,w.source_url,w.title,
+               i.page_index,i.r2_key,i.byte_size,i.content_type,i.sha256
+        FROM images i
+        JOIN works w ON w.id = i.work_id
+        WHERE w.deleted_at IS NULL
+        ORDER BY i.id
+        LIMIT ? OFFSET ?
+    "#
+}
+
+#[derive(Debug, serde::Deserialize, Serialize)]
+struct CatalogImageOut {
+    work_id: String,
+    source: String,
+    source_id: String,
+    source_url: String,
+    title: String,
+    page_index: i64,
+    r2_key: String,
+    byte_size: i64,
+    content_type: String,
+    sha256: String,
+}
+
+fn require_catalog_auth(req: &Request, env: &Env) -> Result<Option<Response>> {
+    let token = match env.secret("INGEST_TOKEN") {
+        Ok(secret) => secret.to_string(),
+        Err(_) => env
+            .var("INGEST_TOKEN")
+            .map(|value| value.to_string())
+            .unwrap_or_default(),
+    };
+    let auth = req.headers().get("Authorization")?;
+    let response = match ingest::check_bearer_auth(auth.as_deref(), &token) {
+        ingest::AuthCheck::Ok => return Ok(None),
+        ingest::AuthCheck::Unauthorized => {
+            json_response(&json!({ "ok": false, "error": "unauthorized" }), 401)?
+        }
+        ingest::AuthCheck::NotConfigured => json_response(
+            &json!({ "ok": false, "error": "INGEST_TOKEN not configured" }),
+            500,
+        )?,
+    };
+    Ok(Some(with_cors(response)))
+}
+
+async fn handle_list_catalog(url: &Url, env: &Env) -> Result<Response> {
+    let (limit, offset) = parse_limit_offset(url);
+    let values = [
+        JsValue::from_f64(f64::from(limit)),
+        JsValue::from_f64(f64::from(offset)),
+    ];
+    let rows = env
+        .d1("DB")?
+        .prepare(catalog_list_sql())
+        .bind(&values)?
+        .all()
+        .await?
+        .results::<CatalogImageOut>()?;
+    json_response(
+        &json!({
+            "ok": true,
+            "images": rows,
+            "limit": limit,
+            "offset": offset,
+        }),
+        200,
+    )
+}
+
 async fn handle_list_tags(env: &Env) -> Result<Response> {
     let db = env.d1("DB")?;
     let rows = db.prepare(tags_list_sql()).all().await?;
@@ -497,4 +576,5 @@ mod tests {
         assert!(sql.contains("i.sha256"));
         assert!(sql.contains("LIMIT ? OFFSET ?"));
     }
+
 }
