@@ -577,4 +577,22 @@ mod tests {
         assert!(sql.contains("LIMIT ? OFFSET ?"));
     }
 
+    #[test]
+    fn catalog_prune_request_requires_one_distinct_keep_and_bounded_removals() {
+        let valid = CatalogPruneRequest {
+            decision_id: "review-1".into(),
+            keep_r2_key: "x/1/00.jpg".into(),
+            remove_r2_keys: vec!["x/2/00.jpg".into()],
+        };
+        assert!(validate_catalog_prune(&valid).is_ok());
+
+        let mut invalid = valid.clone();
+        invalid.remove_r2_keys.push(invalid.keep_r2_key.clone());
+        assert_eq!(validate_catalog_prune(&invalid), Err("keep key cannot be removed"));
+
+        let mut duplicate = valid;
+        duplicate.remove_r2_keys.push("x/2/00.jpg".into());
+        assert_eq!(validate_catalog_prune(&duplicate), Err("duplicate remove key"));
+    }
+
 }
