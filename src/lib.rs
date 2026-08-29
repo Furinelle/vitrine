@@ -486,4 +486,15 @@ mod tests {
         );
         assert!(sql.contains("COUNT(w.id)"));
     }
+
+    #[test]
+    fn catalog_list_sql_exposes_every_active_image_in_stable_order() {
+        let sql = catalog_list_sql();
+        assert!(sql.contains("FROM images i"));
+        assert!(sql.contains("JOIN works w ON w.id = i.work_id"));
+        assert!(sql.contains("w.deleted_at IS NULL"));
+        assert!(sql.contains("ORDER BY i.id"));
+        assert!(sql.contains("i.sha256"));
+        assert!(sql.contains("LIMIT ? OFFSET ?"));
+    }
 }
