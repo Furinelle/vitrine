@@ -1,6 +1,6 @@
 mod ingest;
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use wasm_bindgen::JsValue;
 use worker::*;
@@ -52,6 +52,13 @@ async fn handle_request(req: Request, env: Env) -> Result<Response> {
             return Ok(response);
         }
         return Ok(with_cors(handle_list_catalog(&url, &env).await?));
+    }
+
+    if path == "/api/catalog/prune" && method == Method::Post {
+        if let Some(response) = require_catalog_auth(&req, &env)? {
+            return Ok(response);
+        }
+        return Ok(with_cors(handle_catalog_prune(req, &env).await?));
     }
 
     if path == "/api/tags" && method == Method::Get {
@@ -354,6 +361,224 @@ async fn handle_list_catalog(url: &Url, env: &Env) -> Result<Response> {
     )
 }
 
+#[derive(Debug, Clone, Deserialize, Serialize)]
+struct CatalogPruneRequest {
+    decision_id: String,
+    keep_r2_key: String,
+    remove_r2_keys: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct CatalogPruneImageRow {
+    id: String,
+    work_id: String,
+    r2_key: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct CatalogPruneReceiptRow {
+    removed_json: String,
+}
+
+fn validate_catalog_prune(request: &CatalogPruneRequest) -> std::result::Result<(), &'static str> {
+    if request.decision_id.trim().is_empty() || request.decision_id.len() > 160 {
+        return Err("invalid decision id");
+    }
+    if request.keep_r2_key.trim().is_empty() || request.keep_r2_key.len() > 1024 {
+        return Err("invalid keep key");
+    }
+    if request.remove_r2_keys.is_empty() || request.remove_r2_keys.len() > 20 {
+        return Err("remove keys must contain 1 to 20 entries");
+    }
+    let mut unique = std::collections::HashSet::new();
+    for key in &request.remove_r2_keys {
+        if key.trim().is_empty() || key.len() > 1024 {
+            return Err("invalid remove key");
+        }
+        if key == &request.keep_r2_key {
+            return Err("keep key cannot be removed");
+        }
+        if !unique.insert(key) {
+            return Err("duplicate remove key");
+        }
+    }
+    Ok(())
+}
+
+fn js_iso_now() -> String {
+    js_sys::Date::new_0()
+        .to_iso_string()
+        .as_string()
+        .unwrap_or_else(|| "1970-01-01T00:00:00.000Z".into())
+}
+
+fn catalog_backup_key(decision_id: &str, original: &str) -> String {
+    let safe_decision: String = decision_id
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || matches!(c, '-' | '_') {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    format!("review-trash/{safe_decision}/{original}")
+}
+
+async fn copy_catalog_object(bucket: &Bucket, original: &str, backup: &str) -> Result<()> {
+    let object = bucket
+        .get(original)
+        .execute()
+        .await?
+        .ok_or_else(|| Error::RustError(format!("R2 object not found: {original}")))?;
+    let http_metadata = object.http_metadata();
+    let custom_metadata = object.custom_metadata()?;
+    let body = object
+        .body()
+        .ok_or_else(|| Error::RustError(format!("R2 object has no body: {original}")))?;
+    let ResponseBody::Stream(stream) = body.response_body()? else {
+        return Err(Error::RustError("unexpected R2 response body".into()));
+    };
+    bucket
+        .put(backup, stream)
+        .http_metadata(http_metadata)
+        .custom_metadata(custom_metadata)
+        .execute()
+        .await?;
+    Ok(())
+}
+
+async fn handle_catalog_prune(mut req: Request, env: &Env) -> Result<Response> {
+    let request: CatalogPruneRequest = match req.json().await {
+        Ok(value) => value,
+        Err(_) => return json_response(&json!({ "ok": false, "error": "invalid json" }), 400),
+    };
+    if let Err(message) = validate_catalog_prune(&request) {
+        return json_response(&json!({ "ok": false, "error": message }), 400);
+    }
+
+    let db = env.d1("DB")?;
+    if let Some(receipt) = db
+        .prepare("SELECT removed_json FROM catalog_prune_receipts WHERE decision_id = ?")
+        .bind(&[JsValue::from_str(&request.decision_id)])?
+        .first::<CatalogPruneReceiptRow>(None)
+        .await?
+    {
+        let removed: Vec<String> = serde_json::from_str(&receipt.removed_json).unwrap_or_default();
+        env.bucket("MEDIA")?
+            .delete_multiple(removed.clone())
+            .await?;
+        return json_response(
+            &json!({ "ok": true, "removed": removed.len(), "replayed": true }),
+            200,
+        );
+    }
+
+    let active_sql = r#"
+        SELECT i.id,i.work_id,i.r2_key
+        FROM images i JOIN works w ON w.id=i.work_id
+        WHERE i.r2_key=? AND w.deleted_at IS NULL
+    "#;
+    if db
+        .prepare(active_sql)
+        .bind(&[JsValue::from_str(&request.keep_r2_key)])?
+        .first::<CatalogPruneImageRow>(None)
+        .await?
+        .is_none()
+    {
+        return json_response(&json!({ "ok": false, "error": "keep key not active" }), 409);
+    }
+
+    let mut rows = Vec::with_capacity(request.remove_r2_keys.len());
+    for key in &request.remove_r2_keys {
+        let Some(row) = db
+            .prepare(active_sql)
+            .bind(&[JsValue::from_str(key)])?
+            .first::<CatalogPruneImageRow>(None)
+            .await?
+        else {
+            return json_response(
+                &json!({ "ok": false, "error": format!("remove key not active: {key}") }),
+                409,
+            );
+        };
+        rows.push(row);
+    }
+
+    let bucket = env.bucket("MEDIA")?;
+    let backup_keys: Vec<String> = rows
+        .iter()
+        .map(|row| catalog_backup_key(&request.decision_id, &row.r2_key))
+        .collect();
+    for (row, backup) in rows.iter().zip(&backup_keys) {
+        copy_catalog_object(&bucket, &row.r2_key, backup).await?;
+    }
+
+    let now = js_iso_now();
+    let removed_json = serde_json::to_string(&request.remove_r2_keys)
+        .map_err(|error| Error::RustError(error.to_string()))?;
+    let mut statements = Vec::new();
+    let mut work_ids = std::collections::HashSet::new();
+    for (row, backup) in rows.iter().zip(&backup_keys) {
+        work_ids.insert(row.work_id.clone());
+        statements.push(
+            db.prepare(
+                r#"INSERT INTO catalog_prune_backups
+                   (original_r2_key,backup_r2_key,decision_id,work_id,created_at)
+                   VALUES (?,?,?,?,?)"#,
+            )
+            .bind(&[
+                JsValue::from_str(&row.r2_key),
+                JsValue::from_str(backup),
+                JsValue::from_str(&request.decision_id),
+                JsValue::from_str(&row.work_id),
+                JsValue::from_str(&now),
+            ])?,
+        );
+        statements.push(
+            db.prepare("DELETE FROM images WHERE id=? AND r2_key=?")
+                .bind(&[JsValue::from_str(&row.id), JsValue::from_str(&row.r2_key)])?,
+        );
+    }
+    for work_id in work_ids {
+        statements.push(
+            db.prepare("UPDATE works SET page_count=(SELECT COUNT(*) FROM images WHERE work_id=?) WHERE id=?")
+                .bind(&[JsValue::from_str(&work_id), JsValue::from_str(&work_id)])?,
+        );
+        statements.push(
+            db.prepare("UPDATE works SET deleted_at=? WHERE id=? AND NOT EXISTS (SELECT 1 FROM images WHERE work_id=?)")
+                .bind(&[
+                    JsValue::from_str(&now),
+                    JsValue::from_str(&work_id),
+                    JsValue::from_str(&work_id),
+                ])?,
+        );
+    }
+    statements.push(
+        db.prepare("INSERT INTO catalog_prune_receipts (decision_id,keep_r2_key,removed_json,created_at) VALUES (?,?,?,?)")
+            .bind(&[
+                JsValue::from_str(&request.decision_id),
+                JsValue::from_str(&request.keep_r2_key),
+                JsValue::from_str(&removed_json),
+                JsValue::from_str(&now),
+            ])?,
+    );
+    db.batch(statements).await?;
+    bucket
+        .delete_multiple(request.remove_r2_keys.clone())
+        .await?;
+
+    json_response(
+        &json!({
+            "ok": true,
+            "removed": request.remove_r2_keys.len(),
+            "replayed": false,
+        }),
+        200,
+    )
+}
+
 async fn handle_list_tags(env: &Env) -> Result<Response> {
     let db = env.d1("DB")?;
     let rows = db.prepare(tags_list_sql()).all().await?;
@@ -588,11 +813,16 @@ mod tests {
 
         let mut invalid = valid.clone();
         invalid.remove_r2_keys.push(invalid.keep_r2_key.clone());
-        assert_eq!(validate_catalog_prune(&invalid), Err("keep key cannot be removed"));
+        assert_eq!(
+            validate_catalog_prune(&invalid),
+            Err("keep key cannot be removed")
+        );
 
         let mut duplicate = valid;
         duplicate.remove_r2_keys.push("x/2/00.jpg".into());
-        assert_eq!(validate_catalog_prune(&duplicate), Err("duplicate remove key"));
+        assert_eq!(
+            validate_catalog_prune(&duplicate),
+            Err("duplicate remove key")
+        );
     }
-
 }
