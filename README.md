@@ -86,10 +86,14 @@ npm install
 # rustup target add wasm32-unknown-unknown
 # cargo install worker-build
 
-npm run db:local
+npm run db:local    # apply D1 migrations 0001–0004 to a local database only
 npm run build:dev   # worker-build --dev → build/worker/shim.mjs
 npx wrangler dev
 
 # 质量检查（不部署）
 npm run check       # fmt + clippy -D warnings + cargo test + worker-build --dev
 ```
+
+`npm run db:local` is the only migration command used during development. It creates `telegram_publications` and `catalog_work_prune_receipts` from `migrations/0004_telegram_publications.sql`.
+
+`npm run db:remote` is operator-only. Do not run it from an agent session. Remote migration 0004 requires a D1 export/backup and explicit operator approval before applying.
