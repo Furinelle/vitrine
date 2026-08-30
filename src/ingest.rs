@@ -117,6 +117,31 @@ pub struct IngestMetaRaw {
     pub tags: Option<Value>,
     pub is_r18: Option<Value>,
     pub origin: Option<Value>,
+    pub telegram_publication: Option<Value>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PublicationState {
+    Full,
+    Partial,
+}
+
+impl PublicationState {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Full => "full",
+            Self::Partial => "partial",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ValidatedPublication {
+    pub id: String,
+    pub chat_id: i64,
+    pub anchor_message_id: i64,
+    pub message_ids: Vec<i64>,
+    pub publish_state: PublicationState,
 }
 
 /// Validated, normalized ingest meta.
@@ -131,6 +156,7 @@ pub struct ValidatedMeta {
     pub tags: Vec<String>,
     pub is_r18: bool,
     pub origin: String,
+    pub telegram_publication: Option<ValidatedPublication>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -142,6 +168,7 @@ pub enum MetaError {
     InvalidSourceId,
     InvalidField(&'static str),
     FieldTooLong(&'static str),
+    InvalidTelegramPublication,
 }
 
 impl MetaError {
@@ -170,6 +197,7 @@ impl MetaError {
                 "origin" => "invalid origin",
                 _ => "invalid meta field",
             },
+            MetaError::InvalidTelegramPublication => "invalid telegram publication",
         }
     }
 }
@@ -230,6 +258,8 @@ pub fn validate_meta(raw: IngestMetaRaw) -> std::result::Result<ValidatedMeta, M
     )?;
     let is_r18 = opt_bool(raw.is_r18, "is_r18")?.unwrap_or(false);
     let tags = opt_tags(raw.tags)?;
+    let wid = work_id(&source, &source_id);
+    let telegram_publication = validate_telegram_publication(&wid, raw.telegram_publication)?;
 
     Ok(ValidatedMeta {
         source,
@@ -241,7 +271,76 @@ pub fn validate_meta(raw: IngestMetaRaw) -> std::result::Result<ValidatedMeta, M
         tags,
         is_r18,
         origin,
+        telegram_publication,
     })
+}
+
+/// Stable publication ID derived from work, chat, and the first captured message.
+pub fn telegram_publication_id(work_id: &str, chat_id: i64, anchor: i64) -> String {
+    format!("{work_id}:{chat_id}:{anchor}")
+}
+
+fn json_i64(value: &Value) -> Option<i64> {
+    value
+        .as_i64()
+        .or_else(|| value.as_u64().and_then(|n| i64::try_from(n).ok()))
+}
+
+fn validate_telegram_publication(
+    work_id: &str,
+    raw: Option<Value>,
+) -> std::result::Result<Option<ValidatedPublication>, MetaError> {
+    match raw {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::Object(map)) => {
+            let chat_id = map
+                .get("chat_id")
+                .and_then(json_i64)
+                .filter(|&id| id != 0)
+                .ok_or(MetaError::InvalidTelegramPublication)?;
+            let ids = map
+                .get("message_ids")
+                .and_then(Value::as_array)
+                .ok_or(MetaError::InvalidTelegramPublication)?;
+            if ids.is_empty() || ids.len() > 40 {
+                return Err(MetaError::InvalidTelegramPublication);
+            }
+            let mut message_ids = Vec::with_capacity(ids.len());
+            let mut seen = std::collections::HashSet::new();
+            for item in ids {
+                let id = json_i64(item)
+                    .filter(|&n| n > 0)
+                    .ok_or(MetaError::InvalidTelegramPublication)?;
+                if !seen.insert(id) {
+                    return Err(MetaError::InvalidTelegramPublication);
+                }
+                message_ids.push(id);
+            }
+            let publish_state = match map.get("publish_state").and_then(Value::as_str) {
+                Some("full") => PublicationState::Full,
+                Some("partial") => PublicationState::Partial,
+                _ => return Err(MetaError::InvalidTelegramPublication),
+            };
+            let anchor_message_id = message_ids[0];
+            Ok(Some(ValidatedPublication {
+                id: telegram_publication_id(work_id, chat_id, anchor_message_id),
+                chat_id,
+                anchor_message_id,
+                message_ids,
+                publish_state,
+            }))
+        }
+        Some(_) => Err(MetaError::InvalidTelegramPublication),
+    }
+}
+
+fn normalized_publication_json(publication: &ValidatedPublication) -> String {
+    json!({
+        "chat_id": publication.chat_id,
+        "message_ids": publication.message_ids,
+        "publish_state": publication.publish_state.as_str(),
+    })
+    .to_string()
 }
 
 fn capped_string(
@@ -356,6 +455,10 @@ pub fn compute_fingerprint(meta: &ValidatedMeta, file_sha256s: &[String]) -> Str
     }
     hasher.update(meta.tags.join(",").as_bytes());
     hasher.update([0]);
+    if let Some(publication) = &meta.telegram_publication {
+        hasher.update(normalized_publication_json(publication).as_bytes());
+        hasher.update([0]);
+    }
     for dig in file_sha256s {
         hasher.update(dig.as_bytes());
         hasher.update([0]);
@@ -1141,6 +1244,34 @@ async fn commit_d1_batch(
         ])?,
     );
 
+    if let Some(publication) = &meta.telegram_publication {
+        let message_ids_json = serde_json::to_string(&publication.message_ids)
+            .map_err(|error| Error::RustError(error.to_string()))?;
+        stmts.push(
+            db.prepare(
+                r#"
+                INSERT INTO telegram_publications (
+                  id, work_id, chat_id, anchor_message_id, message_ids_json,
+                  publish_state, created_at, deleted_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, NULL)
+                ON CONFLICT(id) DO UPDATE SET
+                  message_ids_json=excluded.message_ids_json,
+                  publish_state=excluded.publish_state,
+                  deleted_at=NULL
+                "#,
+            )
+            .bind(&[
+                JsValue::from_str(&publication.id),
+                JsValue::from_str(wid),
+                JsValue::from_f64(publication.chat_id as f64),
+                JsValue::from_f64(publication.anchor_message_id as f64),
+                JsValue::from_str(&message_ids_json),
+                JsValue::from_str(publication.publish_state.as_str()),
+                JsValue::from_str(now),
+            ])?,
+        );
+    }
+
     // Replace image rows (R2 objects for old keys are recorded as orphans, not deleted).
     stmts.push(
         db.prepare("DELETE FROM images WHERE work_id = ?")
@@ -1419,6 +1550,7 @@ mod tests {
             tags: vec!["tag".into()],
             is_r18: false,
             origin: "hanabi".into(),
+            telegram_publication: None,
         };
         let fp1 = compute_fingerprint(&meta, &["aa".into(), "bb".into()]);
         let fp2 = compute_fingerprint(&meta, &["aa".into(), "bb".into()]);
@@ -1553,6 +1685,80 @@ mod tests {
 
         let ok = validate_meta_json(r#"{"source":"pixiv","source_id":"1","title":"ok"}"#).unwrap();
         assert_eq!(ok.title, "ok");
+    }
+
+    #[test]
+    fn validates_complete_telegram_publication_mapping() {
+        let meta = validate_meta_json(
+            r#"{
+      "source":"pixiv","source_id":"1",
+      "telegram_publication":{"chat_id":-100123,"message_ids":[41,42],"publish_state":"full"}
+    }"#,
+        )
+        .unwrap();
+        let publication = meta.telegram_publication.unwrap();
+        assert_eq!(publication.anchor_message_id, 41);
+        assert_eq!(publication.message_ids, vec![41, 42]);
+        assert_eq!(publication.chat_id, -100123);
+        assert_eq!(publication.publish_state, PublicationState::Full);
+        assert_eq!(
+            publication.id,
+            telegram_publication_id("pixiv:1", -100123, 41)
+        );
+    }
+
+    #[test]
+    fn rejects_duplicate_telegram_message_ids() {
+        let error = validate_meta_json(
+            r#"{
+      "source":"pixiv","source_id":"1",
+      "telegram_publication":{"chat_id":-100123,"message_ids":[41,41],"publish_state":"full"}
+    }"#,
+        )
+        .unwrap_err();
+        assert_eq!(error.message(), "invalid telegram publication");
+    }
+
+    #[test]
+    fn rejects_invalid_telegram_publication_shapes() {
+        for raw in [
+            r#"{"source":"pixiv","source_id":"1","telegram_publication":{"chat_id":0,"message_ids":[41],"publish_state":"full"}}"#,
+            r#"{"source":"pixiv","source_id":"1","telegram_publication":{"chat_id":-100123,"message_ids":[0],"publish_state":"full"}}"#,
+            r#"{"source":"pixiv","source_id":"1","telegram_publication":{"chat_id":-100123,"message_ids":[-1],"publish_state":"full"}}"#,
+            r#"{"source":"pixiv","source_id":"1","telegram_publication":{"chat_id":-100123,"message_ids":[],"publish_state":"full"}}"#,
+            r#"{"source":"pixiv","source_id":"1","telegram_publication":{"chat_id":-100123,"message_ids":[41],"publish_state":"nope"}}"#,
+        ] {
+            let error = validate_meta_json(raw).unwrap_err();
+            assert_eq!(error.message(), "invalid telegram publication", "{raw}");
+        }
+
+        let too_many: Vec<String> = (1..=41).map(|n| n.to_string()).collect();
+        let raw = format!(
+            r#"{{"source":"pixiv","source_id":"1","telegram_publication":{{"chat_id":-100123,"message_ids":[{}],"publish_state":"full"}}}}"#,
+            too_many.join(",")
+        );
+        let error = validate_meta_json(&raw).unwrap_err();
+        assert_eq!(error.message(), "invalid telegram publication");
+    }
+
+    #[test]
+    fn fingerprint_includes_normalized_telegram_publication() {
+        let without = validate_meta_json(r#"{"source":"pixiv","source_id":"1"}"#).unwrap();
+        let with_full = validate_meta_json(
+            r#"{"source":"pixiv","source_id":"1","telegram_publication":{"chat_id":-100123,"message_ids":[41,42],"publish_state":"full"}}"#,
+        )
+        .unwrap();
+        let with_other_ids = validate_meta_json(
+            r#"{"source":"pixiv","source_id":"1","telegram_publication":{"chat_id":-100123,"message_ids":[41,43],"publish_state":"full"}}"#,
+        )
+        .unwrap();
+        let files = ["aa".to_string()];
+        let base = compute_fingerprint(&without, &files);
+        let first = compute_fingerprint(&with_full, &files);
+        let second = compute_fingerprint(&with_other_ids, &files);
+        assert_ne!(base, first);
+        assert_ne!(first, second);
+        assert_eq!(first, compute_fingerprint(&with_full, &files));
     }
 
     #[test]
