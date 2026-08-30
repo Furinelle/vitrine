@@ -68,6 +68,13 @@ async fn handle_request(req: Request, env: Env) -> Result<Response> {
         return Ok(with_cors(handle_catalog_work_prune(req, &env).await?));
     }
 
+    if path == "/api/catalog/prune-works/telegram-result" && method == Method::Post {
+        if let Some(response) = require_catalog_auth(&req, &env)? {
+            return Ok(response);
+        }
+        return Ok(with_cors(handle_catalog_telegram_result(req, &env).await?));
+    }
+
     if path == "/api/catalog/publications" && method == Method::Put {
         if let Some(response) = require_catalog_auth(&req, &env)? {
             return Ok(response);
@@ -449,6 +456,20 @@ struct TelegramPruneTarget {
     work_id: String,
     chat_id: i64,
     message_ids: Vec<i64>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+struct CatalogTelegramResult {
+    decision_id: String,
+    complete: bool,
+    #[serde(default)]
+    error: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct TelegramResultReceiptRow {
+    telegram_state: String,
+    telegram_targets_json: String,
 }
 
 fn validate_catalog_publication(
@@ -1088,6 +1109,145 @@ async fn handle_catalog_work_prune(mut req: Request, env: &Env) -> Result<Respon
     )
 }
 
+fn validate_telegram_result(
+    value: &CatalogTelegramResult,
+) -> std::result::Result<(), &'static str> {
+    if value.decision_id.trim().is_empty() || value.decision_id.len() > 160 {
+        return Err("invalid decision id");
+    }
+    if value.complete
+        && value
+            .error
+            .as_deref()
+            .map(str::trim)
+            .is_some_and(|error| !error.is_empty())
+    {
+        return Err("successful result cannot include error");
+    }
+    Ok(())
+}
+
+fn sanitize_telegram_error(raw: Option<&str>) -> Option<String> {
+    let raw = raw.map(str::trim).filter(|value| !value.is_empty())?;
+    let filtered: String = raw.chars().filter(|ch| !ch.is_control()).collect();
+    let truncated: String = filtered.chars().take(500).collect();
+    if truncated.is_empty() {
+        return None;
+    }
+    let lower = truncated.to_ascii_lowercase();
+    if lower.contains("bearer ")
+        || lower.contains("authorization:")
+        || lower.contains("cookie:")
+        || lower.contains("set-cookie:")
+    {
+        return Some("[redacted]".into());
+    }
+    Some(truncated)
+}
+
+async fn handle_catalog_telegram_result(mut req: Request, env: &Env) -> Result<Response> {
+    let request: CatalogTelegramResult = match req.json().await {
+        Ok(value) => value,
+        Err(_) => return json_response(&json!({ "ok": false, "error": "invalid json" }), 400),
+    };
+    if let Err(message) = validate_telegram_result(&request) {
+        return json_response(&json!({ "ok": false, "error": message }), 400);
+    }
+
+    let db = env.d1("DB")?;
+    let Some(receipt) = db
+        .prepare(
+            r#"SELECT telegram_state, telegram_targets_json
+               FROM catalog_work_prune_receipts WHERE decision_id=?"#,
+        )
+        .bind(&[JsValue::from_str(&request.decision_id)])?
+        .first::<TelegramResultReceiptRow>(None)
+        .await?
+    else {
+        return json_response(
+            &json!({ "ok": false, "error": "prune receipt not found" }),
+            409,
+        );
+    };
+
+    if request.complete {
+        if receipt.telegram_state == "complete" {
+            return json_response(
+                &json!({
+                    "ok": true,
+                    "telegram_state": "complete",
+                    "idempotent": true,
+                }),
+                200,
+            );
+        }
+        let targets: Vec<TelegramPruneTarget> =
+            serde_json::from_str(&receipt.telegram_targets_json)
+                .map_err(|error| Error::RustError(error.to_string()))?;
+        let now = js_iso_now();
+        let mut statements = Vec::new();
+        for target in &targets {
+            statements.push(
+                db.prepare("UPDATE telegram_publications SET deleted_at=? WHERE id=?")
+                    .bind(&[
+                        JsValue::from_str(&now),
+                        JsValue::from_str(&target.publication_id),
+                    ])?,
+            );
+        }
+        statements.push(
+            db.prepare(
+                r#"UPDATE catalog_work_prune_receipts
+                   SET telegram_state='complete', telegram_error=NULL, telegram_completed_at=?
+                   WHERE decision_id=?"#,
+            )
+            .bind(&[
+                JsValue::from_str(&now),
+                JsValue::from_str(&request.decision_id),
+            ])?,
+        );
+        db.batch(statements).await?;
+        return json_response(
+            &json!({
+                "ok": true,
+                "telegram_state": "complete",
+                "idempotent": false,
+            }),
+            200,
+        );
+    }
+
+    if receipt.telegram_state == "complete" {
+        return json_response(
+            &json!({ "ok": false, "error": "telegram already complete" }),
+            409,
+        );
+    }
+    let error_text = sanitize_telegram_error(request.error.as_deref());
+    db.prepare(
+        r#"UPDATE catalog_work_prune_receipts
+           SET telegram_error=?
+           WHERE decision_id=? AND telegram_state='pending'"#,
+    )
+    .bind(&[
+        match error_text.as_deref() {
+            Some(text) => JsValue::from_str(text),
+            None => JsValue::NULL,
+        },
+        JsValue::from_str(&request.decision_id),
+    ])?
+    .run()
+    .await?;
+    json_response(
+        &json!({
+            "ok": true,
+            "telegram_state": "pending",
+            "idempotent": false,
+        }),
+        200,
+    )
+}
+
 async fn handle_list_tags(env: &Env) -> Result<Response> {
     let db = env.d1("DB")?;
     let rows = db.prepare(tags_list_sql()).all().await?;
@@ -1386,5 +1546,18 @@ mod tests {
             "pixiv:3",
             &["douyin:1".into()]
         ));
+    }
+
+    #[test]
+    fn successful_telegram_result_rejects_error_text() {
+        let value = CatalogTelegramResult {
+            decision_id: "d1".into(),
+            complete: true,
+            error: Some("unexpected".into()),
+        };
+        assert_eq!(
+            validate_telegram_result(&value),
+            Err("successful result cannot include error")
+        );
     }
 }
