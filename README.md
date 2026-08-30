@@ -77,6 +77,8 @@ Header: `Authorization: Bearer <INGEST_TOKEN>`
 
 按整部作品删除相似审核中落选的作品：先备份 R2 到 `review-trash/<decision_id>/...`，再在同一 D1 batch 中写入 `catalog_work_prune_receipts`、删除 images/work_tags、软删除 works。每个落选作品必须已有完整的在线 Telegram mapping，否则 409 且不做任何变更。同一 `decision_id` 重放会重试删除已记录的原 R2 key 并返回存储的 Telegram targets。
 
+Hanabi 拿到 targets 后删除对应频道消息，再调用 `POST /api/catalog/prune-works/telegram-result` 把 receipt 标为 complete。没有 mapping 的历史作品只能先精确回填，不能走这条破坏路径。现有 `/api/catalog/prune` 图片 key 接口保持兼容，但相似审核不再使用它。
+
 ### `GET /api/works?source=&tag=&q=&limit=&offset=`
 
 ### `GET /api/tags` · `GET /api/sources`
