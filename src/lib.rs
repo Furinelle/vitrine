@@ -61,6 +61,13 @@ async fn handle_request(req: Request, env: Env) -> Result<Response> {
         return Ok(with_cors(handle_catalog_prune(req, &env).await?));
     }
 
+    if path == "/api/catalog/publications" && method == Method::Put {
+        if let Some(response) = require_catalog_auth(&req, &env)? {
+            return Ok(response);
+        }
+        return Ok(with_cors(handle_catalog_publication(req, &env).await?));
+    }
+
     if path == "/api/tags" && method == Method::Get {
         return Ok(with_cors(handle_list_tags(&env).await?));
     }
@@ -86,7 +93,7 @@ async fn handle_request(req: Request, env: Env) -> Result<Response> {
 pub(crate) fn with_cors(res: Response) -> Response {
     let headers = res.headers().clone();
     let _ = headers.set("Access-Control-Allow-Origin", "*");
-    let _ = headers.set("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+    let _ = headers.set("Access-Control-Allow-Methods", "GET, POST, PUT, OPTIONS");
     let _ = headers.set(
         "Access-Control-Allow-Headers",
         "Authorization, Content-Type, Idempotency-Key",
@@ -378,6 +385,152 @@ struct CatalogPruneImageRow {
 #[derive(Debug, Deserialize)]
 struct CatalogPruneReceiptRow {
     removed_json: String,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+struct CatalogPublicationRequest {
+    work_id: String,
+    chat_id: i64,
+    message_ids: Vec<i64>,
+    publish_state: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct CatalogPublicationRow {
+    work_id: String,
+    chat_id: i64,
+    message_ids_json: String,
+    publish_state: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct ActiveWorkRow {
+    id: String,
+}
+
+fn validate_catalog_publication(
+    request: &CatalogPublicationRequest,
+) -> std::result::Result<(), &'static str> {
+    if request.work_id.trim().is_empty() || request.work_id.len() > 320 {
+        return Err("invalid work id");
+    }
+    let Some((source, source_id)) = request.work_id.split_once(':') else {
+        return Err("invalid work id");
+    };
+    if !ingest::is_safe_source(source) || !ingest::is_safe_source_id(source_id) {
+        return Err("invalid work id");
+    }
+    if request.chat_id == 0 {
+        return Err("invalid chat id");
+    }
+    if request.message_ids.is_empty() || request.message_ids.len() > 40 {
+        return Err("message ids must contain 1 to 40 entries");
+    }
+    let mut unique = std::collections::HashSet::new();
+    for id in &request.message_ids {
+        if *id <= 0 {
+            return Err("invalid message id");
+        }
+        if !unique.insert(*id) {
+            return Err("duplicate message id");
+        }
+    }
+    if request.publish_state != "full" && request.publish_state != "partial" {
+        return Err("invalid publish state");
+    }
+    Ok(())
+}
+
+fn same_catalog_publication(
+    stored: &CatalogPublicationRow,
+    request: &CatalogPublicationRequest,
+) -> bool {
+    let Ok(stored_ids) = serde_json::from_str::<Vec<i64>>(&stored.message_ids_json) else {
+        return false;
+    };
+    stored.work_id == request.work_id
+        && stored.chat_id == request.chat_id
+        && stored_ids == request.message_ids
+        && stored.publish_state == request.publish_state
+}
+
+async fn handle_catalog_publication(mut req: Request, env: &Env) -> Result<Response> {
+    let request: CatalogPublicationRequest = match req.json().await {
+        Ok(value) => value,
+        Err(_) => return json_response(&json!({ "ok": false, "error": "invalid json" }), 400),
+    };
+    if let Err(message) = validate_catalog_publication(&request) {
+        return json_response(&json!({ "ok": false, "error": message }), 400);
+    }
+
+    let db = env.d1("DB")?;
+    let Some(work) = db
+        .prepare("SELECT id FROM works WHERE id=? AND deleted_at IS NULL")
+        .bind(&[JsValue::from_str(&request.work_id)])?
+        .first::<ActiveWorkRow>(None)
+        .await?
+    else {
+        return json_response(&json!({ "ok": false, "error": "work not active" }), 409);
+    };
+    if work.id != request.work_id {
+        return json_response(&json!({ "ok": false, "error": "work not active" }), 409);
+    }
+
+    let anchor = request.message_ids[0];
+    let publication_id = ingest::telegram_publication_id(&request.work_id, request.chat_id, anchor);
+    if let Some(stored) = db
+        .prepare(
+            r#"SELECT work_id, chat_id, message_ids_json, publish_state
+               FROM telegram_publications WHERE id=?"#,
+        )
+        .bind(&[JsValue::from_str(&publication_id)])?
+        .first::<CatalogPublicationRow>(None)
+        .await?
+    {
+        if same_catalog_publication(&stored, &request) {
+            return json_response(
+                &json!({
+                    "ok": true,
+                    "publication_id": publication_id,
+                    "idempotent": true,
+                }),
+                200,
+            );
+        }
+        return json_response(
+            &json!({ "ok": false, "error": "publication conflict" }),
+            409,
+        );
+    }
+
+    let now = js_iso_now();
+    let message_ids_json = serde_json::to_string(&request.message_ids)
+        .map_err(|error| Error::RustError(error.to_string()))?;
+    db.prepare(
+        r#"INSERT INTO telegram_publications
+           (id, work_id, chat_id, anchor_message_id, message_ids_json, publish_state, created_at, deleted_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, NULL)"#,
+    )
+    .bind(&[
+        JsValue::from_str(&publication_id),
+        JsValue::from_str(&request.work_id),
+        JsValue::from_f64(request.chat_id as f64),
+        JsValue::from_f64(anchor as f64),
+        JsValue::from_str(&message_ids_json),
+        JsValue::from_str(&request.publish_state),
+        JsValue::from_str(&now),
+    ])?
+    .run()
+    .await?;
+
+    json_response(
+        &json!({
+            "ok": true,
+            "publication_id": publication_id,
+            "idempotent": false,
+        }),
+        200,
+    )
 }
 
 fn validate_catalog_prune(request: &CatalogPruneRequest) -> std::result::Result<(), &'static str> {
@@ -823,6 +976,25 @@ mod tests {
         assert_eq!(
             validate_catalog_prune(&duplicate),
             Err("duplicate remove key")
+        );
+    }
+
+    #[test]
+    fn publication_upsert_requires_complete_ids_shape() {
+        let valid = CatalogPublicationRequest {
+            work_id: "pixiv:1".into(),
+            chat_id: -100123,
+            message_ids: vec![41, 42],
+            publish_state: "full".into(),
+        };
+        assert!(validate_catalog_publication(&valid).is_ok());
+        let duplicate = CatalogPublicationRequest {
+            message_ids: vec![41, 41],
+            ..valid
+        };
+        assert_eq!(
+            validate_catalog_publication(&duplicate),
+            Err("duplicate message id")
         );
     }
 }
