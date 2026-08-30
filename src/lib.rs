@@ -61,6 +61,13 @@ async fn handle_request(req: Request, env: Env) -> Result<Response> {
         return Ok(with_cors(handle_catalog_prune(req, &env).await?));
     }
 
+    if path == "/api/catalog/prune-works" && method == Method::Post {
+        if let Some(response) = require_catalog_auth(&req, &env)? {
+            return Ok(response);
+        }
+        return Ok(with_cors(handle_catalog_work_prune(req, &env).await?));
+    }
+
     if path == "/api/catalog/publications" && method == Method::Put {
         if let Some(response) = require_catalog_auth(&req, &env)? {
             return Ok(response);
@@ -408,6 +415,42 @@ struct ActiveWorkRow {
     id: String,
 }
 
+#[derive(Debug, Clone, Deserialize, Serialize)]
+struct CatalogWorkPruneRequest {
+    decision_id: String,
+    keep_work_id: String,
+    remove_work_ids: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct CatalogWorkPruneReceiptRow {
+    keep_work_id: String,
+    remove_work_ids_json: String,
+    removed_r2_keys_json: String,
+    telegram_targets_json: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct WorkPublicationRow {
+    id: String,
+    work_id: String,
+    chat_id: i64,
+    message_ids_json: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct WorkTagRow {
+    tag: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct TelegramPruneTarget {
+    publication_id: String,
+    work_id: String,
+    chat_id: i64,
+    message_ids: Vec<i64>,
+}
+
 fn validate_catalog_publication(
     request: &CatalogPublicationRequest,
 ) -> std::result::Result<(), &'static str> {
@@ -732,6 +775,319 @@ async fn handle_catalog_prune(mut req: Request, env: &Env) -> Result<Response> {
     )
 }
 
+fn validate_work_id_value(work_id: &str) -> std::result::Result<(), &'static str> {
+    if work_id.trim().is_empty() || work_id.len() > 320 {
+        return Err("invalid work id");
+    }
+    let Some((source, source_id)) = work_id.split_once(':') else {
+        return Err("invalid work id");
+    };
+    if !ingest::is_safe_source(source) || !ingest::is_safe_source_id(source_id) {
+        return Err("invalid work id");
+    }
+    Ok(())
+}
+
+fn validate_catalog_work_prune(
+    request: &CatalogWorkPruneRequest,
+) -> std::result::Result<(), &'static str> {
+    if request.decision_id.trim().is_empty() || request.decision_id.len() > 160 {
+        return Err("invalid decision id");
+    }
+    validate_work_id_value(&request.keep_work_id)?;
+    if request.remove_work_ids.is_empty() || request.remove_work_ids.len() > 20 {
+        return Err("remove works must contain 1 to 20 entries");
+    }
+    let mut unique = std::collections::HashSet::new();
+    for work_id in &request.remove_work_ids {
+        validate_work_id_value(work_id)?;
+        if work_id == &request.keep_work_id {
+            return Err("keep work cannot be removed");
+        }
+        if !unique.insert(work_id) {
+            return Err("duplicate remove work id");
+        }
+    }
+    Ok(())
+}
+
+fn same_work_prune_plan(
+    keep_work_id: &str,
+    remove_work_ids: &[String],
+    stored_keep_work_id: &str,
+    stored_remove_work_ids: &[String],
+) -> bool {
+    if keep_work_id != stored_keep_work_id {
+        return false;
+    }
+    let mut left = remove_work_ids.to_vec();
+    let mut right = stored_remove_work_ids.to_vec();
+    left.sort();
+    right.sort();
+    left == right
+}
+
+fn parse_publication_message_ids(raw: &str) -> std::result::Result<Vec<i64>, &'static str> {
+    let ids: Vec<i64> =
+        serde_json::from_str(raw).map_err(|_| "invalid telegram publication mapping")?;
+    if ids.is_empty() || ids.len() > 40 {
+        return Err("invalid telegram publication mapping");
+    }
+    let mut unique = std::collections::HashSet::new();
+    for id in &ids {
+        if *id <= 0 || !unique.insert(*id) {
+            return Err("invalid telegram publication mapping");
+        }
+    }
+    Ok(ids)
+}
+
+async fn handle_catalog_work_prune(mut req: Request, env: &Env) -> Result<Response> {
+    let request: CatalogWorkPruneRequest = match req.json().await {
+        Ok(value) => value,
+        Err(_) => return json_response(&json!({ "ok": false, "error": "invalid json" }), 400),
+    };
+    if let Err(message) = validate_catalog_work_prune(&request) {
+        return json_response(&json!({ "ok": false, "error": message }), 400);
+    }
+
+    let db = env.d1("DB")?;
+    if let Some(receipt) = db
+        .prepare(
+            r#"SELECT keep_work_id, remove_work_ids_json, removed_r2_keys_json, telegram_targets_json
+               FROM catalog_work_prune_receipts WHERE decision_id=?"#,
+        )
+        .bind(&[JsValue::from_str(&request.decision_id)])?
+        .first::<CatalogWorkPruneReceiptRow>(None)
+        .await?
+    {
+        let stored_remove: Vec<String> =
+            serde_json::from_str(&receipt.remove_work_ids_json).unwrap_or_default();
+        if !same_work_prune_plan(
+            &request.keep_work_id,
+            &request.remove_work_ids,
+            &receipt.keep_work_id,
+            &stored_remove,
+        ) {
+            return json_response(
+                &json!({ "ok": false, "error": "prune decision conflict" }),
+                409,
+            );
+        }
+        let removed_r2_keys: Vec<String> =
+            serde_json::from_str(&receipt.removed_r2_keys_json).unwrap_or_default();
+        let telegram_targets: Value =
+            serde_json::from_str(&receipt.telegram_targets_json).unwrap_or_else(|_| json!([]));
+        if !removed_r2_keys.is_empty() {
+            env.bucket("MEDIA")?
+                .delete_multiple(removed_r2_keys.clone())
+                .await?;
+        }
+        return json_response(
+            &json!({
+                "ok": true,
+                "removed_works": stored_remove,
+                "removed_r2_keys": removed_r2_keys,
+                "telegram_targets": telegram_targets,
+                "replayed": true,
+            }),
+            200,
+        );
+    }
+
+    if db
+        .prepare("SELECT id FROM works WHERE id=? AND deleted_at IS NULL")
+        .bind(&[JsValue::from_str(&request.keep_work_id)])?
+        .first::<ActiveWorkRow>(None)
+        .await?
+        .map(|row| row.id)
+        .as_deref()
+        != Some(request.keep_work_id.as_str())
+    {
+        return json_response(
+            &json!({ "ok": false, "error": "keep work not active" }),
+            409,
+        );
+    }
+
+    let mut images = Vec::new();
+    let mut affected_tags = std::collections::BTreeSet::new();
+    let mut telegram_targets = Vec::new();
+    for work_id in &request.remove_work_ids {
+        if db
+            .prepare("SELECT id FROM works WHERE id=? AND deleted_at IS NULL")
+            .bind(&[JsValue::from_str(work_id)])?
+            .first::<ActiveWorkRow>(None)
+            .await?
+            .map(|row| row.id)
+            .as_deref()
+            != Some(work_id.as_str())
+        {
+            return json_response(
+                &json!({ "ok": false, "error": format!("remove work not active: {work_id}") }),
+                409,
+            );
+        }
+        let work_images = db
+            .prepare(
+                r#"SELECT i.id,i.work_id,i.r2_key
+                   FROM images i JOIN works w ON w.id=i.work_id
+                   WHERE i.work_id=? AND w.deleted_at IS NULL
+                   ORDER BY i.page_index"#,
+            )
+            .bind(&[JsValue::from_str(work_id)])?
+            .all()
+            .await?
+            .results::<CatalogPruneImageRow>()?;
+        images.extend(work_images);
+
+        let tags = db
+            .prepare("SELECT tag FROM work_tags WHERE work_id=?")
+            .bind(&[JsValue::from_str(work_id)])?
+            .all()
+            .await?
+            .results::<WorkTagRow>()?;
+        for row in tags {
+            if !row.tag.is_empty() {
+                affected_tags.insert(row.tag);
+            }
+        }
+
+        let publications = db
+            .prepare(
+                r#"SELECT id, work_id, chat_id, message_ids_json
+                   FROM telegram_publications
+                   WHERE work_id=? AND deleted_at IS NULL
+                   ORDER BY created_at, id"#,
+            )
+            .bind(&[JsValue::from_str(work_id)])?
+            .all()
+            .await?
+            .results::<WorkPublicationRow>()?;
+        if publications.is_empty() {
+            return json_response(
+                &json!({
+                    "ok": false,
+                    "error": format!("telegram publication mapping missing: {work_id}")
+                }),
+                409,
+            );
+        }
+        for publication in publications {
+            let message_ids = match parse_publication_message_ids(&publication.message_ids_json) {
+                Ok(ids) => ids,
+                Err(message) => {
+                    return json_response(
+                        &json!({
+                            "ok": false,
+                            "error": format!("{message}: {work_id}")
+                        }),
+                        409,
+                    );
+                }
+            };
+            telegram_targets.push(TelegramPruneTarget {
+                publication_id: publication.id,
+                work_id: publication.work_id,
+                chat_id: publication.chat_id,
+                message_ids,
+            });
+        }
+    }
+
+    let bucket = env.bucket("MEDIA")?;
+    let backup_keys: Vec<String> = images
+        .iter()
+        .map(|row| catalog_backup_key(&request.decision_id, &row.r2_key))
+        .collect();
+    for (row, backup) in images.iter().zip(&backup_keys) {
+        copy_catalog_object(&bucket, &row.r2_key, backup).await?;
+    }
+
+    let now = js_iso_now();
+    let removed_r2_keys: Vec<String> = images.iter().map(|row| row.r2_key.clone()).collect();
+    let remove_work_ids_json = serde_json::to_string(&request.remove_work_ids)
+        .map_err(|error| Error::RustError(error.to_string()))?;
+    let removed_r2_keys_json = serde_json::to_string(&removed_r2_keys)
+        .map_err(|error| Error::RustError(error.to_string()))?;
+    let telegram_targets_json = serde_json::to_string(&telegram_targets)
+        .map_err(|error| Error::RustError(error.to_string()))?;
+
+    let mut statements = Vec::new();
+    for (row, backup) in images.iter().zip(&backup_keys) {
+        statements.push(
+            db.prepare(
+                r#"INSERT INTO catalog_prune_backups
+                   (original_r2_key,backup_r2_key,decision_id,work_id,created_at)
+                   VALUES (?,?,?,?,?)"#,
+            )
+            .bind(&[
+                JsValue::from_str(&row.r2_key),
+                JsValue::from_str(backup),
+                JsValue::from_str(&request.decision_id),
+                JsValue::from_str(&row.work_id),
+                JsValue::from_str(&now),
+            ])?,
+        );
+    }
+    for work_id in &request.remove_work_ids {
+        statements.push(
+            db.prepare("DELETE FROM images WHERE work_id=?")
+                .bind(&[JsValue::from_str(work_id)])?,
+        );
+        statements.push(
+            db.prepare("DELETE FROM work_tags WHERE work_id=?")
+                .bind(&[JsValue::from_str(work_id)])?,
+        );
+        statements.push(
+            db.prepare("UPDATE works SET deleted_at=? WHERE id=?")
+                .bind(&[JsValue::from_str(&now), JsValue::from_str(work_id)])?,
+        );
+    }
+    for tag in &affected_tags {
+        statements.push(
+            db.prepare(
+                r#"UPDATE tags SET use_count=(
+                     SELECT COUNT(*) FROM work_tags WHERE tag=?
+                   ) WHERE name=?"#,
+            )
+            .bind(&[JsValue::from_str(tag), JsValue::from_str(tag)])?,
+        );
+    }
+    statements.push(
+        db.prepare(
+            r#"INSERT INTO catalog_work_prune_receipts (
+                 decision_id, keep_work_id, remove_work_ids_json, removed_r2_keys_json,
+                 telegram_targets_json, telegram_state, telegram_error, created_at,
+                 telegram_completed_at
+               ) VALUES (?, ?, ?, ?, ?, 'pending', NULL, ?, NULL)"#,
+        )
+        .bind(&[
+            JsValue::from_str(&request.decision_id),
+            JsValue::from_str(&request.keep_work_id),
+            JsValue::from_str(&remove_work_ids_json),
+            JsValue::from_str(&removed_r2_keys_json),
+            JsValue::from_str(&telegram_targets_json),
+            JsValue::from_str(&now),
+        ])?,
+    );
+    db.batch(statements).await?;
+    if !removed_r2_keys.is_empty() {
+        bucket.delete_multiple(removed_r2_keys.clone()).await?;
+    }
+
+    json_response(
+        &json!({
+            "ok": true,
+            "removed_works": request.remove_work_ids,
+            "removed_r2_keys": removed_r2_keys,
+            "telegram_targets": telegram_targets,
+            "replayed": false,
+        }),
+        200,
+    )
+}
+
 async fn handle_list_tags(env: &Env) -> Result<Response> {
     let db = env.d1("DB")?;
     let rows = db.prepare(tags_list_sql()).all().await?;
@@ -996,5 +1352,39 @@ mod tests {
             validate_catalog_publication(&duplicate),
             Err("duplicate message id")
         );
+    }
+
+    #[test]
+    fn whole_work_prune_is_bounded_and_distinct() {
+        let valid = CatalogWorkPruneRequest {
+            decision_id: "hanabi-similar-91".into(),
+            keep_work_id: "pixiv:2".into(),
+            remove_work_ids: vec!["douyin:1".into()],
+        };
+        assert!(validate_catalog_work_prune(&valid).is_ok());
+        let invalid = CatalogWorkPruneRequest {
+            remove_work_ids: vec!["pixiv:2".into()],
+            ..valid
+        };
+        assert_eq!(
+            validate_catalog_work_prune(&invalid),
+            Err("keep work cannot be removed")
+        );
+    }
+
+    #[test]
+    fn receipt_replay_requires_identical_plan() {
+        assert!(same_work_prune_plan(
+            "pixiv:2",
+            &["douyin:1".into()],
+            "pixiv:2",
+            &["douyin:1".into()]
+        ));
+        assert!(!same_work_prune_plan(
+            "pixiv:2",
+            &["douyin:1".into()],
+            "pixiv:3",
+            &["douyin:1".into()]
+        ));
     }
 }

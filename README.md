@@ -57,7 +57,25 @@ Body: `multipart/form-data`
 | `meta` | JSON：`source`, `source_id`, `source_url`, `title`, `author_name`, `author_url`, `tags[]`, `is_r18`, `origin` |
 | `files` | 一张或多张图片（可重复字段名） |
 
-入库限制：最多 40 个文件、单文件 50 MiB、单次请求总计 100 MiB。
+入库限制：最多 40 个文件、单文件 50 MiB、单次请求总计 100 MiB。可选 `telegram_publication`（`chat_id`、`message_ids`、`publish_state=full|partial`）会写入 D1 `telegram_publications`。
+
+### `GET /api/catalog`
+
+Header: `Authorization: Bearer <INGEST_TOKEN>`
+
+列出仍在线的作品图片。现有 `POST /api/catalog/prune` 按图片 key 做可恢复删除，行为保持兼容。
+
+### `PUT /api/catalog/publications`
+
+Header: `Authorization: Bearer <INGEST_TOKEN>`
+
+回填精确的频道 publication 映射。仅接受在线作品；相同 payload 幂等，冲突返回 409。
+
+### `POST /api/catalog/prune-works`
+
+Header: `Authorization: Bearer <INGEST_TOKEN>`
+
+按整部作品删除相似审核中落选的作品：先备份 R2 到 `review-trash/<decision_id>/...`，再在同一 D1 batch 中写入 `catalog_work_prune_receipts`、删除 images/work_tags、软删除 works。每个落选作品必须已有完整的在线 Telegram mapping，否则 409 且不做任何变更。同一 `decision_id` 重放会重试删除已记录的原 R2 key 并返回存储的 Telegram targets。
 
 ### `GET /api/works?source=&tag=&q=&limit=&offset=`
 
