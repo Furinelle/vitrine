@@ -27,9 +27,8 @@
   "d1_databases": [
     {
       "binding": "DB",
-      // Existing production database retained so the rename is metadata-only.
-      "database_name": "shirogane",
-      "database_id": "ca5265c6-89a5-41ed-9f1a-a7f91f8c6077",
+      "database_name": "vitrine",
+      "database_id": "b7de4fd6-8b7c-46cc-a46f-43278c31065f",
       "migrations_dir": "migrations"
     }
   ],
