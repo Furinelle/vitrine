@@ -437,6 +437,12 @@ struct CatalogWorkPruneReceiptRow {
     telegram_targets_json: String,
 }
 
+struct ParsedWorkPruneReceipt {
+    remove_work_ids: Vec<String>,
+    removed_r2_keys: Vec<String>,
+    telegram_targets: Vec<TelegramPruneTarget>,
+}
+
 #[derive(Debug, Deserialize)]
 struct WorkPublicationRow {
     id: String,
@@ -469,6 +475,7 @@ struct CatalogTelegramResult {
 #[derive(Debug, Deserialize)]
 struct TelegramResultReceiptRow {
     telegram_state: String,
+    remove_work_ids_json: String,
     telegram_targets_json: String,
 }
 
@@ -863,6 +870,66 @@ fn parse_publication_message_ids(raw: &str) -> std::result::Result<Vec<i64>, &'s
     Ok(ids)
 }
 
+fn parse_work_prune_receipt(
+    receipt: &CatalogWorkPruneReceiptRow,
+) -> std::result::Result<ParsedWorkPruneReceipt, &'static str> {
+    let remove_work_ids: Vec<String> =
+        serde_json::from_str(&receipt.remove_work_ids_json).map_err(|_| "corrupt prune receipt")?;
+    if remove_work_ids.is_empty() || remove_work_ids.len() > 20 {
+        return Err("corrupt prune receipt");
+    }
+    let mut unique_work_ids = std::collections::HashSet::new();
+    if remove_work_ids
+        .iter()
+        .any(|work_id| validate_work_id_value(work_id).is_err() || !unique_work_ids.insert(work_id))
+    {
+        return Err("corrupt prune receipt");
+    }
+
+    let removed_r2_keys: Vec<String> =
+        serde_json::from_str(&receipt.removed_r2_keys_json).map_err(|_| "corrupt prune receipt")?;
+    let telegram_targets: Vec<TelegramPruneTarget> =
+        serde_json::from_str(&receipt.telegram_targets_json)
+            .map_err(|_| "corrupt prune receipt")?;
+    validate_stored_telegram_targets(&telegram_targets, &remove_work_ids)?;
+    Ok(ParsedWorkPruneReceipt {
+        remove_work_ids,
+        removed_r2_keys,
+        telegram_targets,
+    })
+}
+
+fn validate_stored_telegram_targets(
+    targets: &[TelegramPruneTarget],
+    remove_work_ids: &[String],
+) -> std::result::Result<(), &'static str> {
+    if targets.is_empty() {
+        return Err("corrupt prune receipt");
+    }
+    let mut covered_work_ids = std::collections::HashSet::new();
+    let mut publication_ids = std::collections::HashSet::new();
+    for target in targets {
+        if target.publication_id.trim().is_empty()
+            || target.chat_id == 0
+            || !remove_work_ids.contains(&target.work_id)
+            || !publication_ids.insert(target.publication_id.as_str())
+        {
+            return Err("corrupt prune receipt");
+        }
+        let encoded =
+            serde_json::to_string(&target.message_ids).map_err(|_| "corrupt prune receipt")?;
+        parse_publication_message_ids(&encoded).map_err(|_| "corrupt prune receipt")?;
+        covered_work_ids.insert(target.work_id.as_str());
+    }
+    if remove_work_ids
+        .iter()
+        .any(|work_id| !covered_work_ids.contains(work_id.as_str()))
+    {
+        return Err("corrupt prune receipt");
+    }
+    Ok(())
+}
+
 async fn handle_catalog_work_prune(mut req: Request, env: &Env) -> Result<Response> {
     let request: CatalogWorkPruneRequest = match req.json().await {
         Ok(value) => value,
@@ -882,8 +949,15 @@ async fn handle_catalog_work_prune(mut req: Request, env: &Env) -> Result<Respon
         .first::<CatalogWorkPruneReceiptRow>(None)
         .await?
     {
-        let stored_remove: Vec<String> =
-            serde_json::from_str(&receipt.remove_work_ids_json).unwrap_or_default();
+        let parsed_receipt = match parse_work_prune_receipt(&receipt) {
+            Ok(parsed) => parsed,
+            Err(message) => {
+                return json_response(&json!({ "ok": false, "error": message }), 500);
+            }
+        };
+        let stored_remove = parsed_receipt.remove_work_ids;
+        let removed_r2_keys = parsed_receipt.removed_r2_keys;
+        let telegram_targets = parsed_receipt.telegram_targets;
         if !same_work_prune_plan(
             &request.keep_work_id,
             &request.remove_work_ids,
@@ -895,10 +969,6 @@ async fn handle_catalog_work_prune(mut req: Request, env: &Env) -> Result<Respon
                 409,
             );
         }
-        let removed_r2_keys: Vec<String> =
-            serde_json::from_str(&receipt.removed_r2_keys_json).unwrap_or_default();
-        let telegram_targets: Value =
-            serde_json::from_str(&receipt.telegram_targets_json).unwrap_or_else(|_| json!([]));
         if !removed_r2_keys.is_empty() {
             env.bucket("MEDIA")?
                 .delete_multiple(removed_r2_keys.clone())
@@ -1157,7 +1227,7 @@ async fn handle_catalog_telegram_result(mut req: Request, env: &Env) -> Result<R
     let db = env.d1("DB")?;
     let Some(receipt) = db
         .prepare(
-            r#"SELECT telegram_state, telegram_targets_json
+            r#"SELECT telegram_state, remove_work_ids_json, telegram_targets_json
                FROM catalog_work_prune_receipts WHERE decision_id=?"#,
         )
         .bind(&[JsValue::from_str(&request.decision_id)])?
@@ -1181,9 +1251,13 @@ async fn handle_catalog_telegram_result(mut req: Request, env: &Env) -> Result<R
                 200,
             );
         }
+        let remove_work_ids: Vec<String> = serde_json::from_str(&receipt.remove_work_ids_json)
+            .map_err(|_| Error::RustError("corrupt prune receipt".into()))?;
         let targets: Vec<TelegramPruneTarget> =
             serde_json::from_str(&receipt.telegram_targets_json)
-                .map_err(|error| Error::RustError(error.to_string()))?;
+                .map_err(|_| Error::RustError("corrupt prune receipt".into()))?;
+        validate_stored_telegram_targets(&targets, &remove_work_ids)
+            .map_err(|message| Error::RustError(message.into()))?;
         let now = js_iso_now();
         let mut statements = Vec::new();
         for target in &targets {
@@ -1545,6 +1619,20 @@ mod tests {
             &["douyin:1".into()],
             "pixiv:3",
             &["douyin:1".into()]
+        ));
+    }
+
+    #[test]
+    fn corrupt_work_prune_receipt_is_rejected() {
+        let receipt = CatalogWorkPruneReceiptRow {
+            keep_work_id: "pixiv:2".into(),
+            remove_work_ids_json: r#"["douyin:1"]"#.into(),
+            removed_r2_keys_json: r#"["douyin/1/00.jpg"]"#.into(),
+            telegram_targets_json: "[]".into(),
+        };
+        assert!(matches!(
+            parse_work_prune_receipt(&receipt),
+            Err("corrupt prune receipt")
         ));
     }
 
