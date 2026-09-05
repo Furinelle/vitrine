@@ -68,6 +68,13 @@ async fn handle_request(req: Request, env: Env) -> Result<Response> {
         return Ok(with_cors(handle_catalog_work_prune(req, &env).await?));
     }
 
+    if path == "/api/catalog/retract" && method == Method::Post {
+        if let Some(response) = require_catalog_auth(&req, &env)? {
+            return Ok(response);
+        }
+        return Ok(with_cors(handle_catalog_retract(req, &env).await?));
+    }
+
     if path == "/api/catalog/prune-works/telegram-result" && method == Method::Post {
         if let Some(response) = require_catalog_auth(&req, &env)? {
             return Ok(response);
@@ -422,11 +429,28 @@ struct ActiveWorkRow {
     id: String,
 }
 
+#[derive(Debug, Deserialize)]
+struct RetractWorkRow {
+    id: String,
+    deleted_at: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct RetractBackupRow {
+    original_r2_key: String,
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize)]
 struct CatalogWorkPruneRequest {
     decision_id: String,
     keep_work_id: String,
     remove_work_ids: Vec<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+struct CatalogRetractRequest {
+    decision_id: String,
+    work_id: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1179,6 +1203,174 @@ async fn handle_catalog_work_prune(mut req: Request, env: &Env) -> Result<Respon
     )
 }
 
+fn validate_catalog_retract(
+    request: &CatalogRetractRequest,
+) -> std::result::Result<(), &'static str> {
+    if request.decision_id.trim().is_empty() || request.decision_id.len() > 160 {
+        return Err("invalid decision id");
+    }
+    validate_work_id_value(&request.work_id)
+}
+
+fn is_missing_r2_object_message(message: &str) -> bool {
+    message.contains("R2 object not found")
+}
+
+fn is_missing_r2_object(error: &Error) -> bool {
+    is_missing_r2_object_message(&error.to_string())
+}
+
+async fn delete_retract_originals(
+    db: &D1Database,
+    bucket: &Bucket,
+    work_id: &str,
+    decision_id: &str,
+) -> Result<()> {
+    let keys = db
+        .prepare(
+            "SELECT original_r2_key FROM catalog_prune_backups WHERE work_id=? AND decision_id=?",
+        )
+        .bind(&[JsValue::from_str(work_id), JsValue::from_str(decision_id)])?
+        .all()
+        .await?
+        .results::<RetractBackupRow>()?
+        .into_iter()
+        .map(|row| row.original_r2_key)
+        .filter(|key| !key.is_empty())
+        .collect::<Vec<_>>();
+    if !keys.is_empty() {
+        bucket.delete_multiple(keys).await?;
+    }
+    Ok(())
+}
+
+async fn handle_catalog_retract(mut req: Request, env: &Env) -> Result<Response> {
+    let request: CatalogRetractRequest = match req.json().await {
+        Ok(value) => value,
+        Err(_) => return json_response(&json!({ "ok": false, "error": "invalid json" }), 400),
+    };
+    if let Err(message) = validate_catalog_retract(&request) {
+        return json_response(&json!({ "ok": false, "error": message }), 400);
+    }
+
+    let db = env.d1("DB")?;
+    let Some(work) = db
+        .prepare("SELECT id, deleted_at FROM works WHERE id=?")
+        .bind(&[JsValue::from_str(&request.work_id)])?
+        .first::<RetractWorkRow>(None)
+        .await?
+    else {
+        return json_response(&json!({ "ok": false, "error": "work not active" }), 409);
+    };
+    if work.id != request.work_id {
+        return json_response(&json!({ "ok": false, "error": "work not active" }), 409);
+    }
+    let bucket = env.bucket("MEDIA")?;
+    if work.deleted_at.is_some() {
+        delete_retract_originals(&db, &bucket, &request.work_id, &request.decision_id).await?;
+        return json_response(
+            &json!({
+                "ok": true,
+                "work_id": request.work_id,
+                "replayed": true,
+            }),
+            200,
+        );
+    }
+
+    let images = db
+        .prepare(
+            r#"SELECT i.id,i.work_id,i.r2_key
+               FROM images i JOIN works w ON w.id=i.work_id
+               WHERE i.work_id=? AND w.deleted_at IS NULL
+               ORDER BY i.page_index"#,
+        )
+        .bind(&[JsValue::from_str(&request.work_id)])?
+        .all()
+        .await?
+        .results::<CatalogPruneImageRow>()?;
+    let tags = db
+        .prepare("SELECT tag FROM work_tags WHERE work_id=?")
+        .bind(&[JsValue::from_str(&request.work_id)])?
+        .all()
+        .await?
+        .results::<WorkTagRow>()?;
+
+    let mut copied: Vec<(&CatalogPruneImageRow, String)> = Vec::new();
+    for row in &images {
+        let backup = catalog_backup_key(&request.decision_id, &row.r2_key);
+        match copy_catalog_object(&bucket, &row.r2_key, &backup).await {
+            Ok(()) => copied.push((row, backup)),
+            Err(error) if is_missing_r2_object(&error) => {}
+            Err(error) => return Err(error),
+        }
+    }
+
+    let now = js_iso_now();
+    let removed_r2_keys: Vec<String> = images.iter().map(|row| row.r2_key.clone()).collect();
+    let mut statements = Vec::new();
+    for (row, backup) in &copied {
+        statements.push(
+            db.prepare(
+                r#"INSERT INTO catalog_prune_backups
+                   (original_r2_key,backup_r2_key,decision_id,work_id,created_at)
+                   VALUES (?,?,?,?,?)"#,
+            )
+            .bind(&[
+                JsValue::from_str(&row.r2_key),
+                JsValue::from_str(backup),
+                JsValue::from_str(&request.decision_id),
+                JsValue::from_str(&row.work_id),
+                JsValue::from_str(&now),
+            ])?,
+        );
+    }
+    statements.push(
+        db.prepare("DELETE FROM images WHERE work_id=?")
+            .bind(&[JsValue::from_str(&request.work_id)])?,
+    );
+    statements.push(
+        db.prepare("DELETE FROM work_tags WHERE work_id=?")
+            .bind(&[JsValue::from_str(&request.work_id)])?,
+    );
+    statements.push(
+        db.prepare("UPDATE works SET deleted_at=? WHERE id=?")
+            .bind(&[JsValue::from_str(&now), JsValue::from_str(&request.work_id)])?,
+    );
+    statements.push(
+        db.prepare(
+            "UPDATE telegram_publications SET deleted_at=? WHERE work_id=? AND deleted_at IS NULL",
+        )
+        .bind(&[JsValue::from_str(&now), JsValue::from_str(&request.work_id)])?,
+    );
+    for tag in tags {
+        if tag.tag.is_empty() {
+            continue;
+        }
+        statements.push(
+            db.prepare(
+                r#"UPDATE tags SET use_count=(
+                     SELECT COUNT(*) FROM work_tags WHERE tag=?
+                   ) WHERE name=?"#,
+            )
+            .bind(&[JsValue::from_str(&tag.tag), JsValue::from_str(&tag.tag)])?,
+        );
+    }
+    db.batch(statements).await?;
+    if !removed_r2_keys.is_empty() {
+        bucket.delete_multiple(removed_r2_keys).await?;
+    }
+
+    json_response(
+        &json!({
+            "ok": true,
+            "work_id": request.work_id,
+            "replayed": false,
+        }),
+        200,
+    )
+}
+
 fn validate_telegram_result(
     value: &CatalogTelegramResult,
 ) -> std::result::Result<(), &'static str> {
@@ -1586,6 +1778,28 @@ mod tests {
             validate_catalog_publication(&duplicate),
             Err("duplicate message id")
         );
+    }
+
+    #[test]
+    fn missing_r2_object_is_skippable_for_retract() {
+        assert!(is_missing_r2_object_message(
+            "R2 object not found: douyin/1/00.jpg"
+        ));
+        assert!(!is_missing_r2_object_message("R2 put failed"));
+    }
+
+    #[test]
+    fn catalog_retract_requires_work_id() {
+        let valid = CatalogRetractRequest {
+            decision_id: "hanabi-undo-1".into(),
+            work_id: "douyin:7672448675021161593".into(),
+        };
+        assert!(validate_catalog_retract(&valid).is_ok());
+        let invalid = CatalogRetractRequest {
+            work_id: "bad".into(),
+            ..valid
+        };
+        assert_eq!(validate_catalog_retract(&invalid), Err("invalid work id"));
     }
 
     #[test]

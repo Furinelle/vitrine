@@ -71,6 +71,12 @@ Header: `Authorization: Bearer <INGEST_TOKEN>`
 
 回填精确的频道 publication 映射。仅接受在线作品；相同 payload 幂等，冲突返回 409。
 
+### `POST /api/catalog/retract`
+
+Header: `Authorization: Bearer <INGEST_TOKEN>`
+
+按作品 ID 撤回刚入库的一条作品：备份 R2 到 `review-trash/<decision_id>/...`，删除 images/work_tags，软删除 works 与 telegram_publications。不要求 keep 作品，也不要求 Telegram mapping。已下线的作品返回 `replayed=true`。供 Hanabi `/undo` 撤回「发送并入库」。
+
 ### `POST /api/catalog/prune-works`
 
 Header: `Authorization: Bearer <INGEST_TOKEN>`
