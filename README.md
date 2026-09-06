@@ -63,7 +63,7 @@ Body: `multipart/form-data`
 
 Header: `Authorization: Bearer <INGEST_TOKEN>`
 
-列出仍在线的作品图片。现有 `POST /api/catalog/prune` 按图片 key 做可恢复删除，行为保持兼容。
+列出仍在线的作品图片。可加 `work_id=<source:id>` 只读取该作品的完整分页组，供 Hanabi 相似图审批展示图库原图。现有 `POST /api/catalog/prune` 按图片 key 做可恢复删除，行为保持兼容。
 
 ### `PUT /api/catalog/publications`
 

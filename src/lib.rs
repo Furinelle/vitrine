@@ -329,6 +329,18 @@ pub fn catalog_list_sql() -> &'static str {
     "#
 }
 
+pub fn catalog_work_list_sql() -> &'static str {
+    r#"
+        SELECT i.work_id,w.source,w.source_id,w.source_url,w.title,
+               i.page_index,i.r2_key,i.byte_size,i.content_type,i.sha256
+        FROM images i
+        JOIN works w ON w.id = i.work_id
+        WHERE w.deleted_at IS NULL AND i.work_id=?
+        ORDER BY i.page_index
+        LIMIT ? OFFSET ?
+    "#
+}
+
 #[derive(Debug, serde::Deserialize, Serialize)]
 struct CatalogImageOut {
     work_id: String,
@@ -367,17 +379,33 @@ fn require_catalog_auth(req: &Request, env: &Env) -> Result<Option<Response>> {
 
 async fn handle_list_catalog(url: &Url, env: &Env) -> Result<Response> {
     let (limit, offset) = parse_limit_offset(url);
-    let values = [
-        JsValue::from_f64(f64::from(limit)),
-        JsValue::from_f64(f64::from(offset)),
-    ];
-    let rows = env
-        .d1("DB")?
-        .prepare(catalog_list_sql())
-        .bind(&values)?
-        .all()
-        .await?
-        .results::<CatalogImageOut>()?;
+    let work_id = query_param(url, "work_id");
+    if !work_id.is_empty() && validate_work_id_value(&work_id).is_err() {
+        return json_response(&json!({ "ok": false, "error": "invalid work id" }), 400);
+    }
+    let db = env.d1("DB")?;
+    let rows = if work_id.is_empty() {
+        let values = [
+            JsValue::from_f64(f64::from(limit)),
+            JsValue::from_f64(f64::from(offset)),
+        ];
+        db.prepare(catalog_list_sql())
+            .bind(&values)?
+            .all()
+            .await?
+            .results::<CatalogImageOut>()?
+    } else {
+        let values = [
+            JsValue::from_str(&work_id),
+            JsValue::from_f64(f64::from(limit)),
+            JsValue::from_f64(f64::from(offset)),
+        ];
+        db.prepare(catalog_work_list_sql())
+            .bind(&values)?
+            .all()
+            .await?
+            .results::<CatalogImageOut>()?
+    };
     json_response(
         &json!({
             "ok": true,
@@ -1735,6 +1763,14 @@ mod tests {
         assert!(sql.contains("ORDER BY i.id"));
         assert!(sql.contains("i.sha256"));
         assert!(sql.contains("LIMIT ? OFFSET ?"));
+    }
+
+    #[test]
+    fn catalog_work_list_sql_returns_only_one_active_work_in_page_order() {
+        let sql = catalog_work_list_sql();
+        assert!(sql.contains("i.work_id=?"));
+        assert!(sql.contains("w.deleted_at IS NULL"));
+        assert!(sql.contains("ORDER BY i.page_index"));
     }
 
     #[test]
