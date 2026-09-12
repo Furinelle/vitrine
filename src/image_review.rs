@@ -1,0 +1,343 @@
+use super::*;
+
+#[derive(Deserialize)]
+pub(super) struct ImageRequest {
+    decision_id: String,
+    r2_key: String,
+    action: String,
+    #[serde(default)]
+    restored: Vec<RestoredTarget>,
+}
+
+#[derive(Deserialize)]
+struct RestoredTarget {
+    publication_id: String,
+    message_id: i64,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+struct ImageRow {
+    id: String,
+    work_id: String,
+    page_index: i64,
+    r2_key: String,
+    content_type: String,
+    byte_size: i64,
+    created_at: String,
+    sha256: String,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+struct ImageTarget {
+    publication_id: String,
+    chat_id: i64,
+    message_id: i64,
+    // The expected remaining IDs let undo reject a replaced publication.
+    remaining: Vec<i64>,
+    position: usize,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+struct Snapshot {
+    image: ImageRow,
+    targets: Vec<ImageTarget>,
+    backup_key: String,
+}
+
+#[derive(Deserialize)]
+struct Receipt {
+    payload: String,
+    state: String,
+}
+
+#[derive(Deserialize)]
+struct Publication {
+    id: String,
+    chat_id: i64,
+    message_ids_json: String,
+    publish_state: String,
+}
+
+fn image_target(
+    publication: Publication,
+    image_count: usize,
+    position: usize,
+) -> std::result::Result<ImageTarget, &'static str> {
+    let mut ids: Vec<i64> = serde_json::from_str(&publication.message_ids_json)
+        .map_err(|_| "invalid publication mapping")?;
+    if publication.publish_state != "full"
+        || ids.len() != image_count
+        || position >= ids.len()
+        || ids.iter().any(|id| *id <= 0)
+        || ids.iter().collect::<std::collections::HashSet<_>>().len() != ids.len()
+    {
+        return Err("cannot identify this image in the Telegram publication");
+    }
+    let message_id = ids.remove(position);
+    Ok(ImageTarget {
+        publication_id: publication.id,
+        chat_id: publication.chat_id,
+        message_id,
+        remaining: ids,
+        position,
+    })
+}
+
+pub(super) async fn handle(mut req: Request, env: &Env) -> Result<Response> {
+    let request: ImageRequest = match req.json().await {
+        Ok(value) => value,
+        Err(_) => return json_response(&json!({"ok":false,"error":"invalid json"}), 400),
+    };
+    if request.decision_id.is_empty()
+        || request.decision_id.len() > 160
+        || request.r2_key.is_empty()
+        || request.r2_key.len() > 1024
+        || !matches!(request.action.as_str(), "prepare" | "delete" | "restore")
+    {
+        return json_response(
+            &json!({"ok":false,"error":"invalid image review request"}),
+            400,
+        );
+    }
+    let db = env.d1("DB")?;
+    let receipt = db
+        .prepare("SELECT payload,state FROM catalog_image_reviews WHERE decision_id=?")
+        .bind(&[JsValue::from_str(&request.decision_id)])?
+        .first::<Receipt>(None)
+        .await?;
+    let (snapshot, state) = if let Some(receipt) = receipt {
+        let snapshot: Snapshot =
+            serde_json::from_str(&receipt.payload).map_err(|e| Error::RustError(e.to_string()))?;
+        if snapshot.image.r2_key != request.r2_key {
+            return json_response(
+                &json!({"ok":false,"error":"image review decision conflict"}),
+                409,
+            );
+        }
+        (snapshot, receipt.state)
+    } else {
+        if request.action != "prepare" {
+            return json_response(
+                &json!({"ok":false,"error":"image review not prepared"}),
+                409,
+            );
+        }
+        let image = db.prepare("SELECT i.* FROM images i JOIN works w ON w.id=i.work_id WHERE i.r2_key=? AND w.deleted_at IS NULL")
+            .bind(&[JsValue::from_str(&request.r2_key)])?.first::<ImageRow>(None).await?;
+        let Some(image) = image else {
+            return json_response(&json!({"ok":false,"error":"image not active"}), 409);
+        };
+        let images = db
+            .prepare("SELECT * FROM images WHERE work_id=? ORDER BY page_index")
+            .bind(&[JsValue::from_str(&image.work_id)])?
+            .all()
+            .await?
+            .results::<ImageRow>()?;
+        let position = images
+            .iter()
+            .position(|i| i.id == image.id)
+            .ok_or_else(|| Error::RustError("image disappeared".into()))?;
+        let publications = db.prepare("SELECT id,chat_id,message_ids_json,publish_state FROM telegram_publications WHERE work_id=? AND deleted_at IS NULL ORDER BY id")
+            .bind(&[JsValue::from_str(&image.work_id)])?.all().await?.results::<Publication>()?;
+        if publications.is_empty() {
+            return json_response(
+                &json!({"ok":false,"error":"telegram publication mapping missing"}),
+                409,
+            );
+        }
+        let targets = match publications
+            .into_iter()
+            .map(|p| image_target(p, images.len(), position))
+            .collect::<std::result::Result<Vec<_>, _>>()
+        {
+            Ok(targets) => targets,
+            Err(error) => return json_response(&json!({"ok":false,"error":error}), 409),
+        };
+        let backup_key = catalog_backup_key(&request.decision_id, &image.r2_key);
+        copy_catalog_object(&env.bucket("MEDIA")?, &image.r2_key, &backup_key).await?;
+        let snapshot = Snapshot {
+            image,
+            targets,
+            backup_key,
+        };
+        db.prepare("INSERT INTO catalog_image_reviews(decision_id,payload,state,created_at) VALUES(?,?,'prepared',?)")
+            .bind(&[JsValue::from_str(&request.decision_id),JsValue::from_str(&serde_json::to_string(&snapshot).map_err(|e| Error::RustError(e.to_string()))?),JsValue::from_str(&js_iso_now())])?.run().await?;
+        (snapshot, "prepared".to_string())
+    };
+    if request.action == "prepare" {
+        return json_response(
+            &json!({"ok":true,"targets":snapshot.targets,"state":state}),
+            200,
+        );
+    }
+    if request.action == "delete" && state == "restored" {
+        return json_response(
+            &json!({"ok":false,"error":"this deletion was already undone"}),
+            409,
+        );
+    }
+    let image = &snapshot.image;
+    let now = js_iso_now();
+    if request.action == "delete" && state == "prepared" {
+        let current = db
+            .prepare("SELECT * FROM images WHERE id=?")
+            .bind(&[JsValue::from_str(&image.id)])?
+            .first::<ImageRow>(None)
+            .await?;
+        if current.as_ref().map(|i| &i.r2_key) != Some(&image.r2_key) {
+            return json_response(
+                &json!({"ok":false,"error":"image changed since preparation"}),
+                409,
+            );
+        }
+        // Only exact full-publication mappings are accepted. Never infer a partial album's IDs.
+        for target in &snapshot.targets {
+            let current = db.prepare("SELECT id,chat_id,message_ids_json,publish_state FROM telegram_publications WHERE id=? AND deleted_at IS NULL")
+                .bind(&[JsValue::from_str(&target.publication_id)])?.first::<Publication>(None).await?;
+            let mut expected = target.remaining.clone();
+            expected.insert(target.position, target.message_id);
+            if current
+                .as_ref()
+                .and_then(|p| serde_json::from_str::<Vec<i64>>(&p.message_ids_json).ok())
+                != Some(expected)
+            {
+                return json_response(
+                    &json!({"ok":false,"error":"publication changed since preparation"}),
+                    409,
+                );
+            }
+        }
+        // CHECK(state) turns a concurrent ingest/publication change into a batch rollback.
+        let mut statements = vec![db.prepare("UPDATE catalog_image_reviews SET state=CASE WHEN EXISTS(SELECT 1 FROM images WHERE id=? AND r2_key=?) THEN state ELSE 'conflict' END WHERE decision_id=?")
+            .bind(&[JsValue::from_str(&image.id),JsValue::from_str(&image.r2_key),JsValue::from_str(&request.decision_id)])?];
+        for target in &snapshot.targets {
+            let mut expected = target.remaining.clone();
+            expected.insert(target.position, target.message_id);
+            statements.push(db.prepare("UPDATE catalog_image_reviews SET state=CASE WHEN EXISTS(SELECT 1 FROM telegram_publications WHERE id=? AND message_ids_json=? AND deleted_at IS NULL) THEN state ELSE 'conflict' END WHERE decision_id=?")
+                .bind(&[JsValue::from_str(&target.publication_id),JsValue::from_str(&serde_json::to_string(&expected).unwrap()),JsValue::from_str(&request.decision_id)])?);
+        }
+        statements.push(
+            db.prepare("DELETE FROM images WHERE id=? AND r2_key=?")
+                .bind(&[
+                    JsValue::from_str(&image.id),
+                    JsValue::from_str(&image.r2_key),
+                ])?,
+        );
+        for target in &snapshot.targets {
+            statements.push(db.prepare("UPDATE telegram_publications SET message_ids_json=?,anchor_message_id=?,deleted_at=? WHERE id=?")
+                .bind(&[JsValue::from_str(&serde_json::to_string(&target.remaining).unwrap()),JsValue::from_f64(target.remaining.first().copied().unwrap_or(target.message_id) as f64),if target.remaining.is_empty() { JsValue::from_str(&now) } else { JsValue::NULL },JsValue::from_str(&target.publication_id)])?);
+        }
+        statements.push(db.prepare("UPDATE works SET page_count=(SELECT COUNT(*) FROM images WHERE work_id=?),deleted_at=CASE WHEN EXISTS(SELECT 1 FROM images WHERE work_id=?) THEN NULL ELSE ? END WHERE id=?")
+            .bind(&[JsValue::from_str(&image.work_id),JsValue::from_str(&image.work_id),JsValue::from_str(&now),JsValue::from_str(&image.work_id)])?);
+        statements.push(
+            db.prepare("UPDATE catalog_image_reviews SET state='deleted' WHERE decision_id=?")
+                .bind(&[JsValue::from_str(&request.decision_id)])?,
+        );
+        db.batch(statements).await?;
+    }
+    if request.action == "delete" {
+        env.bucket("MEDIA")?.delete(&image.r2_key).await?;
+        return json_response(
+            &json!({"ok":true,"targets":snapshot.targets,"state":"deleted"}),
+            200,
+        );
+    }
+    if state == "restored" {
+        return json_response(&json!({"ok":true,"state":"restored"}), 200);
+    }
+    if state == "prepared" {
+        // No destructive operation occurred; allow undo of a prepared local journal.
+        return json_response(&json!({"ok":true,"state":"prepared"}), 200);
+    }
+    let restored = &request.restored;
+    if restored.len() != snapshot.targets.len()
+        || restored.iter().any(|r| r.message_id <= 0)
+        || snapshot.targets.iter().any(|t| {
+            restored
+                .iter()
+                .filter(|r| r.publication_id == t.publication_id)
+                .count()
+                != 1
+                || restored.iter().any(|r| {
+                    r.publication_id == t.publication_id && t.remaining.contains(&r.message_id)
+                })
+        })
+    {
+        return json_response(
+            &json!({"ok":false,"error":"restored Telegram targets are incomplete"}),
+            400,
+        );
+    }
+    if db
+        .prepare("SELECT * FROM images WHERE id=? OR r2_key=?")
+        .bind(&[
+            JsValue::from_str(&image.id),
+            JsValue::from_str(&image.r2_key),
+        ])?
+        .first::<ImageRow>(None)
+        .await?
+        .is_some()
+    {
+        return json_response(
+            &json!({"ok":false,"error":"image was replaced; refusing to overwrite"}),
+            409,
+        );
+    }
+    let mut statements = vec![db.prepare("UPDATE catalog_image_reviews SET state=CASE WHEN NOT EXISTS(SELECT 1 FROM images WHERE id=? OR r2_key=?) THEN state ELSE 'conflict' END WHERE decision_id=?")
+        .bind(&[JsValue::from_str(&image.id),JsValue::from_str(&image.r2_key),JsValue::from_str(&request.decision_id)])?];
+    for target in &snapshot.targets {
+        let current = db.prepare("SELECT id,chat_id,message_ids_json,publish_state FROM telegram_publications WHERE id=?").bind(&[JsValue::from_str(&target.publication_id)])?.first::<Publication>(None).await?;
+        if current
+            .as_ref()
+            .and_then(|p| serde_json::from_str::<Vec<i64>>(&p.message_ids_json).ok())
+            != Some(target.remaining.clone())
+        {
+            return json_response(
+                &json!({"ok":false,"error":"publication changed; refusing to overwrite"}),
+                409,
+            );
+        }
+        let mut ids = target.remaining.clone();
+        statements.push(db.prepare("UPDATE catalog_image_reviews SET state=CASE WHEN EXISTS(SELECT 1 FROM telegram_publications WHERE id=? AND message_ids_json=?) THEN state ELSE 'conflict' END WHERE decision_id=?")
+            .bind(&[JsValue::from_str(&target.publication_id),JsValue::from_str(&serde_json::to_string(&target.remaining).unwrap()),JsValue::from_str(&request.decision_id)])?);
+        ids.insert(
+            target.position,
+            restored
+                .iter()
+                .find(|r| r.publication_id == target.publication_id)
+                .unwrap()
+                .message_id,
+        );
+        statements.push(db.prepare("UPDATE telegram_publications SET message_ids_json=?,anchor_message_id=?,deleted_at=NULL WHERE id=?")
+            .bind(&[JsValue::from_str(&serde_json::to_string(&ids).unwrap()),JsValue::from_f64(ids[0] as f64),JsValue::from_str(&target.publication_id)])?);
+    }
+    copy_catalog_object(&env.bucket("MEDIA")?, &snapshot.backup_key, &image.r2_key).await?;
+    statements.push(db.prepare("INSERT INTO images(id,work_id,page_index,r2_key,content_type,byte_size,created_at,sha256) VALUES(?,?,?,?,?,?,?,?)")
+        .bind(&[JsValue::from_str(&image.id),JsValue::from_str(&image.work_id),JsValue::from_f64(image.page_index as f64),JsValue::from_str(&image.r2_key),JsValue::from_str(&image.content_type),JsValue::from_f64(image.byte_size as f64),JsValue::from_str(&image.created_at),JsValue::from_str(&image.sha256)])?);
+    statements.push(db.prepare("UPDATE works SET page_count=(SELECT COUNT(*) FROM images WHERE work_id=?),deleted_at=NULL WHERE id=?").bind(&[JsValue::from_str(&image.work_id),JsValue::from_str(&image.work_id)])?);
+    statements.push(
+        db.prepare("UPDATE catalog_image_reviews SET state='restored' WHERE decision_id=?")
+            .bind(&[JsValue::from_str(&request.decision_id)])?,
+    );
+    db.batch(statements).await?;
+    json_response(&json!({"ok":true,"state":"restored"}), 200)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn delete_targets_only_the_selected_page_and_rejects_ambiguous_albums() {
+        let publication = |state: &str, ids: &str| Publication {
+            id: "p".into(),
+            chat_id: -100,
+            message_ids_json: ids.into(),
+            publish_state: state.into(),
+        };
+        let target = image_target(publication("full", "[11,12,13]"), 3, 1).unwrap();
+        assert_eq!(target.message_id, 12);
+        assert_eq!(target.remaining, vec![11, 13]);
+        assert!(image_target(publication("partial", "[11,13]"), 3, 1).is_err());
+        assert!(image_target(publication("full", "[11,13]"), 3, 1).is_err());
+    }
+}

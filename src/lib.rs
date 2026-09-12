@@ -1,3 +1,4 @@
+mod image_review;
 mod ingest;
 
 use serde::{Deserialize, Serialize};
@@ -52,6 +53,13 @@ async fn handle_request(req: Request, env: Env) -> Result<Response> {
             return Ok(response);
         }
         return Ok(with_cors(handle_list_catalog(&url, &env).await?));
+    }
+
+    if path == "/api/catalog/image-review" && method == Method::Post {
+        if let Some(response) = require_catalog_auth(&req, &env)? {
+            return Ok(response);
+        }
+        return Ok(with_cors(image_review::handle(req, &env).await?));
     }
 
     if path == "/api/catalog/prune" && method == Method::Post {
