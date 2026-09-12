@@ -48,6 +48,12 @@ async fn handle_request(req: Request, env: Env) -> Result<Response> {
         return Ok(with_cors(handle_list_works(&url, &env).await?));
     }
 
+    if let Some(work_id) = path.strip_prefix("/api/works/") {
+        if method == Method::Get {
+            return Ok(with_cors(handle_work_images(work_id, &env).await?));
+        }
+    }
+
     if path == "/api/catalog" && method == Method::Get {
         if let Some(response) = require_catalog_auth(&req, &env)? {
             return Ok(response);
@@ -107,7 +113,7 @@ async fn handle_request(req: Request, env: Env) -> Result<Response> {
 
     if let Some(key) = path.strip_prefix("/media/") {
         if method == Method::Get {
-            return handle_media(key, &env).await;
+            return handle_media(key, &req, &env).await;
         }
     }
 
@@ -299,6 +305,30 @@ struct WorkRow {
     tags: Option<String>,
 }
 
+#[derive(Deserialize, Serialize)]
+struct PublicImage {
+    r2_key: String,
+    content_type: String,
+    page_index: i64,
+    byte_size: i64,
+}
+
+async fn handle_work_images(work_id: &str, env: &Env) -> Result<Response> {
+    let Ok(work_id) = urlencoding::decode(work_id) else {
+        return json_response(&json!({"ok":false,"error":"invalid work id"}), 400);
+    };
+    if validate_work_id_value(&work_id).is_err() {
+        return json_response(&json!({"ok":false,"error":"invalid work id"}), 400);
+    }
+    let images = env.d1("DB")?.prepare(
+        "SELECT i.r2_key,i.content_type,i.page_index,i.byte_size FROM images i JOIN works w ON w.id=i.work_id WHERE w.id=? AND w.deleted_at IS NULL ORDER BY i.page_index"
+    ).bind(&[JsValue::from_str(&work_id)])?.all().await?.results::<PublicImage>()?;
+    if images.is_empty() {
+        return json_response(&json!({"ok":false,"error":"work not found"}), 404);
+    }
+    json_response(&json!({"ok":true,"images":images}), 200)
+}
+
 #[derive(Debug, serde::Deserialize, Serialize)]
 struct TagRow {
     name: String,
@@ -454,15 +484,22 @@ struct CatalogPublicationRequest {
 
 #[derive(Debug, Deserialize)]
 struct CatalogPublicationRow {
+    id: String,
     work_id: String,
     chat_id: i64,
     message_ids_json: String,
     publish_state: String,
+    deleted_at: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
 struct ActiveWorkRow {
     id: String,
+}
+
+#[derive(Deserialize)]
+struct WorkVersionRow {
+    review_version: i64,
 }
 
 #[derive(Debug, Deserialize)]
@@ -509,6 +546,7 @@ struct WorkPublicationRow {
     work_id: String,
     chat_id: i64,
     message_ids_json: String,
+    publish_state: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -611,18 +649,19 @@ async fn handle_catalog_publication(mut req: Request, env: &Env) -> Result<Respo
     let publication_id = ingest::telegram_publication_id(&request.work_id, request.chat_id, anchor);
     if let Some(stored) = db
         .prepare(
-            r#"SELECT work_id, chat_id, message_ids_json, publish_state
-               FROM telegram_publications WHERE id=?"#,
+            r#"SELECT id, work_id, chat_id, message_ids_json, publish_state, deleted_at
+               FROM telegram_publications WHERE (work_id=? AND chat_id=? AND anchor_message_id=?) OR id=?
+               ORDER BY (anchor_message_id=?) DESC LIMIT 1"#,
         )
-        .bind(&[JsValue::from_str(&publication_id)])?
+        .bind(&[JsValue::from_str(&request.work_id), JsValue::from_f64(request.chat_id as f64), JsValue::from_f64(anchor as f64), JsValue::from_str(&publication_id), JsValue::from_f64(anchor as f64)])?
         .first::<CatalogPublicationRow>(None)
         .await?
     {
-        if same_catalog_publication(&stored, &request) {
+        if stored.deleted_at.is_none() && same_catalog_publication(&stored, &request) {
             return json_response(
                 &json!({
                     "ok": true,
-                    "publication_id": publication_id,
+                    "publication_id": stored.id,
                     "idempotent": true,
                 }),
                 200,
@@ -637,10 +676,13 @@ async fn handle_catalog_publication(mut req: Request, env: &Env) -> Result<Respo
     let now = js_iso_now();
     let message_ids_json = serde_json::to_string(&request.message_ids)
         .map_err(|error| Error::RustError(error.to_string()))?;
-    db.prepare(
+    let inserted = db.prepare(
         r#"INSERT INTO telegram_publications
            (id, work_id, chat_id, anchor_message_id, message_ids_json, publish_state, created_at, deleted_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, NULL)"#,
+           SELECT ?, ?, ?, ?, ?, ?, ?, NULL
+           WHERE EXISTS(SELECT 1 FROM works WHERE id=? AND deleted_at IS NULL)
+             AND (? <> 'full' OR (SELECT COUNT(*) FROM images WHERE work_id=?)=?)
+           ON CONFLICT DO NOTHING"#,
     )
     .bind(&[
         JsValue::from_str(&publication_id),
@@ -650,9 +692,20 @@ async fn handle_catalog_publication(mut req: Request, env: &Env) -> Result<Respo
         JsValue::from_str(&message_ids_json),
         JsValue::from_str(&request.publish_state),
         JsValue::from_str(&now),
+        JsValue::from_str(&request.work_id),
+        JsValue::from_str(&request.publish_state),
+        JsValue::from_str(&request.work_id),
+        JsValue::from_f64(request.message_ids.len() as f64),
     ])?
     .run()
     .await?;
+
+    if inserted.meta()?.and_then(|meta| meta.changes).unwrap_or(0) == 0 {
+        return json_response(
+            &json!({"ok":false,"error":"publication or work changed"}),
+            409,
+        );
+    }
 
     json_response(
         &json!({
@@ -827,7 +880,7 @@ async fn handle_catalog_prune(mut req: Request, env: &Env) -> Result<Response> {
     }
     for work_id in work_ids {
         statements.push(
-            db.prepare("UPDATE works SET page_count=(SELECT COUNT(*) FROM images WHERE work_id=?) WHERE id=?")
+            db.prepare("UPDATE works SET page_count=(SELECT COUNT(*) FROM images WHERE work_id=?),review_version=review_version+1 WHERE id=?")
                 .bind(&[JsValue::from_str(&work_id), JsValue::from_str(&work_id)])?,
         );
         statements.push(
@@ -1064,21 +1117,20 @@ async fn handle_catalog_work_prune(mut req: Request, env: &Env) -> Result<Respon
     let mut images = Vec::new();
     let mut affected_tags = std::collections::BTreeSet::new();
     let mut telegram_targets = Vec::new();
+    let mut work_versions = Vec::new();
     for work_id in &request.remove_work_ids {
-        if db
-            .prepare("SELECT id FROM works WHERE id=? AND deleted_at IS NULL")
+        let Some(work) = db
+            .prepare("SELECT review_version FROM works WHERE id=? AND deleted_at IS NULL")
             .bind(&[JsValue::from_str(work_id)])?
-            .first::<ActiveWorkRow>(None)
+            .first::<WorkVersionRow>(None)
             .await?
-            .map(|row| row.id)
-            .as_deref()
-            != Some(work_id.as_str())
-        {
+        else {
             return json_response(
                 &json!({ "ok": false, "error": format!("remove work not active: {work_id}") }),
                 409,
             );
-        }
+        };
+        work_versions.push((work_id, work.review_version));
         let work_images = db
             .prepare(
                 r#"SELECT i.id,i.work_id,i.r2_key
@@ -1090,6 +1142,7 @@ async fn handle_catalog_work_prune(mut req: Request, env: &Env) -> Result<Respon
             .all()
             .await?
             .results::<CatalogPruneImageRow>()?;
+        let image_count = work_images.len();
         images.extend(work_images);
 
         let tags = db
@@ -1106,7 +1159,7 @@ async fn handle_catalog_work_prune(mut req: Request, env: &Env) -> Result<Respon
 
         let publications = db
             .prepare(
-                r#"SELECT id, work_id, chat_id, message_ids_json
+                r#"SELECT id, work_id, chat_id, message_ids_json, publish_state
                    FROM telegram_publications
                    WHERE work_id=? AND deleted_at IS NULL
                    ORDER BY created_at, id"#,
@@ -1137,6 +1190,12 @@ async fn handle_catalog_work_prune(mut req: Request, env: &Env) -> Result<Respon
                     );
                 }
             };
+            if publication.publish_state != "full" || message_ids.len() != image_count {
+                return json_response(
+                    &json!({"ok":false,"error":"telegram publication mapping is incomplete"}),
+                    409,
+                );
+            }
             telegram_targets.push(TelegramPruneTarget {
                 publication_id: publication.id,
                 work_id: publication.work_id,
@@ -1191,7 +1250,7 @@ async fn handle_catalog_work_prune(mut req: Request, env: &Env) -> Result<Respon
                 .bind(&[JsValue::from_str(work_id)])?,
         );
         statements.push(
-            db.prepare("UPDATE works SET deleted_at=? WHERE id=?")
+            db.prepare("UPDATE works SET deleted_at=?,review_version=review_version+1 WHERE id=?")
                 .bind(&[JsValue::from_str(&now), JsValue::from_str(work_id)])?,
         );
     }
@@ -1205,8 +1264,8 @@ async fn handle_catalog_work_prune(mut req: Request, env: &Env) -> Result<Respon
             .bind(&[JsValue::from_str(tag), JsValue::from_str(tag)])?,
         );
     }
-    statements.push(
-        db.prepare(
+    let mut guarded = vec![db
+        .prepare(
             r#"INSERT INTO catalog_work_prune_receipts (
                  decision_id, keep_work_id, remove_work_ids_json, removed_r2_keys_json,
                  telegram_targets_json, telegram_state, telegram_error, created_at,
@@ -1220,9 +1279,33 @@ async fn handle_catalog_work_prune(mut req: Request, env: &Env) -> Result<Respon
             JsValue::from_str(&removed_r2_keys_json),
             JsValue::from_str(&telegram_targets_json),
             JsValue::from_str(&now),
-        ])?,
-    );
-    db.batch(statements).await?;
+        ])?];
+    // R2 backup awaits permit an image restore or a new publication. Validate the
+    // complete captured set in the same transaction that removes the work.
+    guarded.push(db.prepare("UPDATE catalog_work_prune_receipts SET telegram_state=CASE WHEN EXISTS(SELECT 1 FROM works WHERE id=? AND deleted_at IS NULL) THEN telegram_state ELSE 'conflict' END WHERE decision_id=?")
+        .bind(&[JsValue::from_str(&request.keep_work_id), JsValue::from_str(&request.decision_id)])?);
+    for (work_id, version) in work_versions {
+        let target_count = telegram_targets
+            .iter()
+            .filter(|t| &t.work_id == work_id)
+            .count();
+        guarded.push( db.prepare("UPDATE catalog_work_prune_receipts SET telegram_state=CASE WHEN EXISTS(SELECT 1 FROM works WHERE id=? AND review_version=? AND deleted_at IS NULL) AND (SELECT COUNT(*) FROM telegram_publications WHERE work_id=? AND deleted_at IS NULL)=? THEN telegram_state ELSE 'conflict' END WHERE decision_id=?")
+            .bind(&[JsValue::from_str(work_id), JsValue::from_f64(version as f64), JsValue::from_str(work_id), JsValue::from_f64(target_count as f64), JsValue::from_str(&request.decision_id)])?);
+    }
+    for target in &telegram_targets {
+        guarded.push( db.prepare("UPDATE catalog_work_prune_receipts SET telegram_state=CASE WHEN EXISTS(SELECT 1 FROM telegram_publications WHERE id=? AND work_id=? AND chat_id=? AND message_ids_json=? AND publish_state='full' AND deleted_at IS NULL) THEN telegram_state ELSE 'conflict' END WHERE decision_id=?")
+            .bind(&[JsValue::from_str(&target.publication_id), JsValue::from_str(&target.work_id), JsValue::from_f64(target.chat_id as f64), JsValue::from_str(&serde_json::to_string(&target.message_ids).unwrap()), JsValue::from_str(&request.decision_id)])?);
+    }
+    guarded.extend(statements);
+    if let Err(error) = db.batch(guarded).await {
+        if error.to_string().contains("CHECK constraint failed") {
+            return json_response(
+                &json!({"ok":false,"error":"work or publication changed concurrently; retry prune"}),
+                409,
+            );
+        }
+        return Err(error);
+    }
     if !removed_r2_keys.is_empty() {
         bucket.delete_multiple(removed_r2_keys.clone()).await?;
     }
@@ -1303,6 +1386,16 @@ async fn handle_catalog_retract(mut req: Request, env: &Env) -> Result<Response>
     }
     let bucket = env.bucket("MEDIA")?;
     if work.deleted_at.is_some() {
+        let updated = db.prepare("UPDATE works SET review_version=review_version+1 WHERE id=? AND deleted_at IS NOT NULL")
+            .bind(&[JsValue::from_str(&request.work_id)])?
+            .run()
+            .await?;
+        if updated.meta()?.and_then(|meta| meta.changes).unwrap_or(0) == 0 {
+            return json_response(
+                &json!({"ok":false,"error":"work was restored concurrently; retry retract"}),
+                409,
+            );
+        }
         delete_retract_originals(&db, &bucket, &request.work_id, &request.decision_id).await?;
         return json_response(
             &json!({
@@ -1370,7 +1463,7 @@ async fn handle_catalog_retract(mut req: Request, env: &Env) -> Result<Response>
             .bind(&[JsValue::from_str(&request.work_id)])?,
     );
     statements.push(
-        db.prepare("UPDATE works SET deleted_at=? WHERE id=?")
+        db.prepare("UPDATE works SET deleted_at=?,review_version=review_version+1 WHERE id=?")
             .bind(&[JsValue::from_str(&now), JsValue::from_str(&request.work_id)])?,
     );
     statements.push(
@@ -1598,12 +1691,9 @@ pub fn media_header_pairs(
     if let Some(v) = content_encoding.filter(|s| !s.is_empty()) {
         pairs.push(("Content-Encoding".into(), v.to_string()));
     }
-    // Always override with immutable long-cache; ignore stored cache_control for media.
+    // Revalidate visibility before serving cached bytes after a catalog deletion.
     let _ = cache_control;
-    pairs.push((
-        "Cache-Control".into(),
-        "public, max-age=31536000, immutable".into(),
-    ));
+    pairs.push(("Cache-Control".into(), "private, no-cache".into()));
     // Prevent browsers from MIME-sniffing image responses into executable contexts.
     pairs.push(("X-Content-Type-Options".into(), "nosniff".into()));
     if !etag.is_empty() {
@@ -1612,10 +1702,17 @@ pub fn media_header_pairs(
     pairs
 }
 
-async fn handle_media(key: &str, env: &Env) -> Result<Response> {
+async fn handle_media(key: &str, req: &Request, env: &Env) -> Result<Response> {
     let decoded = urlencoding::decode(key)
         .map(|s| s.into_owned())
         .unwrap_or_else(|_| key.to_string());
+
+    if env.d1("DB")?.prepare("SELECT i.id FROM images i JOIN works w ON w.id=i.work_id WHERE i.r2_key=? AND w.deleted_at IS NULL LIMIT 1")
+        .bind(&[JsValue::from_str(&decoded)])?.first::<ActiveWorkRow>(None).await?.is_none() {
+        let mut response = Response::error("not found", 404)?;
+        response.headers_mut().set("Cache-Control", "no-store")?;
+        return Ok(response);
+    }
 
     let bucket = env.bucket("MEDIA")?;
     let Some(obj) = bucket.get(&decoded).execute().await? else {
@@ -1640,6 +1737,14 @@ async fn handle_media(key: &str, env: &Env) -> Result<Response> {
     let headers = Headers::new();
     for (name, value) in pairs {
         let _ = headers.set(&name, &value);
+    }
+
+    if req.headers().get("If-None-Match")?.is_some_and(|value| {
+        value
+            .split(',')
+            .any(|tag| tag.trim().trim_start_matches("W/") == obj.http_etag() || tag.trim() == "*")
+    }) {
+        return Ok(Response::empty()?.with_status(304).with_headers(headers));
     }
 
     Ok(Response::from_body(response_body)?.with_headers(headers))
@@ -1741,7 +1846,7 @@ mod tests {
         assert_eq!(map.get("Content-Language").map(String::as_str), Some("en"));
         assert_eq!(
             map.get("Cache-Control").map(String::as_str),
-            Some("public, max-age=31536000, immutable")
+            Some("private, no-cache")
         );
         assert_eq!(
             map.get("X-Content-Type-Options").map(String::as_str),

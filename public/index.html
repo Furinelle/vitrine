@@ -3,41 +3,65 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Vitrine · 图库</title>
-  <link rel="stylesheet" href="/styles.css" />
+  <meta name="theme-color" content="#f7f8fa" />
+  <meta name="description" content="Vitrine 私人图库，收藏喜欢的插画，按来源、标签和作者探索作品。" />
+  <title>Vitrine · 我的图库</title>
+  <link rel="stylesheet" href="/styles.css?v=20260912" />
 </head>
 <body>
-  <header class="top">
-    <div class="brand">
-      <h1>Vitrine</h1>
-      <p>hanabi 入库图库 · 标签 / 来源筛选</p>
+  <a class="skip-link" href="#collection">跳到作品</a>
+  <aside class="sidebar">
+    <a class="brand" href="/" aria-label="Vitrine 图库首页"><span class="brand-mark" aria-hidden="true">v</span><span>Vitrine<span class="brand-dot">.</span></span></a>
+    <div class="sidebar-section">
+      <p class="section-label">我的收藏 <span>COLLECTION</span></p>
+      <nav id="sources" aria-label="作品来源"><button class="source-link active" data-source="" aria-current="page"><span class="source-symbol" aria-hidden="true">▦</span><span>全部作品</span><span class="source-count"></span></button></nav>
     </div>
-    <div class="filters">
-      <select id="source"></select>
-      <input id="tag" list="taglist" placeholder="标签，如 原神" />
-      <datalist id="taglist"></datalist>
-      <input id="q" placeholder="搜索标题/作者/ID" />
-      <button id="apply">筛选</button>
-      <button id="reset" class="ghost">重置</button>
+    <div class="sidebar-section tag-section">
+      <p class="section-label">常用标签 <span>TAGS</span></p>
+      <div id="popular-tags" class="popular-tags"></div>
+      <button id="browse-tags" class="text-button">浏览全部标签 <span aria-hidden="true">↗</span></button>
     </div>
-  </header>
-
-  <main>
-    <section id="status" class="status">加载中…</section>
-    <section id="grid" class="grid"></section>
-    <div class="more">
-      <button id="more" class="ghost" hidden>加载更多</button>
+    <div class="sidebar-footer"><span class="footer-mark" aria-hidden="true">V.</span><p>留住喜欢的画面。<br><span>For the love of art.</span></p></div>
+  </aside>
+  <div class="workspace">
+    <header class="topbar">
+      <span class="mobile-brand">Vitrine<span>.</span></span>
+      <p class="breadcrumb">我的图库 <span aria-hidden="true">/</span> <span id="current-source">全部作品</span></p>
+      <form id="search-form" class="search" role="search">
+        <svg aria-hidden="true" viewBox="0 0 24 24"><circle cx="10.8" cy="10.8" r="6.8"/><path d="m16 16 4.5 4.5"/></svg>
+        <label class="sr-only" for="q">搜索标题、作者或作品 ID</label>
+        <input id="q" type="search" placeholder="搜索标题、作者或 ID" autocomplete="off" />
+        <button type="submit" aria-label="搜索作品">搜索</button>
+      </form>
+    </header>
+    <main id="collection" tabindex="-1">
+      <div class="collection-heading"><div><p class="eyebrow">THE COLLECTION</p><h1 id="collection-title">所有作品<span class="heading-dot">.</span></h1></div><p id="collection-count" class="collection-count">正在整理收藏</p></div>
+      <form id="filter-form" class="filterbar">
+        <div class="filter-fields">
+          <label class="source-select"><span>来源</span><select id="source" aria-label="作品来源"><option value="">全部来源</option></select></label>
+          <label class="tag-filter"><span aria-hidden="true">#</span><span class="sr-only">筛选标签</span><input id="tag" list="taglist" placeholder="选择或输入标签" autocomplete="off" /><datalist id="taglist"></datalist></label>
+          <button type="submit" class="filter-apply">筛选</button>
+        </div>
+        <button id="reset" type="button" class="text-button" hidden>清除筛选 <span aria-hidden="true">×</span></button>
+        <span class="sort-label">最近收藏 <span aria-hidden="true">↓</span></span>
+      </form>
+      <div id="active-filters" class="active-filters" aria-label="当前筛选条件"></div>
+      <p id="status" class="status" role="status" aria-live="polite">正在加载作品…</p>
+      <section id="grid" class="gallery" aria-label="收藏作品" aria-busy="true"></section>
+      <div id="empty" class="empty-state" hidden><span aria-hidden="true">⌕</span><h2>还没有找到这幅画</h2><p>换个关键词，或试试其他标签。</p><button id="empty-reset" class="primary-button">查看全部作品</button></div>
+      <div class="pagination"><button id="more" class="more-button" hidden>继续浏览 <span aria-hidden="true">↓</span></button><button id="retry" class="more-button" hidden>重新加载</button><p id="end-note" hidden>所有收藏，都在这里了。</p></div>
+      <footer class="page-footer"><span>VITRINE / PRIVATE COLLECTION</span><a href="#collection">回到顶部 ↑</a></footer>
+    </main>
+  </div>
+  <dialog id="lightbox" aria-labelledby="lb-title">
+    <button id="lb-close" class="icon-button close" aria-label="关闭作品详情">×</button>
+    <div class="viewer">
+      <div class="viewer-toolbar"><span id="lb-counter">1 / 1</span><a id="lb-original" target="_blank" rel="noopener noreferrer">查看原图 ↗</a></div>
+      <div class="image-stage"><button id="lb-prev" class="icon-button image-nav prev" aria-label="上一张图片">‹</button><img id="lb-img" alt="" /><p id="lb-image-error" hidden>这张图片暂时无法加载。</p><button id="lb-next" class="icon-button image-nav next" aria-label="下一张图片">›</button></div>
+      <div id="lb-thumbs" class="thumbnails" aria-label="选择图片"></div>
     </div>
-  </main>
-
-  <dialog id="lightbox">
-    <form method="dialog">
-      <button class="close" value="close">×</button>
-    </form>
-    <img id="lb-img" alt="" />
-    <div id="lb-meta" class="lb-meta"></div>
+    <div class="work-detail"><p id="lb-source" class="eyebrow"></p><h2 id="lb-title"></h2><p id="lb-author" class="detail-author"></p><div class="detail-rule"></div><p id="lb-info" class="detail-info"></p><div id="lb-tags" class="detail-tags"></div><p id="lb-status" class="detail-status" role="status"></p><a id="lb-link" class="original-link" target="_blank" rel="noopener noreferrer">前往原帖 <span aria-hidden="true">↗</span></a></div>
   </dialog>
-
-  <script src="/app.js"></script>
+  <script src="/app.js?v=20260912" defer></script>
 </body>
 </html>

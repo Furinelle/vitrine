@@ -1226,6 +1226,7 @@ async fn commit_d1_batch(
               is_r18=excluded.is_r18,
               page_count=excluded.page_count,
               origin=excluded.origin,
+              review_version=works.review_version+1,
               deleted_at=NULL
             "#,
         )
@@ -1253,14 +1254,19 @@ async fn commit_d1_batch(
                 INSERT INTO telegram_publications (
                   id, work_id, chat_id, anchor_message_id, message_ids_json,
                   publish_state, created_at, deleted_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, NULL)
+                ) VALUES (COALESCE((SELECT id FROM telegram_publications
+                    WHERE work_id=? AND chat_id=? AND anchor_message_id=?), ?), ?, ?, ?, ?, ?, ?, NULL)
                 ON CONFLICT(id) DO UPDATE SET
+                  anchor_message_id=excluded.anchor_message_id,
                   message_ids_json=excluded.message_ids_json,
                   publish_state=excluded.publish_state,
                   deleted_at=NULL
                 "#,
             )
             .bind(&[
+                JsValue::from_str(wid),
+                JsValue::from_f64(publication.chat_id as f64),
+                JsValue::from_f64(publication.anchor_message_id as f64),
                 JsValue::from_str(&publication.id),
                 JsValue::from_str(wid),
                 JsValue::from_f64(publication.chat_id as f64),

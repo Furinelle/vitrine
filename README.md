@@ -87,6 +87,16 @@ Hanabi 拿到 targets 后删除对应频道消息，再调用 `POST /api/catalog
 
 ### `GET /api/works?source=&tag=&q=&limit=&offset=`
 
+### `GET /api/works/<URL 编码的 work_id>`
+
+公开读取在线作品的完整图片列表，按原页码排序；已下线作品返回 404。网页用此接口浏览多图作品，无需把图库管理令牌交给浏览器。
+
+### `POST /api/catalog/image-review`
+
+使用管理 Bearer token，提交 `decision_id`、`r2_key` 和 `action=prepare|delete|restore`。单图删除保留不可变 R2 原图与恢复副本，通过 D1 控制可见性；`/media` 只提供仍在线的图片，备份不公开。图片使用 ETag 重验证，撤销不再与迟到的物理删除竞争。
+
+整作品撤回、清理或重新入库会使旧单图快照失效，返回 409。`restore` 也可取消仍为 `prepared` 的删除；调用方必须等远端确认后再完成本地撤销。迁移 0006 增加作品版本与媒体索引，旧无版本快照保守拒绝。
+
 ### `GET /api/tags` · `GET /api/sources`
 
 ### `GET /media/<r2_key>`
@@ -112,12 +122,15 @@ npm install
 # rustup target add wasm32-unknown-unknown
 # cargo install worker-build
 
-npm run db:local    # apply D1 migrations 0001–0004 to a local database only
+npm run db:local    # apply D1 migrations 0001–0006 to a local database only
 npm run build:dev   # worker-build --dev → build/worker/shim.mjs
 npx wrangler dev
 
 # 质量检查（不部署）
 npm run check       # fmt + clippy -D warnings + cargo test + worker-build --dev
+node tools/test_frontend.mjs
+# 对隔离本地 Wrangler（18787，测试 token）执行清理/撤销/并发回归：
+python3 tools/test_image_review.py
 ```
 
 `npm run db:local` is the only migration command used during development. It creates `telegram_publications` and `catalog_work_prune_receipts` from `migrations/0004_telegram_publications.sql`.
