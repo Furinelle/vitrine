@@ -1,7 +1,7 @@
 """Local HTTP regressions; INGEST_TOKEN=local-image-review-test.
 
-Run Wrangler on 18787 with migrations applied, then:
-VITRINE_TEST_STATE=/path/to/wrangler-state python3 tools/test_image_review.py
+Run Wrangler with migrations applied, then:
+VITRINE_TEST_BASE=http://127.0.0.1:18787 VITRINE_TEST_STATE=/path/to/wrangler-state python3 tools/test_image_review.py
 Only fake local D1/R2 data is used. The state directory must match Wrangler's --persist-to.
 """
 from concurrent.futures import ThreadPoolExecutor
@@ -17,7 +17,7 @@ import urllib.request
 import uuid
 import zlib
 
-BASE = 'http://127.0.0.1:18787'
+BASE = os.environ.get('VITRINE_TEST_BASE', 'http://127.0.0.1:18787')
 HEADERS = {'Authorization': 'Bearer local-image-review-test'}
 STATE = os.environ.get('VITRINE_TEST_STATE', '.wrangler/state')
 WRANGLER = ['node', 'node_modules/wrangler/bin/wrangler.js']
@@ -261,10 +261,114 @@ def main():
     no_mapping = ingest(count=1, publication=False)[0]
     _, missing = review(no_mapping)
     missing('prepare', expected=409)
+
+    # Existing receipts infer the original image count from their complete mapping.
+    legacy_images = ingest()
+    legacy_id, legacy_count = review(legacy_images[1])
+    legacy_prepared = legacy_count('prepare')
+    local_d1(f"UPDATE catalog_image_reviews SET payload=json_remove(payload,'$.image_count') WHERE decision_id='{legacy_id}'")
+    legacy_count('delete')
+    legacy_count('restore', restored=restore_targets(legacy_prepared))
+    assert catalog(legacy_images[1]['work_id']) == legacy_images
+
+    # Opt-in without a mapping removes only the selected gallery page and remains undoable.
+    for count in (3, 1):
+        unmapped = ingest(count=count, publication=False)
+        selected = unmapped[count // 2]
+        decision, gallery_only = review(selected)
+        prepared = gallery_only('prepare', allow_missing_telegram=True)
+        assert prepared['targets'] == []
+        original = fetch('/media/' + selected['r2_key'], auth=False)[1]
+        gallery_only('delete')
+        assert catalog(selected['work_id']) == [i for i in unmapped if i != selected]
+        fetch('/media/' + selected['r2_key'], expected=404, auth=False)
+        fetch('/media/review-trash/' + decision + '/' + selected['r2_key'], expected=404, auth=False)
+        if count == 1:
+            public_images(selected['work_id'], expected=404)
+        else:
+            assert len(public_images(selected['work_id'])['images']) == count - 1
+        assert gallery_only('prepare')['state'] == 'deleted'
+        gallery_only('delete')
+        with tempfile.TemporaryDirectory() as directory:
+            for object_key in (selected['r2_key'], 'review-trash/' + decision + '/' + selected['r2_key']):
+                output = Path(directory) / 'original.png'
+                subprocess.run(WRANGLER + ['r2', 'object', 'get', 'shirogane-media/' + object_key, '--local', '--persist-to', STATE, '--file', str(output)], check=True, capture_output=True)
+                assert output.read_bytes() == original
+        gallery_only('restore', restored=[])
+        assert catalog(selected['work_id']) == unmapped
+        assert fetch('/media/' + selected['r2_key'], auth=False)[1] == original
+        gallery_only('restore', restored=[])
+        gallery_only('delete', expected=409)
+
+    cancelled = ingest(publication=False)
+    _, cancel = review(cancelled[0])
+    cancel('prepare', allow_missing_telegram=True)
+    cancel('restore', restored=[])
+    cancel('delete', expected=409)
+    assert catalog(cancelled[0]['work_id']) == cancelled
+
+    # Opt-in never guesses an existing incomplete mapping or ignores a newly added one.
+    malformed = ingest()
+    local_d1(f"UPDATE telegram_publications SET message_ids_json='[101]' WHERE work_id='{malformed[0]['work_id']}'")
+    _, invalid_mapping = review(malformed[1])
+    invalid_mapping('prepare', expected=409, allow_missing_telegram=True)
+    added_images = ingest(publication=False)
+    _, added = review(added_images[1])
+    added('prepare', allow_missing_telegram=True)
+    publication(added_images[1]['work_id'], [401, 402, 403])
+    added('delete', expected=409)
+    assert catalog(added_images[1]['work_id']) == added_images
+
+    # A sibling deletion changes the gallery count even when there are no Telegram targets.
+    unmapped = ingest(publication=False)
+    _, first = review(unmapped[0])
+    _, stale = review(unmapped[1])
+    first('prepare', allow_missing_telegram=True)
+    stale('prepare', allow_missing_telegram=True)
+    first('delete')
+    for action in ('prepare', 'delete', 'restore'):
+        stale(action, expected=409, restored=[])
+    _, second = review(unmapped[1])
+    second('prepare', allow_missing_telegram=True)
+    second('delete')
+    for action in ('prepare', 'delete', 'restore'):
+        first(action, expected=409, restored=[])
+    assert catalog(unmapped[0]['work_id']) == [unmapped[2]]
+    second('restore', restored=[])
+    first('restore', restored=[])
+    assert catalog(unmapped[0]['work_id']) == unmapped
+
+    # Both preflights may see the same count; the transaction guards permit only one delete.
+    for _ in range(4):
+        unmapped = ingest(publication=False)
+        actions = [review(image)[1] for image in unmapped[:2]]
+        for act in actions:
+            act('prepare', allow_missing_telegram=True)
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            deleted = [pool.submit(act, 'delete', expected=(200, 409)) for act in actions]
+            assert sum(bool(future.result().get('ok')) for future in deleted) == 1
+        assert len(catalog(unmapped[0]['work_id'])) == 2
+
+    # Empty-target undo also keeps its state guard against delayed duplicate deletions.
+    for _ in range(4):
+        current = ingest(publication=False)[1]
+        _, race = review(current)
+        race('prepare', allow_missing_telegram=True)
+        race('delete')
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            futures = [pool.submit(race, 'delete', expected=(200, 409)) for _ in range(3)]
+            futures.append(pool.submit(race, 'restore', expected=(200, 409), restored=[]))
+            for future in futures:
+                future.result()
+        race('restore', restored=[])
+        race('delete', expected=409)
+        assert len(catalog(current['work_id'])) == 3
+        fetch('/media/' + current['r2_key'], auth=False)
+
     public_images('pixiv:999999999999999999999999999999', expected=404)
     public_images('invalid', expected=400)
     public_images('pixiv:../secret', expected=400)
-    print('PASS: exact delete/undo, immutable R2, hidden backups, ETag/304, public album detail, stable anchors, complete mapping set, whole-work invalidation, legacy refusal, concurrent delete/restore')
+    print('PASS: exact delete/undo, immutable R2, hidden backups, ETag/304, public album detail, stable anchors, complete mapping set, whole-work invalidation, legacy receipts, concurrent delete/restore, opt-in gallery-only deletion and count guards')
 
 
 if __name__ == '__main__':

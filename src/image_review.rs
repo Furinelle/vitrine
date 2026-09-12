@@ -6,6 +6,8 @@ pub(super) struct ImageRequest {
     r2_key: String,
     action: String,
     #[serde(default)]
+    allow_missing_telegram: bool,
+    #[serde(default)]
     restored: Vec<RestoredTarget>,
 }
 
@@ -44,6 +46,22 @@ struct Snapshot {
     backup_key: String,
     #[serde(default)]
     review_version: Option<i64>,
+    #[serde(default)]
+    image_count: Option<usize>,
+}
+
+impl Snapshot {
+    fn expected_image_count(&self, state: &str) -> Option<usize> {
+        let count = self
+            .image_count
+            .or_else(|| {
+                self.targets
+                    .first()
+                    .map(|target| target.remaining.len() + 1)
+            })?
+            .checked_sub(1)?;
+        Some(count + usize::from(state != "deleted"))
+    }
 }
 
 #[derive(Deserialize)]
@@ -65,20 +83,24 @@ struct Publication {
 struct WorkState {
     review_version: i64,
     deleted_at: Option<String>,
+    image_count: usize,
 }
 
 async fn snapshot_is_current(db: &D1Database, snapshot: &Snapshot, state: &str) -> Result<bool> {
     let image = &snapshot.image;
+    let Some(expected_images) = snapshot.expected_image_count(state) else {
+        return Ok(false);
+    };
     let work = db
-        .prepare("SELECT review_version,deleted_at FROM works WHERE id=?")
+        .prepare("SELECT review_version,deleted_at,(SELECT COUNT(*) FROM images WHERE work_id=works.id) AS image_count FROM works WHERE id=?")
         .bind(&[JsValue::from_str(&image.work_id)])?
         .first::<WorkState>(None)
         .await?;
-    let last_image_deleted =
-        state == "deleted" && snapshot.targets.iter().all(|t| t.remaining.is_empty());
+    let last_image_deleted = state == "deleted" && expected_images == 0;
     if !work.is_some_and(|w| {
         Some(w.review_version) == snapshot.review_version
             && w.deleted_at.is_some() == last_image_deleted
+            && w.image_count == expected_images
     }) {
         return Ok(false);
     }
@@ -140,13 +162,16 @@ fn snapshot_guards(
 ) -> Result<Vec<D1PreparedStatement>> {
     let image = &snapshot.image;
     let deleting = state == "prepared";
+    let expected_images = snapshot
+        .expected_image_count(state)
+        .ok_or_else(|| Error::RustError("image review snapshot has no image count".into()))?;
     let expected_active = snapshot
         .targets
         .iter()
         .filter(|t| deleting || !t.remaining.is_empty())
         .count();
-    let mut statements = vec![db.prepare("UPDATE catalog_image_reviews SET state=CASE WHEN state=? AND EXISTS(SELECT 1 FROM works WHERE id=? AND review_version=? AND (deleted_at IS NOT NULL)=?) AND (SELECT COUNT(*) FROM telegram_publications WHERE work_id=? AND deleted_at IS NULL)=? AND (EXISTS(SELECT 1 FROM images WHERE id=? OR r2_key=?))=? THEN state ELSE 'conflict' END WHERE decision_id=?")
-        .bind(&[JsValue::from_str(state), JsValue::from_str(&image.work_id), JsValue::from_f64(snapshot.review_version.unwrap_or(-1) as f64), JsValue::from_f64(if !deleting && expected_active == 0 { 1.0 } else { 0.0 }), JsValue::from_str(&image.work_id), JsValue::from_f64(expected_active as f64), JsValue::from_str(&image.id), JsValue::from_str(&image.r2_key), JsValue::from_f64(if deleting { 1.0 } else { 0.0 }), JsValue::from_str(decision_id)])?];
+    let mut statements = vec![db.prepare("UPDATE catalog_image_reviews SET state=CASE WHEN state=? AND EXISTS(SELECT 1 FROM works WHERE id=? AND review_version=? AND (deleted_at IS NOT NULL)=?) AND (SELECT COUNT(*) FROM images WHERE work_id=?)=? AND (SELECT COUNT(*) FROM telegram_publications WHERE work_id=? AND deleted_at IS NULL)=? AND (EXISTS(SELECT 1 FROM images WHERE id=? OR r2_key=?))=? THEN state ELSE 'conflict' END WHERE decision_id=?")
+        .bind(&[JsValue::from_str(state), JsValue::from_str(&image.work_id), JsValue::from_f64(snapshot.review_version.unwrap_or(-1) as f64), JsValue::from_f64(if expected_images == 0 { 1.0 } else { 0.0 }), JsValue::from_str(&image.work_id), JsValue::from_f64(expected_images as f64), JsValue::from_str(&image.work_id), JsValue::from_f64(expected_active as f64), JsValue::from_str(&image.id), JsValue::from_str(&image.r2_key), JsValue::from_f64(if deleting { 1.0 } else { 0.0 }), JsValue::from_str(decision_id)])?];
     if deleting {
         statements.push(db.prepare("UPDATE catalog_image_reviews SET state=CASE WHEN EXISTS(SELECT 1 FROM images WHERE id=? AND r2_key=?) THEN state ELSE 'conflict' END WHERE decision_id=?")
             .bind(&[JsValue::from_str(&image.id), JsValue::from_str(&image.r2_key), JsValue::from_str(decision_id)])?);
@@ -242,7 +267,7 @@ async fn handle_inner(mut req: Request, env: &Env) -> Result<Response> {
             return json_response(&json!({"ok":false,"error":"image not active"}), 409);
         };
         let work = db
-            .prepare("SELECT review_version,deleted_at FROM works WHERE id=?")
+            .prepare("SELECT review_version,deleted_at,(SELECT COUNT(*) FROM images WHERE work_id=works.id) AS image_count FROM works WHERE id=?")
             .bind(&[JsValue::from_str(&image.work_id)])?
             .first::<WorkState>(None)
             .await?
@@ -259,7 +284,7 @@ async fn handle_inner(mut req: Request, env: &Env) -> Result<Response> {
             .ok_or_else(|| Error::RustError("image disappeared".into()))?;
         let publications = db.prepare("SELECT id,chat_id,message_ids_json,publish_state,deleted_at FROM telegram_publications WHERE work_id=? AND deleted_at IS NULL ORDER BY id")
             .bind(&[JsValue::from_str(&image.work_id)])?.all().await?.results::<Publication>()?;
-        if publications.is_empty() {
+        if publications.is_empty() && !request.allow_missing_telegram {
             return json_response(
                 &json!({"ok":false,"error":"telegram publication mapping missing"}),
                 409,
@@ -280,6 +305,7 @@ async fn handle_inner(mut req: Request, env: &Env) -> Result<Response> {
             targets,
             backup_key,
             review_version: Some(work.review_version),
+            image_count: Some(images.len()),
         };
         db.prepare("INSERT INTO catalog_image_reviews(decision_id,payload,state,created_at) VALUES(?,?,'prepared',?) ON CONFLICT DO NOTHING")
             .bind(&[JsValue::from_str(&request.decision_id),JsValue::from_str(&serde_json::to_string(&snapshot).map_err(|e| Error::RustError(e.to_string()))?),JsValue::from_str(&js_iso_now())])?.run().await?;
