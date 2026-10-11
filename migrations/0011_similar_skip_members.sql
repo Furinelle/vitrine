@@ -1,0 +1,1 @@
+ALTER TABLE similar_skips ADD COLUMN members TEXT NOT NULL DEFAULT '';

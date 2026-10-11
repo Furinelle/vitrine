@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::{collections::HashMap, time::Duration};
-use wasm_bindgen::JsValue;
+use wasm_bindgen::{JsCast, JsValue};
 use worker::*;
 
 /// Default max number of files per ingest request.
@@ -22,6 +22,7 @@ pub const MAX_AUTHOR_NAME_LEN: usize = 256;
 pub const MAX_SOURCE_URL_LEN: usize = 2048;
 pub const MAX_AUTHOR_URL_LEN: usize = 2048;
 pub const MAX_ORIGIN_LEN: usize = 128;
+const IMAGE_MAGIC_BYTES: usize = 12;
 
 /// Ingest size / count limits (from env or defaults).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -763,7 +764,7 @@ struct OldKeyRow {
 
 struct PreparedFile {
     page: usize,
-    bytes: Vec<u8>,
+    file: web_sys::File,
     content_type: String,
     sha256: String,
     r2_key: String,
@@ -813,7 +814,7 @@ async fn put_prepared_file(
         custom.insert("sha256".to_string(), file.sha256.clone());
 
         let result = bucket
-            .put(file.r2_key.clone(), file.bytes.clone())
+            .put(file.r2_key.clone(), file.file.stream())
             .http_metadata(HttpMetadata {
                 content_type: Some(file.content_type.clone()),
                 cache_control: Some("public, max-age=31536000, immutable".into()),
@@ -863,6 +864,18 @@ pub async fn handle_ingest(mut req: Request, env: Env) -> Result<Response> {
         AuthCheck::Ok => {}
     }
 
+    let limits = limits_from_env(&env);
+    // Multipart overhead and metadata may occupy at most an additional MiB.
+    if let Some((status, error)) = crate::request_length_error(
+        req.headers().get("Content-Length")?.as_deref(),
+        limits.max_total_bytes.saturating_add(1024 * 1024),
+    ) {
+        return Ok(with_cors(json_response(
+            &json!({"ok": false, "error": error}),
+            status,
+        )?));
+    }
+
     let content_type = req.headers().get("Content-Type")?.unwrap_or_default();
     if !content_type
         .to_ascii_lowercase()
@@ -888,7 +901,15 @@ pub async fn handle_ingest(mut req: Request, env: Env) -> Result<Response> {
         }
     }
 
-    let form = req.form_data().await?;
+    let form = match req.form_data().await {
+        Ok(form) => form,
+        Err(_) => {
+            return Ok(with_cors(json_response(
+                &json!({"ok": false, "error": "invalid multipart body"}),
+                400,
+            )?))
+        }
+    };
     let meta_raw = match form.get("meta") {
         Some(FormEntry::Field(s)) => s,
         Some(FormEntry::File(_)) => {
@@ -905,6 +926,13 @@ pub async fn handle_ingest(mut req: Request, env: Env) -> Result<Response> {
         }
     };
 
+    if meta_raw.len() > 64 * 1024 {
+        return Ok(with_cors(json_response(
+            &json!({"ok": false, "error": "meta too large"}),
+            413,
+        )?));
+    }
+
     let meta = match validate_meta_json(&meta_raw) {
         Ok(m) => m,
         Err(e) => {
@@ -915,18 +943,25 @@ pub async fn handle_ingest(mut req: Request, env: Env) -> Result<Response> {
         }
     };
 
-    let file_entries = form.get_all("files").unwrap_or_default();
-    let mut files: Vec<File> = Vec::new();
-    for entry in file_entries {
-        if let FormEntry::File(f) = entry {
-            files.push(f);
-        }
-    }
+    // Retain native files so image bodies never need to enter WASM memory.
+    let form: web_sys::FormData = JsValue::from(form).unchecked_into();
+    let files: Vec<web_sys::File> = form
+        .get_all("files")
+        .iter()
+        .filter_map(|entry| entry.dyn_into::<web_sys::File>().ok())
+        .collect();
 
-    let limits = limits_from_env(&env);
-    // Read file bodies first to know sizes/hashes; normalize MIME to allowlist.
-    let mut bodies: Vec<(String, String, Vec<u8>)> = Vec::new();
-    for (i, f) in files.iter().enumerate() {
+    // Blob sizes are available without copying their contents into WASM memory.
+    let sizes: Vec<u64> = files.iter().map(|file| file.size() as u64).collect();
+    if let Err(e) = check_file_limits(files.len(), &sizes, &limits) {
+        return Ok(with_cors(json_response(
+            &json!({ "ok": false, "error": e.message() }),
+            400,
+        )?));
+    }
+    let mut bodies: Vec<(String, web_sys::File)> = Vec::with_capacity(files.len());
+    let mut digests = Vec::with_capacity(files.len());
+    for (i, f) in files.into_iter().enumerate() {
         let name = f.name();
         let declared = f.type_();
         let ct = match normalize_allowed_image_mime(&declared, &name) {
@@ -938,29 +973,30 @@ pub async fn handle_ingest(mut req: Request, env: Env) -> Result<Response> {
                 )?));
             }
         };
-        let bytes = f
-            .bytes()
+        let header = f.slice_with_f64_and_f64(0.0, IMAGE_MAGIC_BYTES as f64)?;
+        let header = wasm_bindgen_futures::JsFuture::from(header.array_buffer())
             .await
-            .map_err(|e| Error::RustError(format!("failed to read file {i}: {e}")))?;
+            .map_err(|e| {
+                Error::RustError(format!("failed to read file {i}: {}", Error::from(e)))
+            })?;
         // Do not trust multipart Content-Type alone — require magic bytes to match.
-        if let Err(e) = verify_image_magic(&ct, &bytes) {
+        if let Err(e) = verify_image_magic(&ct, &js_sys::Uint8Array::new(&header).to_vec()) {
             return Ok(with_cors(json_response(
                 &json!({ "ok": false, "error": e.message() }),
                 400,
             )?));
         }
-        bodies.push((name, ct, bytes));
+        let digest = crypto::DigestStream::new(crypto::DigestStreamAlgorithm::Sha256);
+        // Observe both promises so a stream failure cannot leave a rejected digest unhandled.
+        wasm_bindgen_futures::JsFuture::from(js_sys::Promise::all(&js_sys::Array::of2(
+            &f.stream().pipe_to(digest.raw()),
+            &digest.raw().digest(),
+        )))
+        .await?;
+        digests.push(hex::encode(digest.digest().await?.to_vec()));
+        bodies.push((ct, f));
     }
 
-    let sizes: Vec<u64> = bodies.iter().map(|(_, _, b)| b.len() as u64).collect();
-    if let Err(e) = check_file_limits(bodies.len(), &sizes, &limits) {
-        return Ok(with_cors(json_response(
-            &json!({ "ok": false, "error": e.message() }),
-            400,
-        )?));
-    }
-
-    let digests: Vec<String> = bodies.iter().map(|(_, _, b)| sha256_hex(b)).collect();
     let fingerprint = compute_fingerprint(&meta, &digests);
     let wid = work_id(&meta.source, &meta.source_id);
     let db = env.d1("DB")?;
@@ -993,10 +1029,11 @@ pub async fn handle_ingest(mut req: Request, env: Env) -> Result<Response> {
     let now = js_iso_now();
     let mut entropy = [0u8; 16];
     if let Err(e) = getrandom::getrandom(&mut entropy) {
+        console_error!("ingest rng failed: {e}");
         return Ok(with_cors(json_response(
             &json!({
                 "ok": false,
-                "error": format!("internal error: rng failed: {e}")
+                "error": "internal server error"
             }),
             500,
         )?));
@@ -1004,14 +1041,14 @@ pub async fn handle_ingest(mut req: Request, env: Env) -> Result<Response> {
     let ingest_id = shape_ingest_id(&[&now, &wid, &fingerprint, &hex::encode(entropy)]);
 
     let mut prepared: Vec<PreparedFile> = Vec::with_capacity(bodies.len());
-    for (i, (_name, ct, bytes)) in bodies.into_iter().enumerate() {
+    for (i, (ct, file)) in bodies.into_iter().enumerate() {
         let ext = ext_from_content_type(&ct);
         let sha = digests[i].clone();
         let key = versioned_r2_key(&meta.source, &meta.source_id, &ingest_id, i, ext);
-        let byte_size = bytes.len() as u64;
+        let byte_size = file.size() as u64;
         prepared.push(PreparedFile {
             page: i,
-            bytes,
+            file,
             content_type: ct,
             sha256: sha,
             r2_key: key,
@@ -1036,6 +1073,7 @@ pub async fn handle_ingest(mut req: Request, env: Env) -> Result<Response> {
         match put_prepared_file(&bucket, file, &wid, &ingest_id).await {
             Ok(()) => uploaded_keys.push(file.r2_key.clone()),
             Err(e) => {
+                console_error!("ingest r2 upload failed: {e}");
                 let cleanup_keys =
                     r2_put_failure_cleanup_keys(&uploaded_keys, file.r2_key.as_str());
                 best_effort_delete(&bucket, &cleanup_keys).await;
@@ -1054,7 +1092,7 @@ pub async fn handle_ingest(mut req: Request, env: Env) -> Result<Response> {
                 )
                 .await;
                 return Ok(with_cors(json_response(
-                    &json!({ "ok": false, "error": format!("r2 upload failed: {e}") }),
+                    &json!({ "ok": false, "error": "media upload failed" }),
                     500,
                 )?));
             }
@@ -1096,6 +1134,7 @@ pub async fn handle_ingest(mut req: Request, env: Env) -> Result<Response> {
         Ok(()) => Ok(with_cors(json_response(&response_body, 200)?)),
         Err(e) => {
             let err_s = e.to_string();
+            console_error!("ingest d1 batch failed: {err_s}");
             // Concurrent Idempotency-Key race: peer may have committed the receipt.
             if let Some(key) = idem_key.as_deref() {
                 if is_unique_constraint_error(&err_s) {
@@ -1155,7 +1194,7 @@ pub async fn handle_ingest(mut req: Request, env: Env) -> Result<Response> {
                             return Ok(with_cors(json_response(
                                 &json!({
                                     "ok": false,
-                                    "error": format!("d1 batch failed: {err_s}")
+                                    "error": "catalog update failed"
                                 }),
                                 500,
                             )?));
@@ -1165,6 +1204,9 @@ pub async fn handle_ingest(mut req: Request, env: Env) -> Result<Response> {
             }
 
             best_effort_delete(&bucket, &uploaded_keys).await;
+            if crate::is_d1_daily_limit(&err_s) {
+                return Err(e);
+            }
             let _ = write_audit(
                 &db,
                 &wid,
@@ -1180,7 +1222,7 @@ pub async fn handle_ingest(mut req: Request, env: Env) -> Result<Response> {
             )
             .await;
             Ok(with_cors(json_response(
-                &json!({ "ok": false, "error": format!("d1 batch failed: {err_s}") }),
+                &json!({ "ok": false, "error": "catalog update failed" }),
                 500,
             )?))
         }
@@ -1210,7 +1252,8 @@ async fn commit_d1_batch(
 ) -> Result<()> {
     let mut stmts: Vec<D1PreparedStatement> = Vec::new();
 
-    // Upsert work; clear soft-delete on re-ingest.
+    // A manual hide retains images, unlike a completed retract/prune. Preserve
+    // that moderation decision when an automated producer sends the work again.
     stmts.push(
         db.prepare(
             r#"
@@ -1227,7 +1270,9 @@ async fn commit_d1_batch(
               page_count=excluded.page_count,
               origin=excluded.origin,
               review_version=works.review_version+1,
-              deleted_at=NULL
+              deleted_at=CASE WHEN works.deleted_at IS NOT NULL
+                AND EXISTS(SELECT 1 FROM images WHERE work_id=works.id)
+                THEN works.deleted_at ELSE NULL END
             "#,
         )
         .bind(&[
@@ -1644,6 +1689,23 @@ mod tests {
         assert_eq!(detect_image_mime_from_magic(bmp), Some("image/bmp"));
         assert_eq!(detect_image_mime_from_magic(html), None);
         assert_eq!(detect_image_mime_from_magic(&[]), None);
+
+        // Ingest copies only this prefix into WASM before native hashing/upload.
+        for (mime, bytes) in [
+            ("image/jpeg", jpeg.as_slice()),
+            ("image/png", png.as_slice()),
+            ("image/gif", gif87.as_slice()),
+            ("image/gif", gif89.as_slice()),
+            ("image/webp", webp.as_slice()),
+            ("image/bmp", bmp.as_slice()),
+        ] {
+            let mut body = bytes.to_vec();
+            body.extend_from_slice(&[0; 32]);
+            assert_eq!(
+                detect_image_mime_from_magic(&body[..IMAGE_MAGIC_BYTES]),
+                Some(mime)
+            );
+        }
 
         assert!(verify_image_magic("image/jpeg", &jpeg).is_ok());
         assert!(verify_image_magic("image/png", &png).is_ok());

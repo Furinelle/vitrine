@@ -1,18 +1,18 @@
 use super::*;
 
 #[derive(Deserialize)]
-pub(super) struct ImageRequest {
-    decision_id: String,
-    r2_key: String,
-    action: String,
+pub(crate) struct ImageRequest {
+    pub(crate) decision_id: String,
+    pub(crate) r2_key: String,
+    pub(crate) action: String,
     #[serde(default)]
-    allow_missing_telegram: bool,
+    pub(crate) allow_missing_telegram: bool,
     #[serde(default)]
-    restored: Vec<RestoredTarget>,
+    pub(crate) restored: Vec<RestoredTarget>,
 }
 
 #[derive(Deserialize)]
-struct RestoredTarget {
+pub(crate) struct RestoredTarget {
     publication_id: String,
     message_id: i64,
 }
@@ -40,6 +40,13 @@ struct ImageTarget {
 }
 
 #[derive(Clone, Serialize, Deserialize)]
+pub(crate) struct SimilarKeeper {
+    pub(crate) r2_key: String,
+    pub(crate) work_id: String,
+    pub(crate) review_version: i64,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
 struct Snapshot {
     image: ImageRow,
     targets: Vec<ImageTarget>,
@@ -48,6 +55,8 @@ struct Snapshot {
     review_version: Option<i64>,
     #[serde(default)]
     image_count: Option<usize>,
+    #[serde(default)]
+    similar_survivors: Vec<Vec<SimilarKeeper>>,
 }
 
 impl Snapshot {
@@ -212,8 +221,25 @@ fn image_target(
     })
 }
 
-pub(super) async fn handle(req: Request, env: &Env) -> Result<Response> {
-    match handle_inner(req, env).await {
+pub(super) async fn handle(mut req: Request, env: &Env) -> Result<Response> {
+    let request: ImageRequest = match req.json().await {
+        Ok(value) => value,
+        Err(_) => return json_response(&json!({"ok":false,"error":"invalid json"}), 400),
+    };
+    apply(env, request).await
+}
+
+pub(crate) async fn apply(env: &Env, request: ImageRequest) -> Result<Response> {
+    apply_with_survivors(env, request, &[], None).await
+}
+
+pub(crate) async fn apply_with_survivors(
+    env: &Env,
+    request: ImageRequest,
+    survivors: &[Vec<SimilarKeeper>],
+    generation: Option<u64>,
+) -> Result<Response> {
+    match handle_inner(env, request, survivors, generation).await {
         Err(error) if error.to_string().contains("CHECK constraint failed") => json_response(
             &json!({"ok":false,"error":"image review changed concurrently; retry the action"}),
             409,
@@ -222,11 +248,12 @@ pub(super) async fn handle(req: Request, env: &Env) -> Result<Response> {
     }
 }
 
-async fn handle_inner(mut req: Request, env: &Env) -> Result<Response> {
-    let request: ImageRequest = match req.json().await {
-        Ok(value) => value,
-        Err(_) => return json_response(&json!({"ok":false,"error":"invalid json"}), 400),
-    };
+async fn handle_inner(
+    env: &Env,
+    request: ImageRequest,
+    survivors: &[Vec<SimilarKeeper>],
+    generation: Option<u64>,
+) -> Result<Response> {
     if request.decision_id.is_empty()
         || request.decision_id.len() > 160
         || request.r2_key.is_empty()
@@ -306,6 +333,7 @@ async fn handle_inner(mut req: Request, env: &Env) -> Result<Response> {
             backup_key,
             review_version: Some(work.review_version),
             image_count: Some(images.len()),
+            similar_survivors: survivors.to_vec(),
         };
         db.prepare("INSERT INTO catalog_image_reviews(decision_id,payload,state,created_at) VALUES(?,?,'prepared',?) ON CONFLICT DO NOTHING")
             .bind(&[JsValue::from_str(&request.decision_id),JsValue::from_str(&serde_json::to_string(&snapshot).map_err(|e| Error::RustError(e.to_string()))?),JsValue::from_str(&js_iso_now())])?.run().await?;
@@ -345,8 +373,37 @@ async fn handle_inner(mut req: Request, env: &Env) -> Result<Response> {
     }
     let image = &snapshot.image;
     let now = js_iso_now();
+    let mut result_generation = None;
     if request.action == "delete" && state == "prepared" {
         let mut statements = snapshot_guards(&db, &request.decision_id, &snapshot, "prepared")?;
+        if let Some(generation) = generation {
+            statements.push(db.prepare("UPDATE catalog_image_reviews SET state=CASE WHEN (SELECT generation FROM similar_generation WHERE id=1)=? THEN state ELSE 'conflict' END WHERE decision_id=?")
+                .bind(&[JsValue::from_f64(generation as f64), JsValue::from_str(&request.decision_id)])?);
+        }
+        // Keeper visibility belongs in the same D1 transaction as the deletion.
+        // Both opposing requests may have passed their read-only preflights.
+        for group in snapshot.similar_survivors.iter().chain(survivors) {
+            if group.is_empty() {
+                return json_response(
+                    &json!({"ok":false,"error":"keep at least one image in each group"}),
+                    409,
+                );
+            }
+            let conditions =
+                vec!["(i.r2_key=? AND i.work_id=? AND w.review_version=?)"; group.len()]
+                    .join(" OR ");
+            let sql = format!("UPDATE catalog_image_reviews SET state=CASE WHEN EXISTS(SELECT 1 FROM images i JOIN works w ON w.id=i.work_id WHERE w.deleted_at IS NULL AND ({conditions})) THEN state ELSE 'conflict' END WHERE decision_id=?");
+            let mut params = Vec::new();
+            for keeper in group {
+                params.extend([
+                    JsValue::from_str(&keeper.r2_key),
+                    JsValue::from_str(&keeper.work_id),
+                    JsValue::from_f64(keeper.review_version as f64),
+                ]);
+            }
+            params.push(JsValue::from_str(&request.decision_id));
+            statements.push(db.prepare(&sql).bind(&params)?);
+        }
         statements.push(
             db.prepare("DELETE FROM images WHERE id=? AND r2_key=?")
                 .bind(&[
@@ -364,14 +421,29 @@ async fn handle_inner(mut req: Request, env: &Env) -> Result<Response> {
             db.prepare("UPDATE catalog_image_reviews SET state='deleted' WHERE decision_id=?")
                 .bind(&[JsValue::from_str(&request.decision_id)])?,
         );
-        db.batch(statements).await?;
+        if generation.is_some() {
+            statements.push(db.prepare("SELECT generation FROM similar_generation WHERE id=1"));
+        }
+        let results = db.batch(statements).await?;
+        if generation.is_some() {
+            #[derive(Deserialize)]
+            struct Generation {
+                generation: u64,
+            }
+            result_generation = results
+                .last()
+                .map(|result| result.results::<Generation>())
+                .transpose()?
+                .and_then(|rows| rows.first().map(|row| row.generation));
+        }
     }
     if request.action == "delete" {
         // Keep the immutable original: D1 controls visibility, so late retries cannot delete a restored image.
-        return json_response(
-            &json!({"ok":true,"targets":snapshot.targets,"state":"deleted"}),
-            200,
-        );
+        let mut result = json!({"ok":true,"targets":snapshot.targets,"state":"deleted"});
+        if let Some(generation) = result_generation {
+            result["generation"] = json!(generation);
+        }
+        return json_response(&result, 200);
     }
     if state == "restored" {
         return json_response(&json!({"ok":true,"state":"restored"}), 200);

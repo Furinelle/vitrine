@@ -1,9 +1,10 @@
 node_modules/
 .wrangler/
-.dev.vars
+.dev.vars*
 dist/
 build/
 target/
 *.log
 .DS_Store
 pkg/
+__pycache__/

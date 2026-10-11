@@ -1,9 +1,11 @@
+mod admin;
 mod image_review;
 mod ingest;
+pub mod similar;
 
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use wasm_bindgen::JsValue;
+use wasm_bindgen::{JsCast, JsValue};
 use worker::*;
 
 /// Cloudflare Worker entrypoint for Vitrine (Rust / workers-rs).
@@ -12,22 +14,113 @@ use worker::*;
 async fn main(req: Request, env: Env, _ctx: Context) -> Result<Response> {
     console_error_panic_hook::set_once();
 
-    match handle_request(req, env).await {
-        Ok(res) => Ok(res),
+    let result = match handle_request(req, env).await {
+        Ok(res) => res,
         Err(err) => {
             console_error!("vitrine error: {err}");
-            Ok(with_cors(json_response(
-                &json!({ "ok": false, "error": err.to_string() }),
-                500,
-            )?))
+            let response = if is_d1_daily_limit(&err.to_string()) {
+                let mut response = json_response(
+                    &json!({ "ok": false, "code": "database_daily_limit", "error": "数据库今日访问额度已用完，每日北京时间 8 点重置。请稍后手动重试。" }),
+                    503,
+                )?;
+                response.headers_mut().set(
+                    "Retry-After",
+                    &seconds_until_d1_reset((js_sys::Date::now() / 1000.0) as u64).to_string(),
+                )?;
+                response
+            } else {
+                json_response(
+                    &json!({ "ok": false, "error": "internal server error" }),
+                    500,
+                )?
+            };
+            with_cors(response)
         }
-    }
+    };
+    with_security_headers(result)
+}
+
+fn is_d1_daily_limit(message: &str) -> bool {
+    message.contains("Your account has exceeded D1's free tier daily row read limit")
+        || message.contains("Your account has exceeded D1's free tier daily row write limit")
+}
+
+fn seconds_until_d1_reset(now_seconds: u64) -> u64 {
+    86_400 - now_seconds % 86_400
 }
 
 async fn handle_request(req: Request, env: Env) -> Result<Response> {
     let method = req.method();
     let url = req.url()?;
     let path = url.path().to_string();
+
+    let rate_binding = if path == "/api/admin/login" && method == Method::Post {
+        Some("LOGIN_RATE_LIMITER")
+    } else if method == Method::Get
+        && (path == "/api/works"
+            || path.starts_with("/api/works/")
+            || path == "/api/tags"
+            || path == "/api/sources")
+    {
+        Some("PUBLIC_RATE_LIMITER")
+    } else {
+        None
+    };
+    if let Some(binding) = rate_binding {
+        let ip = req
+            .headers()
+            .get("CF-Connecting-IP")?
+            .unwrap_or_else(|| "127.0.0.1".into());
+        if !env.rate_limiter(binding)?.limit(ip).await?.success {
+            let mut response =
+                json_response(&json!({"ok": false, "error": "too many requests"}), 429)?;
+            response.headers_mut().set("Retry-After", "60")?;
+            return Ok(with_cors(response));
+        }
+    }
+
+    // Reject unauthenticated writes before reading their body. Handler-level
+    // checks remain the authority for each route's cookie/Bearer contract.
+    if admin::is_mutating_method(req.method()) {
+        let rejection = if path.starts_with("/api/catalog/") {
+            if path == "/api/catalog/image-review" {
+                require_catalog_or_admin_cookie(&req, &env)?
+            } else {
+                require_catalog_auth(&req, &env)?
+            }
+        } else if path.starts_with("/api/admin/")
+            && path != "/api/admin/login"
+            && path != "/api/admin/logout"
+        {
+            admin::require_admin_cookie(&req, &env)?
+        } else {
+            None
+        };
+        if let Some(response) = rejection {
+            return Ok(response);
+        }
+    }
+
+    // Bound every JSON mutation, including handlers in the review modules.
+    // Read the stream incrementally so chunked requests cannot bypass the limit.
+    let req = if path.starts_with("/api/")
+        && path != "/api/ingest"
+        && admin::is_mutating_method(req.method())
+    {
+        let limit = if path == "/api/catalog/similar/result" {
+            4 * 1024 * 1024
+        } else if path == "/api/admin/login" {
+            16 * 1024
+        } else {
+            1024 * 1024
+        };
+        match bounded_api_request(req, limit).await? {
+            Ok(req) => req,
+            Err(response) => return Ok(response),
+        }
+    } else {
+        req
+    };
 
     if method == Method::Options {
         return Ok(with_cors(Response::empty()?.with_status(204)));
@@ -38,6 +131,64 @@ async fn handle_request(req: Request, env: Env) -> Result<Response> {
             &json!({ "ok": true, "service": "vitrine" }),
             200,
         )?));
+    }
+
+    if (path == "/admin" || path == "/admin/" || path.starts_with("/admin/"))
+        && method == Method::Get
+    {
+        return admin::serve_page(req, env).await;
+    }
+
+    if path == "/api/admin/login" && method == Method::Post {
+        return admin::handle_login(req, env).await;
+    }
+    if path == "/api/admin/logout" && method == Method::Post {
+        return admin::handle_logout(req, env).await;
+    }
+    if path == "/api/admin/session" && method == Method::Get {
+        return admin::handle_session(req, env).await;
+    }
+    if path == "/api/admin/works" && method == Method::Get {
+        return admin::handle_list(req, env).await;
+    }
+    if path == "/api/admin/fingerprints/status" && method == Method::Get {
+        if let Some(response) = admin::require_admin_cookie(&req, &env)? {
+            return Ok(response);
+        }
+        return similar::handle_status(req, env).await;
+    }
+    if path == "/api/admin/similar" && method == Method::Get {
+        if let Some(response) = admin::require_admin_cookie(&req, &env)? {
+            return Ok(response);
+        }
+        return similar::handle_list(req, env).await;
+    }
+    if path == "/api/admin/similar/delete" && method == Method::Post {
+        if let Some(response) = admin::require_admin_cookie(&req, &env)? {
+            return Ok(response);
+        }
+        return similar::handle_delete(req, env).await;
+    }
+    if path == "/api/admin/similar/skip" && method == Method::Post {
+        if let Some(response) = admin::require_admin_cookie(&req, &env)? {
+            return Ok(response);
+        }
+        return similar::handle_skip(req, env).await;
+    }
+    if let Some(rest) = path.strip_prefix("/api/admin/works/") {
+        if let Some(work_id) = rest.strip_suffix("/hide") {
+            if method == Method::Post {
+                return admin::handle_hide(req, env, work_id).await;
+            }
+        } else if let Some(work_id) = rest.strip_suffix("/restore") {
+            if method == Method::Post {
+                return admin::handle_restore(req, env, work_id).await;
+            }
+        } else if method == Method::Get {
+            return admin::handle_detail(req, env, rest).await;
+        } else if method == Method::Patch {
+            return admin::handle_patch(req, env, rest).await;
+        }
     }
 
     if path == "/api/ingest" && method == Method::Post {
@@ -61,8 +212,48 @@ async fn handle_request(req: Request, env: Env) -> Result<Response> {
         return Ok(with_cors(handle_list_catalog(&url, &env).await?));
     }
 
-    if path == "/api/catalog/image-review" && method == Method::Post {
+    if matches!(
+        path.as_str(),
+        "/api/catalog/similar/snapshot"
+            | "/api/catalog/similar/input"
+            | "/api/catalog/similar/result"
+    ) {
         if let Some(response) = require_catalog_auth(&req, &env)? {
+            return Ok(response);
+        }
+        return match (path.as_str(), method) {
+            ("/api/catalog/similar/snapshot", Method::Get) => {
+                similar::handle_snapshot(req, env).await
+            }
+            ("/api/catalog/similar/input", Method::Get) => similar::handle_input(req, env).await,
+            ("/api/catalog/similar/result", Method::Post) => {
+                similar::handle_publish(req, env).await
+            }
+            _ => json_response(&json!({"ok":false,"error":"method not allowed"}), 405),
+        };
+    }
+
+    if path == "/api/catalog/fingerprints" && method == Method::Put {
+        if let Some(response) = require_catalog_auth(&req, &env)? {
+            return Ok(response);
+        }
+        return similar::handle_put(req, env).await;
+    }
+    if path == "/api/catalog/clip" && method == Method::Put {
+        if let Some(response) = require_catalog_auth(&req, &env)? {
+            return Ok(response);
+        }
+        return similar::handle_put_clip(req, env).await;
+    }
+    if path == "/api/catalog/clip/missing" && method == Method::Get {
+        if let Some(response) = require_catalog_auth(&req, &env)? {
+            return Ok(response);
+        }
+        return similar::handle_clip_missing(req, env).await;
+    }
+
+    if path == "/api/catalog/image-review" && method == Method::Post {
+        if let Some(response) = require_catalog_or_admin_cookie(&req, &env)? {
             return Ok(response);
         }
         return Ok(with_cors(image_review::handle(req, &env).await?));
@@ -104,17 +295,21 @@ async fn handle_request(req: Request, env: Env) -> Result<Response> {
     }
 
     if path == "/api/tags" && method == Method::Get {
-        return Ok(with_cors(handle_list_tags(&env).await?));
+        return Ok(with_cors(handle_list_tags(&url, &env).await?));
     }
 
     if path == "/api/sources" && method == Method::Get {
-        return Ok(with_cors(handle_list_sources(&env).await?));
+        return Ok(with_cors(handle_list_sources(&url, &env).await?));
     }
 
     if let Some(key) = path.strip_prefix("/media/") {
-        if method == Method::Get {
+        if method == Method::Get || method == Method::Head {
             return handle_media(key, &req, &env).await;
         }
+    }
+
+    if path.starts_with("/api/") || path.starts_with("/media/") {
+        return json_response(&json!({"ok": false, "error": "not found"}), 404);
     }
 
     // SPA / static assets binding (wrangler assets.directory = ./public)
@@ -128,18 +323,94 @@ async fn handle_request(req: Request, env: Env) -> Result<Response> {
 pub(crate) fn with_cors(res: Response) -> Response {
     let headers = res.headers().clone();
     let _ = headers.set("Access-Control-Allow-Origin", "*");
-    let _ = headers.set("Access-Control-Allow-Methods", "GET, POST, PUT, OPTIONS");
-    let _ = headers.set(
-        "Access-Control-Allow-Headers",
-        "Authorization, Content-Type, Idempotency-Key",
-    );
+    let _ = headers.set("Access-Control-Allow-Methods", "GET, HEAD, OPTIONS");
+    let _ = headers.set("Access-Control-Allow-Headers", "Content-Type");
     res.with_headers(headers)
+}
+
+pub(crate) fn with_security_headers(res: Response) -> Result<Response> {
+    let headers = res.headers().clone();
+    headers.set("X-Content-Type-Options", "nosniff")?;
+    headers.set("X-Frame-Options", "DENY")?;
+    headers.set("Referrer-Policy", "strict-origin-when-cross-origin")?;
+    headers.set("Strict-Transport-Security", "max-age=31536000")?;
+    headers.set(
+        "Permissions-Policy",
+        "camera=(), microphone=(), geolocation=(), payment=(), usb=()",
+    )?;
+    headers.set("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'")?;
+    Ok(res.with_headers(headers))
+}
+
+pub(crate) fn request_length_error(
+    length: Option<&str>,
+    limit: u64,
+) -> Option<(u16, &'static str)> {
+    match length.map(str::parse::<u64>) {
+        Some(Ok(length)) if length > limit => Some((413, "request body too large")),
+        Some(Err(_)) => Some((400, "invalid content length")),
+        _ => None,
+    }
+}
+
+async fn bounded_api_request(
+    req: Request,
+    limit: usize,
+) -> Result<std::result::Result<Request, Response>> {
+    if let Some((status, error)) = request_length_error(
+        req.headers().get("Content-Length")?.as_deref(),
+        limit as u64,
+    ) {
+        return Ok(Err(json_response(
+            &json!({"ok": false, "error": error}),
+            status,
+        )?));
+    }
+    let Some(stream) = req.inner().body() else {
+        return Ok(Ok(req));
+    };
+    let reader = stream
+        .get_reader()
+        .dyn_into::<web_sys::ReadableStreamDefaultReader>()
+        .map_err(|error| Error::from(JsValue::from(error)))?;
+    let mut bytes = Vec::new();
+    loop {
+        let result = match wasm_bindgen_futures::JsFuture::from(reader.read()).await {
+            Ok(result) => result,
+            Err(_) => {
+                return Ok(Err(json_response(
+                    &json!({"ok": false, "error": "invalid request body"}),
+                    400,
+                )?))
+            }
+        };
+        if js_sys::Reflect::get(&result, &JsValue::from_str("done"))?.as_bool() == Some(true) {
+            break;
+        }
+        let chunk =
+            js_sys::Uint8Array::new(&js_sys::Reflect::get(&result, &JsValue::from_str("value"))?);
+        if chunk.length() as usize > limit.saturating_sub(bytes.len()) {
+            let _ = wasm_bindgen_futures::JsFuture::from(reader.cancel()).await;
+            return Ok(Err(json_response(
+                &json!({"ok": false, "error": "request body too large"}),
+                413,
+            )?));
+        }
+        bytes.extend_from_slice(&chunk.to_vec());
+    }
+    reader.release_lock();
+    let mut init = RequestInit::new();
+    init.with_method(req.method())
+        .with_headers(req.headers().clone())
+        .with_body(Some(js_sys::Uint8Array::from(bytes.as_slice()).into()));
+    Ok(Ok(Request::new_with_init(req.url()?.as_str(), &init)?))
 }
 
 pub(crate) fn json_response(data: &Value, status: u16) -> Result<Response> {
     let res = Response::from_json(data)?.with_status(status);
     let headers = res.headers().clone();
     let _ = headers.set("Content-Type", "application/json; charset=utf-8");
+    let _ = headers.set("Cache-Control", "no-store");
     Ok(res.with_headers(headers))
 }
 
@@ -163,7 +434,7 @@ pub fn parse_limit_offset(url: &Url) -> (u32, u32) {
         .and_then(|(_, v)| v.parse::<i64>().ok())
         .unwrap_or(0);
     let limit = limit.clamp(1, 100) as u32;
-    let offset = offset.max(0) as u32;
+    let offset = offset.clamp(0, u32::MAX as i64) as u32;
     (limit, offset)
 }
 
@@ -185,9 +456,15 @@ pub fn tags_from_group_concat(raw: Option<&str>) -> Vec<String> {
 
 /// Build public cover URL path from an optional R2 key.
 pub fn cover_url_from_key(cover_key: Option<&str>) -> Option<String> {
-    cover_key
-        .filter(|k| !k.is_empty())
-        .map(|k| format!("/media/{k}"))
+    cover_key.filter(|k| !k.is_empty()).map(|key| {
+        format!(
+            "/media/{}",
+            key.split('/')
+                .map(|part| urlencoding::encode(part))
+                .collect::<Vec<_>>()
+                .join("/")
+        )
+    })
 }
 
 #[derive(Debug, Serialize)]
@@ -201,10 +478,44 @@ struct WorkOut {
     author_url: String,
     is_r18: bool,
     page_count: i64,
-    origin: String,
     created_at: String,
     cover_url: Option<String>,
     tags: Vec<String>,
+}
+
+const WORK_SELECT: &str = r#"
+    SELECT w.*,
+      (SELECT i.r2_key FROM images i WHERE i.work_id = w.id ORDER BY i.page_index LIMIT 1) AS cover_key,
+      (SELECT GROUP_CONCAT(wt.tag, ',') FROM work_tags wt WHERE wt.work_id = w.id) AS tags
+    FROM works w
+"#;
+
+fn work_cursor(value: &str) -> std::result::Result<Option<(String, String)>, ()> {
+    if value.is_empty() {
+        return Ok(None);
+    }
+    if value.len() > 1024 {
+        return Err(());
+    }
+    let (created_at, id): (String, String) = serde_json::from_str(value).map_err(|_| ())?;
+    if created_at.is_empty()
+        || created_at.len() > 40
+        || created_at.chars().any(char::is_control)
+        || validate_work_id_value(&id).is_err()
+    {
+        return Err(());
+    }
+    Ok(Some((created_at, id)))
+}
+
+fn like_pattern(value: &str) -> String {
+    format!(
+        "%{}%",
+        value
+            .replace('\\', "\\\\")
+            .replace('%', "\\%")
+            .replace('_', "\\_")
+    )
 }
 
 async fn handle_list_works(url: &Url, env: &Env) -> Result<Response> {
@@ -212,6 +523,13 @@ async fn handle_list_works(url: &Url, env: &Env) -> Result<Response> {
     let source = query_param(url, "source").to_lowercase();
     let q = query_param(url, "q");
     let (limit, offset) = parse_limit_offset(url);
+    if q.len() > 512 || tag.len() > 256 || source.len() > 64 {
+        return json_response(&json!({"ok": false, "error": "query too long"}), 400);
+    }
+    let Ok(cursor) = work_cursor(&query_param(url, "cursor")) else {
+        return json_response(&json!({"ok": false, "error": "invalid cursor"}), 400);
+    };
+    let offset = if cursor.is_some() { 0 } else { offset };
 
     let mut where_parts: Vec<&str> = Vec::new();
     let mut binds: Vec<String> = Vec::new();
@@ -221,13 +539,12 @@ async fn handle_list_works(url: &Url, env: &Env) -> Result<Response> {
         binds.push(source);
     }
     if !tag.is_empty() {
-        where_parts
-            .push("EXISTS (SELECT 1 FROM work_tags wt WHERE wt.work_id = w.id AND wt.tag = ?)");
+        where_parts.push("filter.tag = ?");
         binds.push(normalize_tag(&tag));
     }
     if !q.is_empty() {
-        where_parts.push("(w.title LIKE ? OR w.author_name LIKE ? OR w.source_id LIKE ?)");
-        let like = format!("%{q}%");
+        where_parts.push("(w.title LIKE ? ESCAPE '\\' OR w.author_name LIKE ? ESCAPE '\\' OR w.source_id LIKE ? ESCAPE '\\')");
+        let like = like_pattern(&q);
         binds.push(like.clone());
         binds.push(like.clone());
         binds.push(like);
@@ -235,17 +552,26 @@ async fn handle_list_works(url: &Url, env: &Env) -> Result<Response> {
 
     // Hide soft-deleted works when deleted_at is present (migration 0002).
     where_parts.push("(w.deleted_at IS NULL)");
+    if let Some((created_at, id)) = cursor {
+        where_parts.push("(w.created_at, w.id) < (?, ?)");
+        binds.extend([created_at, id]);
+    }
 
     let where_sql = format!("WHERE {}", where_parts.join(" AND "));
+    let work_select = if tag.is_empty() {
+        WORK_SELECT.to_string()
+    } else {
+        WORK_SELECT.replace(
+            "FROM works w",
+            "FROM work_tags filter CROSS JOIN works w ON w.id=filter.work_id",
+        )
+    };
 
     let sql = format!(
         r#"
-        SELECT w.*,
-          (SELECT i.r2_key FROM images i WHERE i.work_id = w.id ORDER BY i.page_index LIMIT 1) AS cover_key,
-          (SELECT GROUP_CONCAT(wt.tag, ',') FROM work_tags wt WHERE wt.work_id = w.id) AS tags
-        FROM works w
+        {work_select}
         {where_sql}
-        ORDER BY w.created_at DESC
+        ORDER BY w.created_at DESC, w.id DESC
         LIMIT ? OFFSET ?
         "#
     );
@@ -258,24 +584,11 @@ async fn handle_list_works(url: &Url, env: &Env) -> Result<Response> {
     let rows = db.prepare(&sql).bind(&values)?.all().await?;
     let results = rows.results::<WorkRow>()?;
 
-    let works: Vec<WorkOut> = results
-        .into_iter()
-        .map(|row| WorkOut {
-            id: row.id,
-            source: row.source,
-            source_id: row.source_id,
-            source_url: row.source_url,
-            title: row.title,
-            author_name: row.author_name,
-            author_url: row.author_url,
-            is_r18: row.is_r18 != 0,
-            page_count: row.page_count,
-            origin: row.origin,
-            created_at: row.created_at,
-            cover_url: cover_url_from_key(row.cover_key.as_deref()),
-            tags: tags_from_group_concat(row.tags.as_deref()),
-        })
-        .collect();
+    let works: Vec<WorkOut> = results.into_iter().map(public_work).collect();
+    let next_cursor = works
+        .last()
+        .filter(|_| works.len() == limit as usize)
+        .map(|work| json!([work.created_at, work.id]).to_string());
 
     json_response(
         &json!({
@@ -283,9 +596,27 @@ async fn handle_list_works(url: &Url, env: &Env) -> Result<Response> {
             "works": works,
             "limit": limit,
             "offset": offset,
+            "next_cursor": next_cursor,
         }),
         200,
     )
+}
+
+fn public_work(row: WorkRow) -> WorkOut {
+    WorkOut {
+        id: row.id,
+        source: row.source,
+        source_id: row.source_id,
+        source_url: row.source_url,
+        title: row.title,
+        author_name: row.author_name,
+        author_url: row.author_url,
+        is_r18: row.is_r18 != 0,
+        page_count: row.page_count,
+        created_at: row.created_at,
+        cover_url: cover_url_from_key(row.cover_key.as_deref()),
+        tags: tags_from_group_concat(row.tags.as_deref()),
+    }
 }
 
 #[derive(Debug, serde::Deserialize)]
@@ -299,7 +630,6 @@ struct WorkRow {
     author_url: String,
     is_r18: i64,
     page_count: i64,
-    origin: String,
     created_at: String,
     cover_key: Option<String>,
     tags: Option<String>,
@@ -320,13 +650,27 @@ async fn handle_work_images(work_id: &str, env: &Env) -> Result<Response> {
     if validate_work_id_value(&work_id).is_err() {
         return json_response(&json!({"ok":false,"error":"invalid work id"}), 400);
     }
+    let db = env.d1("DB")?;
+    let Some(work) = db
+        .prepare(format!(
+            "{WORK_SELECT} WHERE w.id=? AND w.deleted_at IS NULL"
+        ))
+        .bind(&[JsValue::from_str(&work_id)])?
+        .first::<WorkRow>(None)
+        .await?
+    else {
+        return json_response(&json!({"ok": false, "error": "work not found"}), 404);
+    };
     let images = env.d1("DB")?.prepare(
         "SELECT i.r2_key,i.content_type,i.page_index,i.byte_size FROM images i JOIN works w ON w.id=i.work_id WHERE w.id=? AND w.deleted_at IS NULL ORDER BY i.page_index"
     ).bind(&[JsValue::from_str(&work_id)])?.all().await?.results::<PublicImage>()?;
     if images.is_empty() {
         return json_response(&json!({"ok":false,"error":"work not found"}), 404);
     }
-    json_response(&json!({"ok":true,"images":images}), 200)
+    json_response(
+        &json!({"ok":true,"work":public_work(work),"images":images}),
+        200,
+    )
 }
 
 #[derive(Debug, serde::Deserialize, Serialize)]
@@ -351,7 +695,6 @@ pub fn tags_list_sql() -> &'static str {
             GROUP BY t.name
             HAVING cnt > 0
             ORDER BY cnt DESC, t.name ASC
-            LIMIT 200
             "#
 }
 
@@ -379,8 +722,44 @@ pub fn catalog_work_list_sql() -> &'static str {
     "#
 }
 
+fn catalog_cursor_sql(fingerprints: bool) -> String {
+    let (metadata, join) = if fingerprints {
+        (
+            r#"CASE WHEN f.r2_key IS NOT NULL AND json_valid(f.regions_json) THEN json_object(
+          'r2_key',f.r2_key,'solid_color',json(CASE WHEN f.solid_color=0 THEN 'false' ELSE 'true' END),
+          'content_sha256',f.content_sha256,'strict_key',f.strict_key,
+          'average_hash',f.average_hash,'difference_hash',f.difference_hash,
+          'color_key',f.color_key,'detail_key',f.detail_key,'width',f.width,'height',f.height,
+          'bytes',f.bytes,'format',f.format,'regions',json(f.regions_json)) END"#,
+            "LEFT JOIN image_fingerprints f ON f.r2_key=i.r2_key",
+        )
+    } else {
+        ("NULL", "")
+    };
+    format!(
+        r#"
+        SELECT i.id AS catalog_id,i.work_id,w.source,w.source_id,w.source_url,w.title,
+               i.page_index,i.r2_key,i.byte_size,i.content_type,i.sha256,
+               {metadata} AS fingerprint_json
+        FROM images i CROSS JOIN works w ON w.id=i.work_id {join}
+        WHERE i.id > ? AND w.deleted_at IS NULL ORDER BY i.id LIMIT ?
+    "#
+    )
+}
+
+fn fingerprint_digest(value: &Value) -> Result<String> {
+    use sha2::Digest;
+    let bytes = serde_json::to_vec(value).map_err(|error| Error::RustError(error.to_string()))?;
+    Ok(hex::encode(sha2::Sha256::digest(bytes)))
+}
+
 #[derive(Debug, serde::Deserialize, Serialize)]
 struct CatalogImageOut {
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    catalog_id: String,
+    #[serde(skip_serializing)]
+    fingerprint_json: Option<String>,
+    fingerprint_digest: Option<String>,
     work_id: String,
     source: String,
     source_id: String,
@@ -394,25 +773,38 @@ struct CatalogImageOut {
 }
 
 fn require_catalog_auth(req: &Request, env: &Env) -> Result<Option<Response>> {
-    let token = match env.secret("INGEST_TOKEN") {
-        Ok(secret) => secret.to_string(),
-        Err(_) => env
-            .var("INGEST_TOKEN")
-            .map(|value| value.to_string())
-            .unwrap_or_default(),
-    };
-    let auth = req.headers().get("Authorization")?;
-    let response = match ingest::check_bearer_auth(auth.as_deref(), &token) {
+    catalog_auth(req, env, false)
+}
+
+fn require_catalog_or_admin_cookie(req: &Request, env: &Env) -> Result<Option<Response>> {
+    catalog_auth(req, env, true)
+}
+
+fn catalog_auth(req: &Request, env: &Env, allow_admin_cookie: bool) -> Result<Option<Response>> {
+    let token = admin::env_ingest_token(env);
+    match ingest::check_bearer_auth(req.headers().get("Authorization")?.as_deref(), &token) {
         ingest::AuthCheck::Ok => return Ok(None),
-        ingest::AuthCheck::Unauthorized => {
-            json_response(&json!({ "ok": false, "error": "unauthorized" }), 401)?
+        ingest::AuthCheck::NotConfigured => {
+            return Ok(Some(with_cors(json_response(
+                &json!({ "ok": false, "error": "INGEST_TOKEN not configured" }),
+                500,
+            )?)));
         }
-        ingest::AuthCheck::NotConfigured => json_response(
-            &json!({ "ok": false, "error": "INGEST_TOKEN not configured" }),
-            500,
-        )?,
-    };
-    Ok(Some(with_cors(response)))
+        ingest::AuthCheck::Unauthorized => {}
+    }
+    if allow_admin_cookie && admin::request_has_valid_cookie(req, &token)? {
+        if admin::is_mutating_method(req.method()) && !admin::origin_matches_request(req)? {
+            return Ok(Some(with_cors(json_response(
+                &json!({ "ok": false, "error": "invalid origin" }),
+                403,
+            )?)));
+        }
+        return Ok(None);
+    }
+    Ok(Some(with_cors(json_response(
+        &json!({ "ok": false, "error": "unauthorized" }),
+        401,
+    )?)))
 }
 
 async fn handle_list_catalog(url: &Url, env: &Env) -> Result<Response> {
@@ -422,6 +814,45 @@ async fn handle_list_catalog(url: &Url, env: &Env) -> Result<Response> {
         return json_response(&json!({ "ok": false, "error": "invalid work id" }), 400);
     }
     let db = env.d1("DB")?;
+    if url.query_pairs().any(|(key, _)| key == "after") {
+        let after = query_param(url, "after");
+        if !work_id.is_empty()
+            || offset != 0
+            || after.len() > 2048
+            || after.chars().any(char::is_control)
+        {
+            return json_response(
+                &json!({"ok": false, "error": "invalid catalog cursor"}),
+                400,
+            );
+        }
+        let fingerprints = query_param(url, "fingerprints") == "1";
+        let mut images = db
+            .prepare(catalog_cursor_sql(fingerprints))
+            .bind(&[
+                JsValue::from_str(&after),
+                JsValue::from_f64(f64::from(limit)),
+            ])?
+            .all()
+            .await?
+            .results::<CatalogImageOut>()?;
+        for image in &mut images {
+            image.fingerprint_digest = match image.fingerprint_json.take() {
+                Some(raw) => Some(fingerprint_digest(
+                    &serde_json::from_str::<Value>(&raw)
+                        .map_err(|error| Error::RustError(error.to_string()))?,
+                )?),
+                None => None,
+            };
+        }
+        let next_cursor = (images.len() == limit as usize)
+            .then(|| images.last().map(|image| image.catalog_id.clone()))
+            .flatten();
+        return json_response(
+            &json!({"ok": true, "images": images, "next_cursor": next_cursor, "limit": limit}),
+            200,
+        );
+    }
     let rows = if work_id.is_empty() {
         let values = [
             JsValue::from_f64(f64::from(limit)),
@@ -506,6 +937,8 @@ struct WorkVersionRow {
 struct RetractWorkRow {
     id: String,
     deleted_at: Option<String>,
+    review_version: i64,
+    image_count: i64,
 }
 
 #[derive(Debug, Deserialize)]
@@ -742,7 +1175,7 @@ fn validate_catalog_prune(request: &CatalogPruneRequest) -> std::result::Result<
     Ok(())
 }
 
-fn js_iso_now() -> String {
+pub(crate) fn js_iso_now() -> String {
     js_sys::Date::new_0()
         .to_iso_string()
         .as_string()
@@ -916,7 +1349,7 @@ async fn handle_catalog_prune(mut req: Request, env: &Env) -> Result<Response> {
     )
 }
 
-fn validate_work_id_value(work_id: &str) -> std::result::Result<(), &'static str> {
+pub(crate) fn validate_work_id_value(work_id: &str) -> std::result::Result<(), &'static str> {
     if work_id.trim().is_empty() || work_id.len() > 320 {
         return Err("invalid work id");
     }
@@ -1374,7 +1807,7 @@ async fn handle_catalog_retract(mut req: Request, env: &Env) -> Result<Response>
 
     let db = env.d1("DB")?;
     let Some(work) = db
-        .prepare("SELECT id, deleted_at FROM works WHERE id=?")
+        .prepare("SELECT id, deleted_at, review_version, (SELECT COUNT(*) FROM images WHERE work_id=works.id) AS image_count FROM works WHERE id=?")
         .bind(&[JsValue::from_str(&request.work_id)])?
         .first::<RetractWorkRow>(None)
         .await?
@@ -1385,9 +1818,9 @@ async fn handle_catalog_retract(mut req: Request, env: &Env) -> Result<Response>
         return json_response(&json!({ "ok": false, "error": "work not active" }), 409);
     }
     let bucket = env.bucket("MEDIA")?;
-    if work.deleted_at.is_some() {
-        let updated = db.prepare("UPDATE works SET review_version=review_version+1 WHERE id=? AND deleted_at IS NOT NULL")
-            .bind(&[JsValue::from_str(&request.work_id)])?
+    if work.deleted_at.is_some() && work.image_count == 0 {
+        let updated = db.prepare("UPDATE works SET review_version=review_version+1 WHERE id=? AND review_version=? AND deleted_at IS NOT NULL AND NOT EXISTS(SELECT 1 FROM images WHERE work_id=works.id)")
+            .bind(&[JsValue::from_str(&request.work_id), JsValue::from_f64(work.review_version as f64)])?
             .run()
             .await?;
         if updated.meta()?.and_then(|meta| meta.changes).unwrap_or(0) == 0 {
@@ -1411,7 +1844,7 @@ async fn handle_catalog_retract(mut req: Request, env: &Env) -> Result<Response>
         .prepare(
             r#"SELECT i.id,i.work_id,i.r2_key
                FROM images i JOIN works w ON w.id=i.work_id
-               WHERE i.work_id=? AND w.deleted_at IS NULL
+               WHERE i.work_id=?
                ORDER BY i.page_index"#,
         )
         .bind(&[JsValue::from_str(&request.work_id)])?
@@ -1437,7 +1870,18 @@ async fn handle_catalog_retract(mut req: Request, env: &Env) -> Result<Response>
 
     let now = js_iso_now();
     let removed_r2_keys: Vec<String> = images.iter().map(|row| row.r2_key.clone()).collect();
-    let mut statements = Vec::new();
+    // R2 copies await outside the transaction. A concurrent ingest, hide, restore,
+    // or image deletion must abort the whole D1 batch before any metadata is lost.
+    let mut statements = vec![db.prepare(
+        "UPDATE works SET review_version=CASE WHEN review_version=? AND deleted_at IS ? AND (SELECT COUNT(*) FROM images WHERE work_id=works.id)=? AND (SELECT COUNT(*) FROM images WHERE work_id=works.id AND r2_key IN (SELECT value FROM json_each(?)))=? THEN review_version+1 ELSE NULL END WHERE id=?",
+    ).bind(&[
+        JsValue::from_f64(work.review_version as f64),
+        work.deleted_at.as_deref().map(JsValue::from_str).unwrap_or(JsValue::NULL),
+        JsValue::from_f64(work.image_count as f64),
+        JsValue::from_str(&json!(removed_r2_keys).to_string()),
+        JsValue::from_f64(work.image_count as f64),
+        JsValue::from_str(&request.work_id),
+    ])?];
     for (row, backup) in &copied {
         statements.push(
             db.prepare(
@@ -1463,7 +1907,7 @@ async fn handle_catalog_retract(mut req: Request, env: &Env) -> Result<Response>
             .bind(&[JsValue::from_str(&request.work_id)])?,
     );
     statements.push(
-        db.prepare("UPDATE works SET deleted_at=?,review_version=review_version+1 WHERE id=?")
+        db.prepare("UPDATE works SET deleted_at=? WHERE id=?")
             .bind(&[JsValue::from_str(&now), JsValue::from_str(&request.work_id)])?,
     );
     statements.push(
@@ -1485,7 +1929,18 @@ async fn handle_catalog_retract(mut req: Request, env: &Env) -> Result<Response>
             .bind(&[JsValue::from_str(&tag.tag), JsValue::from_str(&tag.tag)])?,
         );
     }
-    db.batch(statements).await?;
+    if let Err(error) = db.batch(statements).await {
+        if error
+            .to_string()
+            .contains("NOT NULL constraint failed: works.review_version")
+        {
+            return json_response(
+                &json!({"ok":false,"error":"work changed concurrently; retry retract"}),
+                409,
+            );
+        }
+        return Err(error);
+    }
     if !removed_r2_keys.is_empty() {
         bucket.delete_multiple(removed_r2_keys).await?;
     }
@@ -1643,29 +2098,124 @@ async fn handle_catalog_telegram_result(mut req: Request, env: &Env) -> Result<R
     )
 }
 
-async fn handle_list_tags(env: &Env) -> Result<Response> {
-    let db = env.d1("DB")?;
-    let rows = db.prepare(tags_list_sql()).all().await?;
-    let tags = rows.results::<TagRow>()?;
-    json_response(&json!({ "ok": true, "tags": tags }), 200)
+#[derive(Deserialize, Serialize)]
+struct VersionedRows<T> {
+    generation: u64,
+    rows: Vec<T>,
 }
 
-async fn handle_list_sources(env: &Env) -> Result<Response> {
+async fn cached_filter_rows<T: serde::de::DeserializeOwned + Serialize>(
+    url: &Url,
+    env: &Env,
+    kind: &str,
+    sql: &str,
+) -> Result<Option<(Vec<T>, &'static str)>> {
     let db = env.d1("DB")?;
-    let rows = db
-        .prepare(
-            r#"
-            SELECT source, COUNT(*) AS cnt
-            FROM works
-            WHERE deleted_at IS NULL
-            GROUP BY source
-            ORDER BY cnt DESC
-            "#,
-        )
-        .all()
-        .await?;
-    let sources = rows.results::<SourceRow>()?;
-    json_response(&json!({ "ok": true, "sources": sources }), 200)
+    let generation = similar::current_generation(&db).await?;
+    let cache = Cache::default();
+    let key = format!(
+        "{}/__filters/v1/{kind}/{generation}",
+        url.origin().ascii_serialization()
+    );
+    let cached = match cache.get(key.clone(), false).await {
+        Ok(Some(mut response)) => response.json::<VersionedRows<T>>().await.ok(),
+        _ => None,
+    };
+    let (rows, source) = if let Some(cached) = cached.filter(|c| c.generation == generation) {
+        (cached.rows, "HIT")
+    } else {
+        (db.prepare(sql).all().await?.results::<T>()?, "MISS")
+    };
+    if similar::current_generation(&db).await? != generation {
+        return Ok(None);
+    }
+    let value = VersionedRows { generation, rows };
+    if source == "MISS" {
+        let mut response = Response::from_json(&value)?;
+        response
+            .headers_mut()
+            .set("Cache-Control", "public, max-age=86400")?;
+        let _ = cache.put(key, response).await;
+    }
+    Ok(Some((value.rows, source)))
+}
+
+fn filter_tags(
+    mut tags: Vec<TagRow>,
+    q: &str,
+    by_name: bool,
+    limit: u32,
+    offset: u32,
+) -> (Vec<TagRow>, Option<u64>) {
+    // SQLite LIKE folds ASCII only; the API treats %, _ and backslash literally.
+    let needle = q.trim_start_matches('#').to_ascii_lowercase();
+    tags.retain(|tag| tag.name.to_ascii_lowercase().contains(&needle));
+    if by_name {
+        tags.sort_by(|a, b| a.name.cmp(&b.name));
+    }
+    let next_offset = (tags.len() as u64 > u64::from(offset) + u64::from(limit))
+        .then_some(u64::from(offset) + u64::from(limit));
+    (
+        tags.into_iter()
+            .skip(offset as usize)
+            .take(limit as usize)
+            .collect(),
+        next_offset,
+    )
+}
+
+async fn handle_list_tags(url: &Url, env: &Env) -> Result<Response> {
+    let q = query_param(url, "q");
+    if q.len() > 256 {
+        return json_response(&json!({"ok": false, "error": "query too long"}), 400);
+    }
+    let limit = query_param(url, "limit")
+        .parse::<u32>()
+        .unwrap_or(200)
+        .clamp(1, 200);
+    let (_, offset) = parse_limit_offset(url);
+    let Some((tags, source)) =
+        cached_filter_rows::<TagRow>(url, env, "tags", tags_list_sql()).await?
+    else {
+        return json_response(
+            &json!({"ok": false, "error": "catalog changed; retry"}),
+            409,
+        );
+    };
+    let (tags, next_offset) =
+        filter_tags(tags, &q, query_param(url, "order") == "name", limit, offset);
+    let mut response = json_response(
+        &json!({ "ok": true, "tags": tags, "next_offset": next_offset }),
+        200,
+    )?;
+    response
+        .headers_mut()
+        .set("X-Catalog-Stats-Cache", source)?;
+    Ok(response)
+}
+
+async fn handle_list_sources(url: &Url, env: &Env) -> Result<Response> {
+    let Some((sources, source)) = cached_filter_rows::<SourceRow>(
+        url,
+        env,
+        "sources",
+        r#"
+        SELECT source, COUNT(*) AS cnt FROM works WHERE deleted_at IS NULL
+        GROUP BY source ORDER BY cnt DESC, source ASC
+    "#,
+    )
+    .await?
+    else {
+        return json_response(
+            &json!({"ok": false, "error": "catalog changed; retry"}),
+            409,
+        );
+    };
+    let mut response = json_response(&json!({"ok": true, "sources": sources}), 200)?;
+    response
+        .headers_mut()
+        .set("X-Catalog-Stats-Cache", source)?;
+    Ok(response)
 }
 
 /// Build media response header pairs from R2 HTTP metadata.
@@ -1703,19 +2253,105 @@ pub fn media_header_pairs(
 }
 
 async fn handle_media(key: &str, req: &Request, env: &Env) -> Result<Response> {
-    let decoded = urlencoding::decode(key)
-        .map(|s| s.into_owned())
-        .unwrap_or_else(|_| key.to_string());
+    let Ok(decoded) = urlencoding::decode(key) else {
+        return Response::error("invalid media key", 400);
+    };
+    if decoded.is_empty() || decoded.len() > 1024 || decoded.chars().any(char::is_control) {
+        return Response::error("invalid media key", 400);
+    }
+    let url = req.url()?;
+    let width = match media_width(
+        url.query_pairs()
+            .find(|(key, _)| key == "width")
+            .as_ref()
+            .map(|(_, value)| value.as_ref()),
+    ) {
+        Ok(width) => width,
+        Err(_) => return Response::error("invalid image width", 400),
+    };
 
-    if env.d1("DB")?.prepare("SELECT i.id FROM images i JOIN works w ON w.id=i.work_id WHERE i.r2_key=? AND w.deleted_at IS NULL LIMIT 1")
-        .bind(&[JsValue::from_str(&decoded)])?.first::<ActiveWorkRow>(None).await?.is_none() {
+    #[derive(Deserialize)]
+    struct MediaVisibility {
+        deleted_at: Option<String>,
+    }
+    let visible = env.d1("DB")?.prepare("SELECT w.deleted_at FROM images i JOIN works w ON w.id=i.work_id WHERE i.r2_key=? LIMIT 1")
+        .bind(&[JsValue::from_str(&decoded)])?.first::<MediaVisibility>(None).await?;
+    let private = visible
+        .as_ref()
+        .is_some_and(|work| work.deleted_at.is_some());
+    if visible.is_none()
+        || (private && !admin::request_has_valid_cookie(req, &admin::env_ingest_token(env))?)
+    {
         let mut response = Response::error("not found", 404)?;
         response.headers_mut().set("Cache-Control", "no-store")?;
         return Ok(response);
     }
 
+    // Only these three variants may be generated. Check visibility above even
+    // when Cloudflare already has a resized image in its internal cache.
+    // Skip transformation for loopback development URLs.
+    if let Some(width) = width.filter(|_| {
+        !private
+            && !matches!(
+                url.host_str(),
+                Some("localhost" | "127.0.0.1" | "::1" | "[::1]")
+            )
+    }) {
+        let mut source = url.clone();
+        source.set_query(None);
+        let accept = req.headers().get("Accept")?.unwrap_or_default();
+        let format = if accept.contains("image/avif") {
+            Some(ResizeFormat::Avif)
+        } else if accept.contains("image/webp") {
+            Some(ResizeFormat::Webp)
+        } else {
+            None
+        };
+        let mut cf = CfProperties::new();
+        cf.image = Some(ResizeConfig {
+            width: Some(width),
+            fit: Some(ResizeFit::ScaleDown),
+            format,
+            ..ResizeConfig::default()
+        });
+        let mut init = RequestInit::new();
+        init.with_cf_properties(cf);
+        let resized = Fetch::Request(Request::new_with_init(source.as_str(), &init)?)
+            .send()
+            .await;
+        if let Ok(mut response) = resized {
+            if response.status_code() == 200
+                && ingest::normalize_allowed_image_mime(
+                    response
+                        .headers()
+                        .get("Content-Type")?
+                        .as_deref()
+                        .unwrap_or_default(),
+                    "",
+                )
+                .is_ok()
+            {
+                let headers = response.headers().clone();
+                headers.set("Cache-Control", "private, no-cache")?;
+                headers.set("Vary", "Accept")?;
+                if let Some(etag) = headers.get("ETag")? {
+                    if media_not_modified(req.headers().get("If-None-Match")?.as_deref(), &etag) {
+                        return Ok(Response::empty()?.with_status(304).with_headers(headers));
+                    }
+                }
+                if req.method() == Method::Head {
+                    return Ok(Response::empty()?.with_headers(headers));
+                }
+                response = response.with_headers(headers);
+                return Ok(response);
+            }
+        }
+        console_warn!("image resize unavailable; serving original");
+        // Unsupported/failed resizing keeps the original image usable.
+    }
+
     let bucket = env.bucket("MEDIA")?;
-    let Some(obj) = bucket.get(&decoded).execute().await? else {
+    let Some(obj) = bucket.get(decoded.as_ref()).execute().await? else {
         return Response::error("not found", 404);
     };
 
@@ -1725,8 +2361,14 @@ async fn handle_media(key: &str, req: &Request, env: &Env) -> Result<Response> {
     let response_body = body.response_body()?;
 
     let meta = obj.http_metadata();
+    let Ok(content_type) = ingest::normalize_allowed_image_mime(
+        meta.content_type.as_deref().unwrap_or_default(),
+        &decoded,
+    ) else {
+        return Response::error("not found", 404);
+    };
     let pairs = media_header_pairs(
-        meta.content_type.as_deref(),
+        Some(content_type),
         meta.content_language.as_deref(),
         meta.content_disposition.as_deref(),
         meta.content_encoding.as_deref(),
@@ -1738,22 +2380,64 @@ async fn handle_media(key: &str, req: &Request, env: &Env) -> Result<Response> {
     for (name, value) in pairs {
         let _ = headers.set(&name, &value);
     }
+    if private {
+        headers.set("Cache-Control", "private, no-store")?;
+        headers.set("Cross-Origin-Resource-Policy", "same-origin")?;
+    }
 
-    if req.headers().get("If-None-Match")?.is_some_and(|value| {
-        value
-            .split(',')
-            .any(|tag| tag.trim().trim_start_matches("W/") == obj.http_etag() || tag.trim() == "*")
-    }) {
+    if !private
+        && media_not_modified(
+            req.headers().get("If-None-Match")?.as_deref(),
+            &obj.http_etag(),
+        )
+    {
         return Ok(Response::empty()?.with_status(304).with_headers(headers));
     }
 
+    if req.method() == Method::Head {
+        return Ok(Response::empty()?.with_headers(headers));
+    }
+
     Ok(Response::from_body(response_body)?.with_headers(headers))
+}
+
+fn media_not_modified(value: Option<&str>, etag: &str) -> bool {
+    value.is_some_and(|value| {
+        value
+            .split(',')
+            .any(|tag| tag.trim().trim_start_matches("W/") == etag || tag.trim() == "*")
+    })
+}
+
+fn media_width(value: Option<&str>) -> std::result::Result<Option<usize>, ()> {
+    match value {
+        None => Ok(None),
+        Some("160") => Ok(Some(160)),
+        Some("640") => Ok(Some(640)),
+        Some("1280") => Ok(Some(1280)),
+        _ => Err(()),
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn d1_daily_limits_are_specific_and_reset_at_utc_midnight() {
+        for kind in ["read", "write"] {
+            assert!(is_d1_daily_limit(&format!(
+                "D1_ERROR: Your account has exceeded D1's free tier daily row {kind} limit."
+            )));
+        }
+        assert!(!is_d1_daily_limit("D1_ERROR: query exceeded memory limit"));
+        assert!(!is_d1_daily_limit("too many requests"));
+        assert_eq!(seconds_until_d1_reset(0), 86_400);
+        assert_eq!(seconds_until_d1_reset(86_399), 1);
+        assert_eq!(seconds_until_d1_reset(86_400), 86_400);
+        assert_eq!(seconds_until_d1_reset(86_400 + 43_200), 43_200);
+    }
 
     #[test]
     fn normalize_tag_trims_hash_and_spaces() {
@@ -1778,6 +2462,32 @@ mod tests {
 
         let url = Url::parse("https://example.test/api/works").unwrap();
         assert_eq!(parse_limit_offset(&url), (40, 0));
+        let url = Url::parse("https://example.test/api/works?offset=9223372036854775807").unwrap();
+        assert_eq!(parse_limit_offset(&url), (40, u32::MAX));
+    }
+
+    #[test]
+    fn request_lengths_and_media_variants_are_bounded() {
+        assert_eq!(request_length_error(None, 10), None);
+        assert_eq!(request_length_error(Some("10"), 10), None);
+        assert_eq!(
+            request_length_error(Some("11"), 10),
+            Some((413, "request body too large"))
+        );
+        assert_eq!(
+            request_length_error(Some("-1"), 10),
+            Some((400, "invalid content length"))
+        );
+        assert_eq!(media_width(None), Ok(None));
+        for width in ["160", "640", "1280"] {
+            assert!(media_width(Some(width)).is_ok());
+        }
+        for width in ["", "0", "00160", "999999", "640,1280"] {
+            assert!(media_width(Some(width)).is_err());
+        }
+        assert!(media_not_modified(Some("W/\"abc\", \"def\""), "\"abc\""));
+        assert!(media_not_modified(Some("*"), "\"abc\""));
+        assert!(!media_not_modified(Some("\"def\""), "\"abc\""));
     }
 
     #[test]
@@ -1799,7 +2509,6 @@ mod tests {
             author_url: "".into(),
             is_r18: false,
             page_count: 1,
-            origin: "hanabi".into(),
             created_at: "2026-01-01T00:00:00Z".into(),
             cover_url: Some("/media/pixiv/1/00.jpg".into()),
             tags: vec!["foo".into(), "bar".into()],
@@ -1809,6 +2518,7 @@ mod tests {
         assert_eq!(v["cover_url"], "/media/pixiv/1/00.jpg");
         assert_eq!(v["tags"][0], "foo");
         assert_eq!(v["is_r18"], false);
+        assert!(v.get("origin").is_none());
     }
 
     #[test]
@@ -1826,6 +2536,10 @@ mod tests {
         );
         assert_eq!(cover_url_from_key(Some("")), None);
         assert_eq!(cover_url_from_key(None), None);
+        assert_eq!(
+            cover_url_from_key(Some("pixiv/a?#/00.jpg")).as_deref(),
+            Some("/media/pixiv/a%3F%23/00.jpg")
+        );
     }
 
     #[test]
@@ -1853,6 +2567,15 @@ mod tests {
             Some("nosniff")
         );
         assert_eq!(map.get("etag").map(String::as_str), Some("\"abc\""));
+    }
+
+    #[test]
+    fn fingerprint_digest_matches_hanabi_contract() {
+        let value: Value = serde_json::from_str(r#"{"average_hash":"0000000000000001","bytes":1234,"color_key":"color","content_sha256":"sha-a","detail_key":"detail","difference_hash":"0000000000000002","format":"JPEG","height":200,"r2_key":"pixiv/42/batch/00.jpg","regions":[{"average_hash":"0000000000000003","color_key":"region","difference_hash":"0000000000000004","height":200,"width":50}],"solid_color":false,"strict_key":"strict","width":100}"#).unwrap();
+        assert_eq!(
+            fingerprint_digest(&value).unwrap(),
+            "7d474f4b43cce9d9d5f182bbaf5176672905e82d8ffbe389feb6a528630052c2"
+        );
     }
 
     #[test]

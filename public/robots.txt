@@ -1,0 +1,5 @@
+User-agent: *
+Disallow: /admin
+Disallow: /api/admin/
+Disallow: /api/catalog
+Disallow: /api/ingest

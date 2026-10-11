@@ -1,0 +1,28 @@
+[Unit]
+Description=Compute Vitrine image similarity on Oracle
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/home/ubuntu/vitrine-similar
+StateDirectory=vitrine-similar
+StateDirectoryMode=0700
+ExecStart=/usr/bin/python3 /home/ubuntu/vitrine-similar/similar_compute.py --binary /home/ubuntu/vitrine-similar/vitrine-similar --state-dir /var/lib/vitrine-similar --clip-python /home/ubuntu/vitrine-clip/venv/bin/python --clip-scanner /home/ubuntu/vitrine-similar/clip_embed.py --clip-threads 4
+Environment=HF_HUB_OFFLINE=1 OMP_NUM_THREADS=4 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=4
+TimeoutStartSec=30min
+CPUQuota=400%
+MemoryMax=2G
+TasksMax=32
+Nice=10
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true

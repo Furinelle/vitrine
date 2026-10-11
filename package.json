@@ -1,20 +1,26 @@
 {
   "name": "vitrine",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "scripts": {
     "build": "worker-build --release",
     "build:dev": "worker-build --dev",
     "dev": "npm run build:dev && wrangler dev",
     "deploy": "npm run build && wrangler deploy",
-    "check": "cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo test && worker-build --dev",
+    "check": "cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo test && node tools/test_frontend.mjs && node tools/test_viewer.mjs && node tools/test_glass.mjs && node tools/test_admin_ui.mjs && node --check public/theme.js && node --check public/glass.js && node --check public/admin.js && npm run test:offline && worker-build --dev",
     "test": "cargo test",
     "db:local": "wrangler d1 migrations apply DB --local",
-    "db:remote": "wrangler d1 migrations apply DB --remote"
+    "db:remote": "wrangler d1 migrations apply DB --remote",
+    "test:integration": "python3 tools/test_integration.py",
+    "test:public": "node tools/test_public_live.mjs",
+    "test:offline": "python3 tools/test_clip_embed.py && python3 tools/test_similar_reads.py && python3 deploy/oracle-similar/test_runner.py"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^5.20260722.1",
     "typescript": "^5.8.3",
-    "wrangler": "^4.114.0"
+    "wrangler": "4.148.0"
+  },
+  "overrides": {
+    "sharp": "0.35.5"
   }
 }

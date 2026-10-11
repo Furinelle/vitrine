@@ -47,10 +47,11 @@ def png(color):
     return b'\x89PNG\r\n\x1a\n' + chunk(b'IHDR', struct.pack('!2I5B', 1, 1, 8, 2, 0, 0, 0)) + chunk(b'IDAT', zlib.compress(b'\0' + bytes(color))) + chunk(b'IEND', b'')
 
 
-def ingest(source_id=None, count=3, publication=True, ids=None):
+def ingest(source_id=None, count=3, publication=True, ids=None, meta_overrides=None):
     source_id = source_id or str(uuid.uuid4().int)[:20]
     boundary = 'test-boundary'
     meta = {'source': 'pixiv', 'source_id': source_id, 'title': 'Image review test'}
+    meta.update(meta_overrides or {})
     if publication:
         meta['telegram_publication'] = {'chat_id': CHAT, 'message_ids': ids or [101 + i for i in range(count)], 'publish_state': 'full'}
     body = b'--' + boundary.encode() + b'\r\nContent-Disposition: form-data; name="meta"\r\n\r\n' + json.dumps(meta).encode() + b'\r\n'

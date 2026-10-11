@@ -5,7 +5,8 @@
   // TypeScript entry `src/index.ts` is preserved for reference but not used for local dev.
   "main": "build/worker/shim.mjs",
   "compatibility_date": "2026-07-01",
-  "workers_dev": true,
+  "workers_dev": false,
+  "preview_urls": false,
   "routes": [
     {
       "pattern": "gallery.fontaine.blue",
@@ -15,7 +16,13 @@
   "assets": {
     "directory": "./public",
     "binding": "ASSETS",
-    "not_found_handling": "single-page-application"
+    "run_worker_first": [
+      "/api/*",
+      "/media/*",
+      "/admin",
+      "/admin/*"
+    ],
+    "not_found_handling": "none"
   },
   "r2_buckets": [
     {
@@ -31,6 +38,10 @@
       "database_id": "b7de4fd6-8b7c-46cc-a46f-43278c31065f",
       "migrations_dir": "migrations"
     }
+  ],
+  "ratelimits": [
+    { "name": "LOGIN_RATE_LIMITER", "namespace_id": "1952401", "simple": { "limit": 5, "period": 60 } },
+    { "name": "PUBLIC_RATE_LIMITER", "namespace_id": "1952402", "simple": { "limit": 120, "period": 60 } }
   ],
   "vars": {
     "PUBLIC_BASE_URL": "",
