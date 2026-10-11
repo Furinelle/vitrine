@@ -598,14 +598,6 @@ pub fn mark_idempotent_replay(stored_json: &str) -> Value {
     body
 }
 
-/// Detect SQLite/D1 unique constraint failures (idempotency race).
-pub fn is_unique_constraint_error(err: &str) -> bool {
-    let s = err.to_ascii_lowercase();
-    s.contains("unique constraint")
-        || s.contains("constraint failed")
-        || s.contains("already exists")
-}
-
 /// Outcome when resolving an idempotency receipt after a concurrent insert race.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum IdempotencyRaceOutcome {
@@ -1135,75 +1127,79 @@ pub async fn handle_ingest(mut req: Request, env: Env) -> Result<Response> {
         Err(e) => {
             let err_s = e.to_string();
             console_error!("ingest d1 batch failed: {err_s}");
-            // Concurrent Idempotency-Key race: peer may have committed the receipt.
+            // An Err can arrive after D1 committed. The success audit is in the
+            // same batch as images/receipt; bind it to this exact attempt before
+            // reporting success. Ordinary D1 reads use the primary (no Session).
+            if db
+                .prepare(
+                    r#"SELECT id FROM ingest_audits
+                       WHERE id = ? AND work_id = ? AND ingest_id = ? AND fingerprint = ?
+                         AND idempotency_key IS ? AND page_count = ? AND total_bytes = ?
+                         AND status = 'success'"#,
+                )
+                .bind(&[
+                    JsValue::from_str(&audit_id),
+                    JsValue::from_str(&wid),
+                    JsValue::from_str(&ingest_id),
+                    JsValue::from_str(&fingerprint),
+                    idem_key
+                        .as_deref()
+                        .map(JsValue::from_str)
+                        .unwrap_or(JsValue::NULL),
+                    JsValue::from_f64(prepared.len() as f64),
+                    JsValue::from_f64(total_bytes as f64),
+                ])?
+                .first::<Value>(None)
+                .await?
+                .is_some()
+            {
+                return Ok(with_cors(json_response(&response_body, 200)?));
+            }
+
+            // A peer may have won the Idempotency-Key race. Reconcile even when
+            // the transport error does not mention a constraint.
             if let Some(key) = idem_key.as_deref() {
-                if is_unique_constraint_error(&err_s) {
-                    best_effort_delete(&bucket, &uploaded_keys).await;
-                    let row = db
-                        .prepare(
-                            "SELECT fingerprint, response_json, status_code FROM idempotency_receipts WHERE idempotency_key = ?",
+                let row = db
+                    .prepare(
+                        "SELECT fingerprint, response_json, status_code FROM idempotency_receipts WHERE idempotency_key = ?",
+                    )
+                    .bind(&[JsValue::from_str(key)])?
+                    .first::<IdempotencyRow>(None)
+                    .await?;
+                match resolve_idempotency_race(
+                    &fingerprint,
+                    row.as_ref().map(|r| {
+                        (
+                            r.fingerprint.as_str(),
+                            r.response_json.as_str(),
+                            r.status_code,
                         )
-                        .bind(&[JsValue::from_str(key)])?
-                        .first::<IdempotencyRow>(None)
-                        .await?;
-                    let outcome = resolve_idempotency_race(
-                        &fingerprint,
-                        row.as_ref().map(|r| {
-                            (
-                                r.fingerprint.as_str(),
-                                r.response_json.as_str(),
-                                r.status_code,
-                            )
-                        }),
-                    );
-                    match outcome {
-                        IdempotencyRaceOutcome::Replay {
-                            response_json,
-                            status_code,
-                        } => {
-                            let body = mark_idempotent_replay(&response_json);
-                            return Ok(with_cors(json_response(&body, status_code)?));
-                        }
-                        IdempotencyRaceOutcome::Conflict => {
-                            return Ok(with_cors(json_response(
-                                &json!({
-                                    "ok": false,
-                                    "error": "idempotency key reuse with different payload",
-                                    "conflict": true,
-                                }),
-                                409,
-                            )?));
-                        }
-                        IdempotencyRaceOutcome::Missing => {
-                            let _ = write_audit(
-                                &db,
-                                &wid,
-                                &meta,
-                                &ingest_id,
-                                &fingerprint,
-                                Some(key),
-                                prepared.len(),
-                                total_bytes,
-                                "failed",
-                                Some(&format!(
-                                    "d1 batch unique conflict without receipt: {err_s}"
-                                )),
-                                &now,
-                            )
-                            .await;
-                            return Ok(with_cors(json_response(
-                                &json!({
-                                    "ok": false,
-                                    "error": "catalog update failed"
-                                }),
-                                500,
-                            )?));
-                        }
+                    }),
+                ) {
+                    IdempotencyRaceOutcome::Replay {
+                        response_json,
+                        status_code,
+                    } => {
+                        let body = mark_idempotent_replay(&response_json);
+                        return Ok(with_cors(json_response(&body, status_code)?));
                     }
+                    IdempotencyRaceOutcome::Conflict => {
+                        return Ok(with_cors(json_response(
+                            &json!({
+                                "ok": false,
+                                "error": "idempotency key reuse with different payload",
+                                "conflict": true,
+                            }),
+                            409,
+                        )?));
+                    }
+                    IdempotencyRaceOutcome::Missing => {}
                 }
             }
 
-            best_effort_delete(&bucket, &uploaded_keys).await;
+            // Neither an error string nor an absent receipt proves rollback:
+            // a delayed commit may still reference these immutable R2 keys.
+            // Retain them on every batch error, including reconciliation errors.
             if crate::is_d1_daily_limit(&err_s) {
                 return Err(e);
             }
@@ -1858,9 +1854,6 @@ mod tests {
             resolve_idempotency_race("fp1", None),
             IdempotencyRaceOutcome::Missing
         );
-        assert!(is_unique_constraint_error(
-            "D1_ERROR: UNIQUE constraint failed: idempotency_receipts.idempotency_key"
-        ));
     }
 
     #[test]
