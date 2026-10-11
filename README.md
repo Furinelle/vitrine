@@ -73,6 +73,25 @@ Header: `Authorization: Bearer <INGEST_TOKEN>`
 
 列出仍在线的作品图片。批量同步使用 `after=<image id>`（首批为空）主键游标，响应含 `catalog_id` 与 `next_cursor`；`fingerprints=1` 同时返回当前指纹的规范化 JSON SHA-256 摘要 `fingerprint_digest`，缺失时为 null，供 Hanabi 只上传变化项。未带 `after` 的旧 OFFSET 协议保留兼容。可加 `work_id=<source:id>` 只读取该作品的完整分页组，供 Hanabi 相似图审批展示图库原图。现有 `POST /api/catalog/prune` 按图片 key 做可恢复删除；同一 `decision_id` 仅允许相同保留 key 和删除集合重放（集合顺序可变），更换计划返回 409 且不删除对象。
 
+### 目录快照与离线差异
+
+`tools/catalog_snapshot.py` 复用目录 Bearer API，只 GET 元数据，不下载媒体、不写 Worker/D1/R2。凭据沿用 `HANABI_GALLERY_TOKEN` 环境变量，或显式指定已有 env 文件（不在命令行传 token）：
+
+```bash
+python3 tools/catalog_snapshot.py snapshot --env /path/to/existing.env --output catalog-before.jsonl
+# 下一次核验时保存另一份完整文件
+python3 tools/catalog_snapshot.py snapshot --env /path/to/existing.env --output catalog-after.jsonl
+python3 tools/catalog_snapshot.py diff catalog-before.jsonl catalog-after.jsonl > catalog-changes.json
+```
+
+可用 `--endpoint https://your-gallery.example` 指定 HTTPS origin。HTTP 仅允许 loopback fixture；不跟随重定向。`diff` 完全离线，不需要凭据，按 `catalog_id` 返回新增、移除及字段变化与数量摘要。比较字段限于现有 catalog 的作品/来源/标题、图片 key/页码/大小/类型/SHA-256 和指纹摘要；不会泛化导出额外 API 字段。
+
+JSONL 按图片 ID 严格递增，每份文件含格式/来源/版本头、图片行及数量/SHA-256 完整性尾。读完所有游标且前后 generation 相同才原子替换目标文件；重复 ID、异常游标、请求/解析失败、超限或版本变化都会清理 owner-only 临时文件并保留旧文件。摘要只覆盖图片行，便于核对内容。被 SIGKILL/断电中止时可能遗留 `0600` 的 `.partial` 文件，旧完整文件不会被提前替换；这些残片不能通过完整性校验，可手动清理。`diff` 拒绝截断、摘要/数量不符或来源不同的文件。
+
+前后 generation 检查依赖现有变更触发器，并非跨请求数据库事务；持续入库时可能需要稍后重试，校验后发生的新变更会留到下一份快照。此工具不验证 R2 对象是否存在或媒体字节是否正确，也不是媒体、Telegram mapping 或完整数据库备份。每页最多 100 项，另有两次轻量版本查询；单次响应上限 8 MiB、图片行总量上限 128 MiB。
+
+离线回归：`python3 tools/test_catalog_snapshot.py`（临时文件及本地 HTTP fixture，无真实凭据/生产访问）；也包含在 `npm run test:offline`。
+
 ### `PUT /api/catalog/fingerprints`
 
 Header: `Authorization: Bearer <INGEST_TOKEN>`
