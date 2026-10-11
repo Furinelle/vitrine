@@ -63,13 +63,15 @@ Body: `multipart/form-data`
 | `meta` | JSON：`source`, `source_id`, `source_url`, `title`, `author_name`, `author_url`, `tags[]`, `is_r18`, `origin` |
 | `files` | 一张或多张图片（可重复字段名） |
 
+可带 `Idempotency-Key`；相同 key 与内容重试复用已提交回执，不同内容返回 409。R2 上传完成后，元数据、成功审计及回执在同一 D1 batch 提交。如果提交确认丢失，会补读本次成功审计或现有回执；仅确认成功才返回成功，补读失败仍返回失败且保留原图。D1 错误无法可靠区分回滚与提交后响应丢失，因此失败尝试可能留下未引用的 R2 对象，不会自动清理这些结果不明的对象；调用方应使用原 key 重试。此处使用普通 D1 绑定，按 [D1 文档](https://developers.cloudflare.com/d1/worker-api/d1-database/) 读取 primary，不启用读副本 Sessions。
+
 入库限制：最多 40 个文件、单文件 50 MiB、单次请求总计 100 MiB。可选 `telegram_publication`（`chat_id`、`message_ids`、`publish_state=full|partial`）会写入 D1 `telegram_publications`。
 
 ### `GET /api/catalog`
 
 Header: `Authorization: Bearer <INGEST_TOKEN>`
 
-列出仍在线的作品图片。批量同步使用 `after=<image id>`（首批为空）主键游标，响应含 `catalog_id` 与 `next_cursor`；`fingerprints=1` 同时返回当前指纹的规范化 JSON SHA-256 摘要 `fingerprint_digest`，缺失时为 null，供 Hanabi 只上传变化项。未带 `after` 的旧 OFFSET 协议保留兼容。可加 `work_id=<source:id>` 只读取该作品的完整分页组，供 Hanabi 相似图审批展示图库原图。现有 `POST /api/catalog/prune` 按图片 key 做可恢复删除，行为保持兼容。
+列出仍在线的作品图片。批量同步使用 `after=<image id>`（首批为空）主键游标，响应含 `catalog_id` 与 `next_cursor`；`fingerprints=1` 同时返回当前指纹的规范化 JSON SHA-256 摘要 `fingerprint_digest`，缺失时为 null，供 Hanabi 只上传变化项。未带 `after` 的旧 OFFSET 协议保留兼容。可加 `work_id=<source:id>` 只读取该作品的完整分页组，供 Hanabi 相似图审批展示图库原图。现有 `POST /api/catalog/prune` 按图片 key 做可恢复删除；同一 `decision_id` 仅允许相同保留 key 和删除集合重放（集合顺序可变），更换计划返回 409 且不删除对象。
 
 ### `PUT /api/catalog/fingerprints`
 
@@ -191,6 +193,7 @@ npx wrangler dev
 
 # 质量检查（不部署）
 CARGO_BUILD_JOBS=2 npm run check  # Rust、前端、Oracle 离线回归和 WASM 构建
+CARGO_BUILD_JOBS=2 npm run test:recovery  # 实际 WASM 的提交确认丢失、重试和删除回执故障注入
 CARGO_BUILD_JOBS=2 npm run test:integration  # 独立临时 D1/R2 的完整 HTTP 回归
 npm run build       # release Worker 构建；不部署
 ```

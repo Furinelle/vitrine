@@ -902,6 +902,7 @@ struct CatalogPruneImageRow {
 
 #[derive(Debug, Deserialize)]
 struct CatalogPruneReceiptRow {
+    keep_r2_key: String,
     removed_json: String,
 }
 
@@ -1230,12 +1231,33 @@ async fn handle_catalog_prune(mut req: Request, env: &Env) -> Result<Response> {
 
     let db = env.d1("DB")?;
     if let Some(receipt) = db
-        .prepare("SELECT removed_json FROM catalog_prune_receipts WHERE decision_id = ?")
+        .prepare(
+            "SELECT keep_r2_key, removed_json FROM catalog_prune_receipts WHERE decision_id = ?",
+        )
         .bind(&[JsValue::from_str(&request.decision_id)])?
         .first::<CatalogPruneReceiptRow>(None)
         .await?
     {
-        let removed: Vec<String> = serde_json::from_str(&receipt.removed_json).unwrap_or_default();
+        let removed: Vec<String> = match serde_json::from_str(&receipt.removed_json) {
+            Ok(removed) => removed,
+            Err(_) => {
+                return json_response(
+                    &json!({ "ok": false, "error": "invalid prune receipt" }),
+                    500,
+                );
+            }
+        };
+        if !same_prune_plan(
+            &request.keep_r2_key,
+            &request.remove_r2_keys,
+            &receipt.keep_r2_key,
+            &removed,
+        ) {
+            return json_response(
+                &json!({ "ok": false, "error": "prune decision conflict" }),
+                409,
+            );
+        }
         env.bucket("MEDIA")?
             .delete_multiple(removed.clone())
             .await?;
@@ -1385,17 +1407,17 @@ fn validate_catalog_work_prune(
     Ok(())
 }
 
-fn same_work_prune_plan(
-    keep_work_id: &str,
-    remove_work_ids: &[String],
-    stored_keep_work_id: &str,
-    stored_remove_work_ids: &[String],
+fn same_prune_plan(
+    keep: &str,
+    remove: &[String],
+    stored_keep: &str,
+    stored_remove: &[String],
 ) -> bool {
-    if keep_work_id != stored_keep_work_id {
+    if keep != stored_keep {
         return false;
     }
-    let mut left = remove_work_ids.to_vec();
-    let mut right = stored_remove_work_ids.to_vec();
+    let mut left = remove.to_vec();
+    let mut right = stored_remove.to_vec();
     left.sort();
     right.sort();
     left == right
@@ -1504,7 +1526,7 @@ async fn handle_catalog_work_prune(mut req: Request, env: &Env) -> Result<Respon
         let stored_remove = parsed_receipt.remove_work_ids;
         let removed_r2_keys = parsed_receipt.removed_r2_keys;
         let telegram_targets = parsed_receipt.telegram_targets;
-        if !same_work_prune_plan(
+        if !same_prune_plan(
             &request.keep_work_id,
             &request.remove_work_ids,
             &receipt.keep_work_id,
@@ -2694,13 +2716,13 @@ mod tests {
 
     #[test]
     fn receipt_replay_requires_identical_plan() {
-        assert!(same_work_prune_plan(
+        assert!(same_prune_plan(
             "pixiv:2",
             &["douyin:1".into()],
             "pixiv:2",
             &["douyin:1".into()]
         ));
-        assert!(!same_work_prune_plan(
+        assert!(!same_prune_plan(
             "pixiv:2",
             &["douyin:1".into()],
             "pixiv:3",
