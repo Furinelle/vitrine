@@ -13,7 +13,7 @@
     "db:remote": "wrangler d1 migrations apply DB --remote",
     "test:integration": "python3 tools/test_integration.py",
     "test:public": "node tools/test_public_live.mjs",
-    "test:offline": "python3 tools/test_clip_embed.py && python3 tools/test_similar_reads.py && python3 deploy/oracle-similar/test_runner.py",
+    "test:offline": "python3 tools/test_clip_embed.py && python3 tools/test_similar_reads.py && python3 deploy/oracle-similar/test_runner.py && python3 tools/test_catalog_snapshot.py",
     "test:recovery": "npm run build:dev && node tools/test_commit_recovery.mjs"
   },
   "devDependencies": {
