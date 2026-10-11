@@ -224,3 +224,13 @@ npx wrangler rollback 1b7d8aac-80c2-4e3f-85d8-741ad6e4c104
 - 正式站只读验收通过：安全头、catalog 未授权拒绝、游标与标签索引、WebP 160/640/1280 实际宽度、ETag 304 和旧裸缩图入口 403；三个缩图合计 270,968 字节。未用生产作品执行编辑/删除/恢复或大上传。
 - 本轮 `npm audit` 报告 0 条漏洞；检查仅覆盖 npm 锁定开发依赖，不保证整个系统无漏洞。
 - 未包含未被页面引用的 `public/water.js`、本地 `.agents/` 技能安装、`skills-lock.json`、`.c2cignore`、旧设计草稿、临时日志、数据库备份、构建产物或密钥。未执行远端迁移、部署、Oracle 更新或 Telegram 操作；iPhone 真机与本轮 Safari 尚未复验，免费 Worker 1102 风险仍须单独处理。
+
+## 2026-10-11 v0.2.0 正式部署
+
+- 用户明确授权部署后，将源码提交 `8bee5b6968e67fdac87ffa7cebb04487047de616` 发布至 Worker `vitrine` / `gallery.fontaine.blue`，新版本 `69de2943-9efd-4958-ad94-4d7c6251ddef` 承接 100% 流量。静态资产仅取该提交的 `public/`，未包含本地未跟踪文件；Wrangler 4.148.0 使用 `--keep-vars` 和现有正式配置。四个资产因去除尾部空白而更新，页面业务代码保持原样。
+- 发布前重新下载线上模块、settings 与 deployment，并核对当前版本仍为 `5f7f49ef-30d5-4f9a-b7e7-54de1de93629`。备份位于 `/tmp/vitrine-deploy-closeout-20261011/before/`（受限权限），同级 `rollback.sh` 可回滚至该版本；旧版本仍保留，不需恢复数据库。
+- 发布后重新下载的 WASM 为 1,376,163 字节，SHA-256 `e0806bc12c2803f358bdd56df549eacc79e2237ede36c428df5b87742b277abb`，与 v0.2.0 本地 release 构建逐字节相同；确认不含 `ingest timing:`。JS 模块 SHA-256 `56ac17ff8f2ff6448e1c1c19a6f1d50fb27a7f70004bd771baf4716b06e0d0a8`。前后 settings 仅部署 annotations 变化，全部 bindings（包括密钥身份）、变量、兼容日期/flags、usage_model、placement、tail/logpush 均一致。workers.dev / previews 仍关闭。
+- 远端迁移列表确认无待应用迁移；没有创建或迁移 D1/R2，没有业务数据写入，也没有 Telegram 操作。正式只读套件通过，三档 WebP 实际宽度 160/640/1280、总 270,968 字节，ETag 304、游标、标签索引、安全头和旧裸缩图入口 403 正常。七个公开资产逐字节匹配提交；匿名 catalog/snapshot 为 401，后台入口保留 WAF 403。
+- Oracle 上实际 Bearer 调用 health、两项 catalog 增量页与 similarity snapshot 成功，`catalog_id`、非空 `fingerprint_digest` 与 `next_cursor` 齐全。验收快照 generation=3975、result_generation=3807，后续入库使结果过期属既有每日扫描安排；未为验收强制全库扫描，旧候选仍需按当前成员/特征复核。
+- Oracle current 仍为 `20261010-solid-filter`。运行中的两份 Python 脚本 SHA 与源码一致，服务源码目录中的 `similar.rs` / CLI 源码 SHA 与发布提交一致；现有 ARM64 二进制 SHA `7886c7bd74b3cfa27d4a6bd0dcecf0c2243f3eda7d8def1510b40c0084f60a29`。今日任务成功补齐142张CLIP并发布generation=3807，四核/2GiB限制、每日08:15 timer均保留。因此未重建、重启或修改Oracle任务。
+- 回滚、dry-run、发布、模块/settings、资产权限和公开API验收证据保存在 `/tmp/vitrine-deploy-closeout-20261011/`。免费 Worker 大上传1102与iPhone/本轮Safari真机路径仍未完成验证；未用生产作品做上传、删除或恢复测试。
