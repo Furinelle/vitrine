@@ -518,12 +518,42 @@ fn like_pattern(value: &str) -> String {
     )
 }
 
+/// Upper bound on tags in one `tag=a,b,c` filter; keeps the statement well
+/// under D1's 100 bound-parameter limit alongside the other filters.
+const MAX_FILTER_TAGS: usize = 64;
+
+/// Splits a `tag` query value into normalized, de-duplicated tags. Commas
+/// separate tags, matching the `GROUP_CONCAT(wt.tag, ',')` output format.
+pub fn tag_filter(raw: &str) -> Vec<String> {
+    let mut tags: Vec<String> = Vec::new();
+    for tag in raw.split(',').map(normalize_tag) {
+        if !tag.is_empty() && !tags.contains(&tag) {
+            tags.push(tag);
+        }
+    }
+    tags
+}
+
+/// FROM clause for the works list. One tag keeps the original indexed join;
+/// several tags match works carrying any of them, each work once.
+fn works_from_clause(tag_count: usize) -> String {
+    match tag_count {
+        0 => "FROM works w".to_string(),
+        1 => "FROM work_tags filter CROSS JOIN works w ON w.id=filter.work_id".to_string(),
+        n => format!(
+            "FROM (SELECT DISTINCT work_id FROM work_tags WHERE tag IN ({})) filter CROSS JOIN works w ON w.id=filter.work_id",
+            vec!["?"; n].join(", ")
+        ),
+    }
+}
+
 async fn handle_list_works(url: &Url, env: &Env) -> Result<Response> {
     let tag = query_param(url, "tag");
+    let tags = tag_filter(&tag);
     let source = query_param(url, "source").to_lowercase();
     let q = query_param(url, "q");
     let (limit, offset) = parse_limit_offset(url);
-    if q.len() > 512 || tag.len() > 256 || source.len() > 64 {
+    if q.len() > 512 || tag.len() > 4096 || tags.len() > MAX_FILTER_TAGS || source.len() > 64 {
         return json_response(&json!({"ok": false, "error": "query too long"}), 400);
     }
     let Ok(cursor) = work_cursor(&query_param(url, "cursor")) else {
@@ -538,9 +568,9 @@ async fn handle_list_works(url: &Url, env: &Env) -> Result<Response> {
         where_parts.push("w.source = ?");
         binds.push(source);
     }
-    if !tag.is_empty() {
+    if tags.len() == 1 {
         where_parts.push("filter.tag = ?");
-        binds.push(normalize_tag(&tag));
+        binds.push(tags[0].clone());
     }
     if !q.is_empty() {
         where_parts.push("(w.title LIKE ? ESCAPE '\\' OR w.author_name LIKE ? ESCAPE '\\' OR w.source_id LIKE ? ESCAPE '\\')");
@@ -558,14 +588,7 @@ async fn handle_list_works(url: &Url, env: &Env) -> Result<Response> {
     }
 
     let where_sql = format!("WHERE {}", where_parts.join(" AND "));
-    let work_select = if tag.is_empty() {
-        WORK_SELECT.to_string()
-    } else {
-        WORK_SELECT.replace(
-            "FROM works w",
-            "FROM work_tags filter CROSS JOIN works w ON w.id=filter.work_id",
-        )
-    };
+    let work_select = WORK_SELECT.replace("FROM works w", &works_from_clause(tags.len()));
 
     let sql = format!(
         r#"
@@ -576,7 +599,13 @@ async fn handle_list_works(url: &Url, env: &Env) -> Result<Response> {
         "#
     );
 
-    let mut values: Vec<JsValue> = binds.iter().map(|s| JsValue::from_str(s)).collect();
+    // The multi-tag placeholders sit in the FROM clause, ahead of the WHERE binds.
+    let from_binds: &[String] = if tags.len() > 1 { &tags } else { &[] };
+    let mut values: Vec<JsValue> = from_binds
+        .iter()
+        .chain(binds.iter())
+        .map(|s| JsValue::from_str(s))
+        .collect();
     values.push(JsValue::from_f64(f64::from(limit)));
     values.push(JsValue::from_f64(f64::from(offset)));
 
@@ -2486,6 +2515,23 @@ mod tests {
         assert_eq!(parse_limit_offset(&url), (40, 0));
         let url = Url::parse("https://example.test/api/works?offset=9223372036854775807").unwrap();
         assert_eq!(parse_limit_offset(&url), (40, u32::MAX));
+    }
+
+    #[test]
+    fn tag_filter_splits_normalizes_and_dedupes() {
+        assert!(tag_filter("").is_empty());
+        assert!(tag_filter(" , ,").is_empty());
+        assert_eq!(tag_filter("#foo bar"), ["foo_bar"]);
+        assert_eq!(tag_filter("a, #b ,a,,c"), ["a", "b", "c"]);
+    }
+
+    #[test]
+    fn works_from_clause_matches_tag_count() {
+        assert_eq!(works_from_clause(0), "FROM works w");
+        assert!(works_from_clause(1).starts_with("FROM work_tags filter CROSS JOIN"));
+        let many = works_from_clause(3);
+        assert!(many.contains("SELECT DISTINCT work_id FROM work_tags WHERE tag IN (?, ?, ?)"));
+        assert_eq!(many.matches('?').count(), 3);
     }
 
     #[test]
