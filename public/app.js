@@ -1,5 +1,10 @@
 const $ = (id) => document.getElementById(id);
 const names = { pixiv: "Pixiv", x: "X / Twitter", douyin: "抖音" };
+// tag 可以是逗号分隔的多个标签（命中任一即可）；界面上只写第一个和总数。
+function tagLabel(tag) {
+  const tags = tag.split(",").filter(Boolean);
+  return tags.length > 1 ? `${tags[0]} 等 ${tags.length} 个标签` : tag;
+}
 function locationFilters() {
   const query = new URLSearchParams(location.search);
   return { source: query.get("source") || "", tag: query.get("tag") || "", q: query.get("q") || "" };
@@ -70,15 +75,16 @@ function syncFilters(preserveDraft = false) {
     else item.removeAttribute("aria-current");
   });
   document.querySelectorAll("#popular-tags .tag-chip").forEach((item) => item.classList.toggle("active", item.dataset.tag === state.tag));
-  const title = state.tag ? `# ${state.tag}` : state.q ? "搜索结果" : state.source ? names[state.source] || state.source : "全部作品";
+  const title = state.tag ? `# ${tagLabel(state.tag)}` : state.q ? "搜索结果" : state.source ? names[state.source] || state.source : "全部作品";
   $("collection-title").textContent = title;
   if (!$("lightbox").open) document.title = `${state.source || state.tag || state.q ? title + " · " : ""}Vitrine · 图库`;
   $("reset").hidden = !state.source && !state.tag && !state.q;
   $("active-filters").replaceChildren();
   for (const field of ["tag", "q"]) {
     if (!state[field]) continue;
-    const chip = button("active-filter", `${field === "tag" ? "# " : "搜索："}${state[field]} ×`, () => applyFilters({ [field]: "" }));
-    chip.setAttribute("aria-label", `移除${field === "tag" ? "标签" : "搜索"}筛选：${state[field]}`);
+    const value = field === "tag" ? tagLabel(state.tag) : state.q;
+    const chip = button("active-filter", `${field === "tag" ? "# " : "搜索："}${value} ×`, () => applyFilters({ [field]: "" }));
+    chip.setAttribute("aria-label", `移除${field === "tag" ? "标签" : "搜索"}筛选：${value}`);
     $("active-filters").append(chip);
   }
 }

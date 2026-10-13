@@ -165,7 +165,7 @@ Cookie。只软删除作品并保留图片。已下线返回 `replayed: true`。
 
 ### `GET /api/works?source=&tag=&q=&limit=&offset=&cursor=`
 
-按 `created_at DESC, id DESC` 稳定排序。新网页使用 `next_cursor` 继续浏览，避免新入库/下线移动 offset 导致漏项；旧 offset 客户端保持兼容。搜索中的 `%` / `_` 按普通文字处理。
+按 `created_at DESC, id DESC` 稳定排序。`tag` 可用逗号分隔多个标签（最多 64 个），返回带有其中任一标签的作品，每件作品只出现一次；单个标签的行为不变。新网页使用 `next_cursor` 继续浏览，避免新入库/下线移动 offset 导致漏项；旧 offset 客户端保持兼容。搜索中的 `%` / `_` 按普通文字处理。
 
 ### `GET /api/works/<URL 编码的 work_id>`
 
