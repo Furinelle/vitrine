@@ -54,8 +54,10 @@ function fixture() {
     pushState(value, title, url) { this.replaceState(value, title, url); },
     back() { this.backs++; },
   };
+  const preloaded = [];
   const context = vm.createContext({
     URL, URLSearchParams, AbortController, state, location, history, $: element,
+    Image: class { set src(value) { preloaded.push(value); } },
     window: { devicePixelRatio: 1 }, matchMedia: () => ({ matches: reduced }),
     getComputedStyle: () => ({ opacity: '0.8', transform: 'matrix(1, 0, 0, 1, 0, 0)' }),
     showWorkInfo() {}, syncFilters() {}, loadWorks() {},
@@ -71,7 +73,7 @@ function fixture() {
     assert.ok(source.includes(start) && source.includes(end), `viewer extraction: ${start}`);
     vm.runInContext(source.slice(source.indexOf(start), source.indexOf(end)), context);
   }
-  return { context, state, element, cached, motions, details, history, location,
+  return { context, state, element, cached, motions, details, history, location, preloaded,
     setReduced(value) { reduced = value; } };
 }
 
@@ -108,7 +110,14 @@ function fixture() {
   f.context.showImage(0, false);
   assert.equal(new URL(f.element('lb-img').src).searchParams.get('width'), '640');
 }
-console.log('PASS: instant card preview, mobile sizing, same-URL reuse and bounded error/retry');
+{
+  const f = fixture();
+  f.state.images.push({ r2_key: 'x/one/2.jpg' });
+  f.context.showImage(1, false);
+  assert.deepEqual(f.preloaded.map(url => new URL(url).pathname), ['/media/x/one/2.jpg', '/media/x/one/0.jpg']);
+  assert.ok(f.preloaded.every(url => new URL(url).searchParams.get('width') === '1280'), 'neighbours use the viewer size');
+}
+console.log('PASS: instant card preview, mobile sizing, same-URL reuse, bounded error/retry and neighbour preloading');
 
 {
   const f = fixture(), full = f.element('lb-img'), decoding = deferred();

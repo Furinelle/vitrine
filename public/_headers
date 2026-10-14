@@ -8,3 +8,5 @@
 /admin*
   Cache-Control: no-store
   X-Robots-Tag: noindex, nofollow
+/fonts/*
+  Cache-Control: public, max-age=2592000
