@@ -11,10 +11,10 @@
   <meta property="og:url" content="https://gallery.fontaine.blue/" />
   <title>Vitrine · 图库</title>
   <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
-  <link rel="stylesheet" href="/theme.css?v=20261008-unified" />
-  <link rel="stylesheet" href="/gallery.css?v=20261014-masonry" />
+  <link rel="stylesheet" href="/theme.css?v=20261014-type" />
+  <link rel="stylesheet" href="/gallery.css?v=20261014-type" />
   <script src="/theme.js?v=20261008-unified" defer></script>
-  <script src="/app.js?v=20261014-masonry" defer></script>
+  <script src="/app.js?v=20261014-type" defer></script>
   <script src="/glass.js?v=20261011-lazy" defer></script>
 </head>
 <body id="top">
@@ -26,12 +26,12 @@
       <input id="q" type="search" placeholder="搜索作品或作者" maxlength="160" autocomplete="off" enterkeyhint="search" />
       <button type="submit" aria-label="搜索作品"><svg aria-hidden="true" viewBox="0 0 24 24"><circle cx="10.8" cy="10.8" r="6.8"/><path d="m16 16 4.5 4.5"/></svg></button>
     </form>
-    <button id="theme-toggle" class="icon-button liquid-glass" type="button" aria-label="切换到深色外观" title="切换外观">◐</button>
+    <button id="theme-toggle" class="icon-button liquid-glass" type="button" aria-label="切换到深色外观" title="切换外观"><svg aria-hidden="true" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/><path class="fill" d="M12 4a8 8 0 0 1 0 16z"/></svg></button>
   </header>
   <main id="collection" tabindex="-1">
     <div class="collection-heading">
       <div><h1 id="collection-title">全部作品</h1></div>
-      <div class="collection-summary"><span>最近收藏 ↓</span><p id="collection-count" class="collection-count" aria-live="polite">加载中…</p></div>
+      <div class="collection-summary"><span>按收藏时间排列</span><p id="collection-count" class="collection-count" aria-live="polite">加载中…</p></div>
     </div>
     <div class="browse-toolbar">
     <div class="collection-controls">
@@ -44,25 +44,25 @@
       <button id="reset" type="button" class="text-button" hidden>清除</button>
     </form>
     </div>
-    <div class="tag-strip"><div id="popular-tags" class="popular-tags" aria-label="热门标签"></div><button id="browse-tags" type="button" class="text-button" aria-expanded="false" aria-controls="tag-browser">全部标签 ↗</button></div>
+    <div class="tag-strip"><div id="popular-tags" class="popular-tags" aria-label="热门标签"></div><button id="browse-tags" type="button" class="text-button" aria-expanded="false" aria-controls="tag-browser">全部标签</button></div>
     <section id="tag-browser" class="tag-browser" hidden aria-label="标签索引"><label class="tag-search">查找标签<input id="tag-search" type="search" placeholder="输入标签关键词" maxlength="64" /></label><div id="all-tags" class="popular-tags"></div><p id="tag-empty" hidden>没有匹配的标签。</p><p id="tag-status" class="status" role="status"></p><button id="tag-more" class="text-button" hidden>加载更多标签</button><button id="tag-retry" class="text-button" hidden>重试</button></section>
     <div id="active-filters" class="active-filters" aria-label="当前筛选条件"></div>
     <section id="grid" class="gallery" aria-label="收藏作品" aria-busy="true"></section>
-    <div id="empty" class="empty-state" hidden><span aria-hidden="true">⌕</span><h2>没有匹配的作品</h2><p>试试其他关键词，或清除筛选。</p><button id="empty-reset" class="primary-button">查看全部作品</button></div>
-    <div class="pagination"><p id="status" class="status" role="status" aria-live="polite">正在加载作品…</p><button id="more" class="more-button" hidden>继续浏览 ↓</button><button id="retry" class="more-button" hidden>重新加载</button><p id="end-note" hidden>已显示全部作品</p></div>
-    <footer class="page-footer"><div><a class="footer-brand" href="/">Vitrine.</a><p class="footer-note">一些喜欢的画，慢慢看。</p><p>图片版权归原作者。作者与原帖见作品详情。</p></div><div class="footer-links"><button id="about-open" class="text-button">关于</button><a href="#top">回到顶部 ↑</a></div></footer>
+    <div id="empty" class="empty-state" hidden><svg aria-hidden="true" viewBox="0 0 24 24"><circle cx="10.8" cy="10.8" r="6.8"/><path d="m16 16 4.5 4.5"/></svg><h2>没有匹配的作品</h2><p>试试其他关键词，或清除筛选。</p><button id="empty-reset" class="primary-button">查看全部作品</button></div>
+    <div class="pagination"><p id="status" class="status" role="status" aria-live="polite">正在加载作品…</p><button id="more" class="more-button" hidden>继续浏览</button><button id="retry" class="more-button" hidden>重新加载</button><p id="end-note" hidden>已显示全部作品</p></div>
+    <footer class="page-footer"><div><a class="footer-brand" href="/">Vitrine.</a><p class="footer-note">一些喜欢的画，慢慢看。</p><p>图片版权归原作者。作者与原帖见作品详情。</p></div><div class="footer-links"><button id="about-open" class="text-button">关于</button><a href="#top">回到顶部</a></div></footer>
     <noscript><p class="status">请启用 JavaScript 以搜索和浏览作品。</p></noscript>
   </main>
   <button id="back-to-top" class="icon-button back-to-top" type="button" aria-label="回到顶部" title="回到顶部" hidden><svg aria-hidden="true" viewBox="0 0 24 24"><path d="M5 10l7-7 7 7M12 3v18"/></svg></button>
   <dialog id="lightbox" aria-labelledby="lb-title">
-    <button id="lb-close" class="icon-button close" aria-label="关闭作品详情" autofocus>×</button>
+    <button id="lb-close" class="icon-button close" aria-label="关闭作品详情" autofocus><svg aria-hidden="true" viewBox="0 0 24 24"><path d="M6.5 6.5l11 11M17.5 6.5l-11 11"/></svg></button>
     <div class="viewer">
       <div class="viewer-toolbar"><span id="lb-counter" aria-live="polite">1 / 1</span><a id="lb-original" target="_blank" rel="noopener noreferrer">查看原图 ↗</a></div>
       <div class="image-stage" id="lb-stage">
-        <button id="lb-prev" class="icon-button image-nav prev" aria-label="上一张图片">‹</button>
+        <button id="lb-prev" class="icon-button image-nav prev" aria-label="上一张图片"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="m14.5 5.5-6.5 6.5 6.5 6.5"/></svg></button>
         <img id="lb-preview" alt="" aria-hidden="true" hidden /><img id="lb-img" alt="" decoding="async" fetchpriority="high" /><span id="lb-image-loading" role="status" hidden>加载预览…</span>
         <p id="lb-image-error" hidden>清晰预览暂时无法加载。<button id="lb-image-retry" class="text-button">重试图片</button></p>
-        <button id="lb-next" class="icon-button image-nav next" aria-label="下一张图片">›</button>
+        <button id="lb-next" class="icon-button image-nav next" aria-label="下一张图片"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="m9.5 5.5 6.5 6.5-6.5 6.5"/></svg></button>
       </div>
       <div id="lb-thumbs" class="thumbnails" aria-label="选择图片"></div>
     </div>
@@ -75,6 +75,6 @@
       <p class="viewer-hint">← → 切换图片 · Esc 关闭</p>
     </div>
   </dialog>
-  <dialog id="about" aria-labelledby="about-title"><button id="about-close" class="icon-button close" aria-label="关闭关于">×</button><h2 id="about-title">关于这个图库</h2><p>这里收集了来自 Pixiv、X 和抖音的插画。点击作品可以查看作者、其他图片和原帖。</p><p>图片版权归原作者。需要转载或使用作品，请先取得作者许可。</p><p>浏览无需注册。深浅外观的选择保存在当前浏览器。原帖链接会在新标签页打开。</p></dialog>
+  <dialog id="about" aria-labelledby="about-title"><button id="about-close" class="icon-button close" aria-label="关闭关于"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="M6.5 6.5l11 11M17.5 6.5l-11 11"/></svg></button><h2 id="about-title">关于这个图库</h2><p>这里收集了来自 Pixiv、X 和抖音的插画。点击作品可以查看作者、其他图片和原帖。</p><p>图片版权归原作者。需要转载或使用作品，请先取得作者许可。</p><p>浏览无需注册。深浅外观的选择保存在当前浏览器。原帖链接会在新标签页打开。</p></dialog>
 </body>
 </html>

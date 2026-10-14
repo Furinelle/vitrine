@@ -15,6 +15,12 @@
   --rim: light-dark(rgb(255 255 255 / .95), rgb(255 255 255 / .52));
   --ease: cubic-bezier(.22, 1, .36, 1);
   --sans: -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", "Noto Sans CJK SC", sans-serif;
+  /* Three faces, one job each: the wordmark, brush-script headings, and every other piece of text. */
+  --brand: "Vitrine Display", Georgia, serif;
+  --hand: "Vitrine Hand", "Kaiti SC", "STKaiti", "KaiTi", serif;
+  --fs-xs: 11px;
+  --fs-sm: 12px;
+  --fs-md: 13px;
   font-family: var(--sans);
   background: var(--bg);
   color: var(--text);
@@ -39,10 +45,10 @@
 body { padding-top: calc(84px + env(safe-area-inset-top)); }
 .topbar { display: flex; align-items: center; gap: 12px; max-width: 1536px; margin: 0 auto; min-height: 64px; position: fixed; left: 0; right: 0; top: calc(20px + env(safe-area-inset-top) + var(--viewport-offset, 0px)); z-index: 20; width: calc(100% - 64px); pointer-events: none; }
 .topbar > * { pointer-events: auto; }
-.brand { display: flex; align-items: baseline; font: italic 600 40px/.95 "Vitrine Display", Georgia, serif; letter-spacing: -.06em; flex-shrink: 0; }
+.brand { display: flex; align-items: baseline; font: italic 600 40px/.95 var(--brand); letter-spacing: -.06em; flex-shrink: 0; }
 .topbar .brand { min-height: 64px; align-items: center; padding: 0 24px; text-shadow: 0 1px 3px light-dark(rgb(255 255 255 / .9), rgb(0 0 0 / .65)); }
 .brand > span { color: rgb(var(--accent)); }
-.brand small { margin-left: 20px; font: 15px "Vitrine Hand", "Kaiti SC", serif; letter-spacing: .12em; color: var(--muted); }
+.brand small { margin-left: 20px; font: 15px var(--hand); letter-spacing: .12em; color: var(--muted); }
 .search { display: flex; gap: 8px; align-items: center; margin-left: auto; width: min(520px, 52%); padding: 0 8px 0 24px; min-height: 64px; }
 .search svg { width: 21px; height: 21px; fill: none; stroke: currentColor; stroke-width: 1.8; }
 .search input { width: 100%; min-width: 0; border: 0; background: transparent; outline: none; font-size: 16px; font-weight: 400; text-shadow: 0 1px 2px light-dark(rgb(255 255 255 / .8), rgb(0 0 0 / .8)); }
@@ -51,7 +57,6 @@ body { padding-top: calc(84px + env(safe-area-inset-top)); }
 .search button:hover { background: var(--inset); }
 #theme-toggle { width: 64px; height: 64px; background: var(--panel); }
 @supports (backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px)) { #theme-toggle { background: var(--glass); } }
-.collection-heading h1 { overflow-wrap: anywhere; font: 400 30px/1.3 "Vitrine Hand", "Kaiti SC", "Songti SC", serif; letter-spacing: .04em; margin: 0; }
 .topbar:has(.search[hidden]) #theme-toggle { margin-left: auto; }
 @media (max-width: 1100px) { .brand small { display: none; } }
 @media (max-width: 760px) {
@@ -64,9 +69,11 @@ body { padding-top: calc(84px + env(safe-area-inset-top)); }
   .search button { width: 38px; height: 44px; }
   .search svg { width: 18px; height: 18px; }
   #theme-toggle { width: 54px; height: 54px; }
-  .collection-heading h1 { font-size: 29px; }
 }
 @media (max-width: 370px) { .topbar .brand { padding-inline: 10px; } .brand { font-size: 25px; } .topbar { gap: 6px; } .search { padding-left: 12px; } #theme-toggle { width: 48px; height: 48px; } }
 
 #back-to-top { position: fixed; right: max(20px, env(safe-area-inset-right)); bottom: calc(20px + env(safe-area-inset-bottom)); z-index: 25; width: 48px; height: 48px; background: var(--panel); box-shadow: 0 3px 14px rgb(0 0 0 / .15); }
-#back-to-top svg { width: 22px; height: 22px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+/* Icons are drawn, not typed, so they sit in the exact centre of their buttons on every platform. */
+.icon-button svg, #back-to-top svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+.icon-button svg .fill { fill: currentColor; stroke: none; }
+#theme-toggle svg { width: 22px; height: 22px; }
