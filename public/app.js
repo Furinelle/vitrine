@@ -588,12 +588,6 @@ $("lb-img").addEventListener("touchend", (event) => {
 $("lb-img").addEventListener("touchcancel", () => { touchStart = null; });
 $("about-open").addEventListener("click", () => $("about").showModal());
 $("about-close").addEventListener("click", () => $("about").close());
-if (!matchMedia("(prefers-reduced-motion: reduce)").matches && matchMedia("(pointer: fine)").matches) {
-  for (const glass of document.querySelectorAll(".liquid-glass")) glass.addEventListener("pointermove", (event) => {
-    const rect = glass.getBoundingClientRect();
-    glass.style.setProperty("--shine-x", `${Math.round((event.clientX - rect.left) / rect.width * 100)}%`);
-  }, { passive: true });
-}
 // Masonry: cards keep DOM (and keyboard) order; each is translated into the shortest column.
 if (typeof ResizeObserver === "function") {
   const grid = $("grid");

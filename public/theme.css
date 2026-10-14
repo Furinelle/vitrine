@@ -1,18 +1,22 @@
 @font-face { font-family: "Vitrine Display"; src: url("/fonts/cormorant-subset.ttf") format("truetype"); font-style: italic; font-weight: 600; font-display: swap; }
 @font-face { font-family: "Vitrine Hand"; src: url("/fonts/mashan-subset.ttf?v=20261008-admin") format("truetype"); font-style: normal; font-weight: 400; font-display: swap; }
+/* Shared with furina.ai: a Fontaine opera programme. Night-sea blue or programme paper, navy ink,
+   gilt only on hairlines, and solid plates framed by a double rule instead of glass. */
 :root {
   color-scheme: light;
-  --ink: 19 22 25;
-  --paper: 245 243 238;
-  --accent: 155 180 202;
-  --bg: light-dark(#f5f3ee, #111315);
-  --panel: light-dark(#fffefa, #1b1e21);
-  --text: light-dark(#242b30, #eeeee9);
-  --muted: light-dark(#62696d, #a2a9ac);
-  --line: light-dark(rgb(var(--ink) / .13), rgb(var(--paper) / .14));
-  --inset: light-dark(rgb(var(--ink) / .045), rgb(var(--paper) / .065));
-  --glass: light-dark(rgb(255 255 255 / .16), rgb(25 29 34 / .3));
-  --rim: light-dark(rgb(255 255 255 / .95), rgb(255 255 255 / .52));
+  --ink: 13 31 69;
+  --paper: 244 248 253;
+  --accent: 15 46 115;
+  --bg: light-dark(#eef3f9, #050f2c);
+  --panel: light-dark(#f8fbfe, #091a42);
+  --mat: light-dark(#f8fbfe, #0c1f4d);
+  --text: light-dark(#0d1f45, #f4f8fd);
+  --muted: light-dark(#4f5f7e, #a9bddc);
+  --line: light-dark(rgb(var(--ink) / .15), rgb(166 220 255 / .16));
+  --inset: light-dark(rgb(var(--ink) / .05), rgb(166 220 255 / .07));
+  --brass: light-dark(#9c7f42, #cdb47c);
+  --gilt-line: light-dark(rgb(156 127 66 / .45), rgb(205 180 124 / .42));
+  --link: light-dark(#0f2e73, #a6dcff);
   --ease: cubic-bezier(.22, 1, .36, 1);
   --sans: -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", "Noto Sans CJK SC", sans-serif;
   /* Three faces, one job each: the wordmark, brush-script headings, and Kai for all other gallery text. */
@@ -26,54 +30,41 @@
   background: var(--bg);
   color: var(--text);
 }
-/* Separate lenses share one material; controls never sit inside another glass pane. */
-.liquid-glass { position: relative; isolation: isolate; background: var(--panel); border: 1px solid var(--line); border-radius: 999px; }
-@supports (backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px)) {
-  .liquid-glass { background: var(--glass); border-color: light-dark(rgb(255 255 255 / .65), rgb(255 255 255 / .22)); box-shadow: 0 4px 12px -5px rgb(0 0 0 / .22), 0 1px 3px rgb(0 0 0 / .08), inset 0 1px 1px rgb(255 255 255 / .9), inset 0 -1px 1px light-dark(rgb(72 88 100 / .26), rgb(255 255 255 / .18)); }
-  .liquid-glass::before { content: ""; position: absolute; inset: 0; border-radius: inherit; z-index: -3; pointer-events: none; -webkit-backdrop-filter: blur(5px) saturate(155%); backdrop-filter: blur(5px) saturate(155%); }
-  .liquid-glass::after { content: ""; position: absolute; inset: 0; border-radius: inherit; z-index: -1; pointer-events: none; background-color: light-dark(rgb(255 255 255 / .23), rgb(18 22 26 / .22)); background-image: radial-gradient(ellipse at var(--shine-x, 18%) 0, rgb(255 255 255 / .5), transparent 48%), linear-gradient(165deg, rgb(255 255 255 / .28), transparent 28%, transparent 74%, rgb(255 255 255 / .18)); box-shadow: inset 2px 2px 3px -2px white, inset -2px -2px 3px -2px white, inset 0 0 8px -4px rgb(255 255 255 / .75); }
-}
+/* Plates: opaque, nearly square, an outer rule and a gilt inner rule. */
+.surface { position: relative; background: var(--panel); border: 1px solid var(--line); border-radius: 3px; box-shadow: inset 0 0 0 3px var(--panel), inset 0 0 0 4px var(--gilt-line); }
 @media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } *, *::before, *::after { animation: none !important; transition: none !important; } }
-@media (prefers-reduced-transparency: reduce), (prefers-contrast: more) { .liquid-glass, #theme-toggle { background: var(--panel) !important; border-color: var(--muted); box-shadow: none; } .liquid-glass::before, .liquid-glass::after { display: none !important; } }
-@media (forced-colors: active) { button, .art-button, .liquid-glass, .thumb.active { border: 1px solid ButtonText; } .liquid-glass::before, .liquid-glass::after { display: none !important; } }
+@media (forced-colors: active) { button, .art-button, .surface, .thumb.active { border: 1px solid ButtonText; } }
 
-/* Focus changes the existing rim without adding a second ring outside the lens. */
-.search input { -webkit-appearance: none; appearance: none; border-radius: 0; }
-.search:focus-within { border-color: light-dark(#61788a, #92aabc); }
-
-/* Both public and admin pages use the same header geometry and type. */
-body { padding-top: calc(84px + env(safe-area-inset-top)); }
-.topbar { display: flex; align-items: center; gap: 12px; max-width: 1536px; margin: 0 auto; min-height: 64px; position: fixed; left: 0; right: 0; top: calc(20px + env(safe-area-inset-top) + var(--viewport-offset, 0px)); z-index: 20; width: calc(100% - 64px); pointer-events: none; }
-.topbar > * { pointer-events: auto; }
-.brand { display: flex; align-items: baseline; font: italic 600 40px/.95 var(--brand); letter-spacing: -.06em; flex-shrink: 0; }
-.topbar .brand { min-height: 64px; align-items: center; padding: 0 24px; text-shadow: 0 1px 3px light-dark(rgb(255 255 255 / .9), rgb(0 0 0 / .65)); }
-.brand > span { color: rgb(var(--accent)); }
-.brand small { margin-left: 20px; font: 15px var(--hand); letter-spacing: .12em; color: var(--muted); }
-.search { display: flex; gap: 8px; align-items: center; margin-left: auto; width: min(520px, 52%); padding: 0 8px 0 24px; min-height: 64px; }
-.search svg { width: 21px; height: 21px; fill: none; stroke: currentColor; stroke-width: 1.8; }
-.search input { width: 100%; min-width: 0; border: 0; background: transparent; outline: none; font-size: 16px; font-weight: 400; text-shadow: 0 1px 2px light-dark(rgb(255 255 255 / .8), rgb(0 0 0 / .8)); }
-.search input::placeholder { color: light-dark(#30373c, #eeeee9); }
-.search button { display: grid; place-items: center; width: 44px; height: 44px; flex-shrink: 0; border-radius: 50%; }
-.search button:hover { background: var(--inset); }
-#theme-toggle { width: 64px; height: 64px; background: var(--panel); }
-@supports (backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px)) { #theme-toggle { background: var(--glass); } }
+/* Both public and admin pages share this header: a solid rail across the top of the wall. */
+.topbar { position: sticky; top: var(--viewport-offset, 0px); z-index: 20; display: flex; align-items: center; gap: 28px; min-height: 68px; padding: env(safe-area-inset-top) max(32px, calc((100% - 1536px) / 2)) 0; background: var(--bg); border-bottom: 1px solid var(--line); }
+.topbar::after { content: ""; position: absolute; left: 0; right: 0; bottom: -4px; height: 1px; background: var(--gilt-line); pointer-events: none; }
+.brand { display: flex; align-items: baseline; font: italic 600 34px/1 var(--brand); letter-spacing: -.05em; flex-shrink: 0; }
+.topbar .brand { min-height: 48px; align-items: center; }
+.brand > span { color: var(--brass); }
+.brand small { margin-left: 18px; font: 15px var(--hand); letter-spacing: .14em; color: var(--muted); }
+.search { display: flex; gap: 6px; align-items: center; margin-left: auto; width: min(420px, 48%); min-height: 44px; padding: 0 0 0 2px; border: 0; border-bottom: 1px solid var(--line); border-radius: 0; background: none; }
+.search:focus-within { border-bottom-color: var(--text); }
+.search svg { width: 19px; height: 19px; fill: none; stroke: currentColor; stroke-width: 1.7; }
+.search input { width: 100%; min-width: 0; border: 0; border-radius: 0; background: transparent; outline: none; font-size: 16px; -webkit-appearance: none; appearance: none; }
+.search input::placeholder { color: var(--muted); }
+.search button { display: grid; place-items: center; width: 40px; height: 40px; flex-shrink: 0; }
+.search button:hover { color: var(--link); }
+#theme-toggle { width: 44px; height: 44px; border: 0; background: none; }
+#theme-toggle:hover { color: var(--link); }
 .topbar:has(.search[hidden]) #theme-toggle { margin-left: auto; }
 @media (max-width: 1100px) { .brand small { display: none; } }
 @media (max-width: 760px) {
-  body { padding-top: calc(66px + env(safe-area-inset-top)); }
-  .topbar { width: calc(100% - 24px); top: calc(12px + env(safe-area-inset-top) + var(--viewport-offset, 0px)); min-height: 54px; gap: 8px; }
-  .topbar .brand { min-height: 54px; padding: 0 14px; }
-  .brand { font-size: 30px; letter-spacing: -1.4px; }
-  .search { width: auto; flex: 1; min-width: 0; padding: 0 5px 0 16px; min-height: 54px; gap: 0; }
-  .search input { font-size: 16px; }
-  .search button { width: 38px; height: 44px; }
-  .search svg { width: 18px; height: 18px; }
-  #theme-toggle { width: 54px; height: 54px; }
+  .topbar { gap: 14px; min-height: 58px; padding-inline: 16px; }
+  .brand { font-size: 28px; }
+  .search { width: auto; flex: 1; }
+  .search button { width: 36px; }
+  #theme-toggle { width: 40px; height: 40px; }
 }
-@media (max-width: 370px) { .topbar .brand { padding-inline: 10px; } .brand { font-size: 25px; } .topbar { gap: 6px; } .search { padding-left: 12px; } #theme-toggle { width: 48px; height: 48px; } }
+@media (max-width: 370px) { .brand { font-size: 24px; } .topbar { gap: 10px; } }
 
-#back-to-top { position: fixed; right: max(20px, env(safe-area-inset-right)); bottom: calc(20px + env(safe-area-inset-bottom)); z-index: 25; width: 48px; height: 48px; background: var(--panel); box-shadow: 0 3px 14px rgb(0 0 0 / .15); }
+#back-to-top { position: fixed; right: max(20px, env(safe-area-inset-right)); bottom: calc(20px + env(safe-area-inset-bottom)); z-index: 25; width: 46px; height: 46px; border-radius: 3px; background: var(--panel); border: 1px solid var(--line); }
+#back-to-top:hover { color: var(--link); }
 /* Icons are drawn, not typed, so they sit in the exact centre of their buttons on every platform. */
-.icon-button svg, #back-to-top svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+.icon-button svg, #back-to-top svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
 .icon-button svg .fill { fill: currentColor; stroke: none; }
 #theme-toggle svg { width: 22px; height: 22px; }
