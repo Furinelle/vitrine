@@ -235,9 +235,7 @@ function renderCards(works, append) {
     });
     const meta = node("div", "card-meta");
     meta.append(node("span", "card-author", work.author_name || "未署名"), node("span", "card-source", names[work.source] || work.source));
-    const tags = node("div", "card-tags");
-    for (const tag of (work.tags || []).slice(0, 2)) tags.append(button("", `#${tag}`, () => applyFilters({ tag })));
-    body.append(heading, meta, tags);
+    body.append(heading, meta);
     card.append(art, body);
     fragment.append(card);
   }
@@ -257,6 +255,7 @@ async function loadWorks(reset = false) {
     state.works = [];
     renderLoadingCards();
     updateCount();
+    renderFeatured();
   }
   const controller = new AbortController();
   state.request = controller;
@@ -289,6 +288,7 @@ async function loadWorks(reset = false) {
     $("end-note").hidden = !state.done || !state.works.length;
     $("more").hidden = state.done;
     updateCount();
+    if (reset) renderFeatured();
   } catch (error) {
     if (controller.signal.aborted || state.request !== controller) return;
     $("status").textContent = `${error.message}。`;
@@ -588,6 +588,71 @@ $("lb-img").addEventListener("touchend", (event) => {
 $("lb-img").addEventListener("touchcancel", () => { touchStart = null; });
 $("about-open").addEventListener("click", () => $("about").showModal());
 $("about-close").addEventListener("click", () => $("about").close());
+// Featured banner: five recent works, shown only on the unfiltered collection.
+const featured = { works: [], index: 0, timer: 0 };
+function showFeatured(index) {
+  featured.index = (index + featured.works.length) % featured.works.length;
+  $("featured-stage").querySelectorAll(".featured-slide").forEach((slide, i) => {
+    slide.classList.toggle("active", i === featured.index);
+    slide.setAttribute("aria-hidden", String(i !== featured.index));
+    slide.tabIndex = i === featured.index ? 0 : -1;
+  });
+  $("featured-picker").querySelectorAll("button").forEach((pick, i) => {
+    pick.classList.toggle("active", i === featured.index);
+    pick.setAttribute("aria-pressed", String(i === featured.index));
+  });
+}
+function rotateFeatured(run) {
+  clearInterval(featured.timer);
+  if (run && featured.works.length > 1 && !matchMedia("(prefers-reduced-motion: reduce)").matches) {
+    featured.timer = setInterval(() => showFeatured(featured.index + 1), 7000);
+  }
+}
+function renderFeatured() {
+  const visible = !state.source && !state.tag && !state.q;
+  if (visible && !featured.works.length && state.works.length) {
+    const pool = state.works.filter((work) => coverUrl(work.cover_url));
+    // Wide-ish covers crop well into a banner; fall back to anything with a cover.
+    const wide = pool.filter((work) => coverRatio(work.cover_width, work.cover_height) >= .9);
+    featured.works = (wide.length >= 5 ? wide : pool).map((work) => [Math.random(), work])
+      .sort((a, b) => a[0] - b[0]).slice(0, 5).map(([, work]) => work);
+    $("featured-stage").replaceChildren(...featured.works.map((work) => {
+      const title = work.title || work.source_id;
+      const slide = node("a", "featured-slide");
+      slide.href = galleryUrl(work.id);
+      slide.setAttribute("aria-label", `查看 ${title}`);
+      const image = node("img");
+      image.src = thumbUrl(work.cover_url, 1280);
+      image.alt = "";
+      image.decoding = "async";
+      const caption = node("div", "featured-caption");
+      caption.append(node("p", "featured-source", names[work.source] || work.source),
+        node("h2", "featured-title", title), node("p", "featured-author", work.author_name || "未署名"));
+      slide.append(image, caption);
+      slide.addEventListener("click", (event) => {
+        if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+        event.preventDefault();
+        openLightbox(work, slide);
+      });
+      return slide;
+    }));
+    $("featured-picker").replaceChildren(...featured.works.map((work, i) => {
+      const pick = button("featured-pick", undefined, () => { showFeatured(i); rotateFeatured(true); });
+      pick.setAttribute("aria-label", `第 ${i + 1} 幅：${work.title || work.source_id}`);
+      const thumb = node("img");
+      thumb.src = thumbUrl(work.cover_url, 160);
+      thumb.alt = "";
+      pick.append(thumb);
+      return pick;
+    }));
+    showFeatured(0);
+  }
+  $("featured").hidden = !visible || !featured.works.length;
+  rotateFeatured(!$("featured").hidden);
+}
+for (const [type, run] of [["pointerenter", false], ["pointerleave", true], ["focusin", false], ["focusout", true]]) {
+  $("featured").addEventListener(type, () => rotateFeatured(run && !$("featured").hidden));
+}
 // Masonry: cards keep DOM (and keyboard) order; each is translated into the shortest column.
 if (typeof ResizeObserver === "function") {
   const grid = $("grid");

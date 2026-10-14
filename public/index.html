@@ -13,14 +13,15 @@
   <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
   <link rel="stylesheet" href="/fonts/lxgw-wenkai-1.7.0/lxgwwenkai-regular.css" />
   <link rel="stylesheet" href="/theme.css?v=20261014-round" />
-  <link rel="stylesheet" href="/gallery.css?v=20261014-round" />
+  <link rel="stylesheet" href="/gallery.css?v=20261015-showcase" />
   <script src="/theme.js?v=20261014-vitrine" defer></script>
-  <script src="/app.js?v=20261014-vitrine" defer></script>
+  <script src="/app.js?v=20261015-showcase" defer></script>
 </head>
 <body id="top">
   <a class="skip-link" href="#collection">跳到作品</a>
   <header class="topbar">
     <a class="brand" href="/" aria-label="Vitrine 图库首页">Vitrine<span>.</span><small>插画收藏</small></a>
+    <nav id="sources" class="sources" aria-label="作品来源"><button class="source-link active" data-source="" aria-current="page">全部作品</button></nav>
     <form id="search-form" class="search" role="search">
       <label class="sr-only" for="q">搜索标题、作者或作品 ID</label>
       <input id="q" type="search" placeholder="搜索作品或作者" maxlength="160" autocomplete="off" enterkeyhint="search" />
@@ -29,21 +30,22 @@
     <button id="theme-toggle" class="icon-button" type="button" aria-label="切换到深色外观" title="切换外观"><svg aria-hidden="true" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/><path class="fill" d="M12 4a8 8 0 0 1 0 16z"/></svg></button>
   </header>
   <main id="collection" tabindex="-1">
+    <section id="featured" class="featured" hidden aria-label="精选作品" aria-roledescription="轮播">
+      <div id="featured-stage" class="featured-stage"></div>
+      <div id="featured-picker" class="featured-picker" aria-label="选择精选作品"></div>
+    </section>
     <div class="collection-heading">
-      <div><h1 id="collection-title">全部作品</h1></div>
-      <div class="collection-summary"><span>按收藏时间排列</span><p id="collection-count" class="collection-count" aria-live="polite">加载中…</p></div>
+      <h1 id="collection-title">全部作品</h1>
+      <p id="collection-count" class="collection-count" aria-live="polite">加载中…</p>
+      <button id="reset" type="button" class="text-button" hidden>清除筛选</button>
+      <span class="sort-note">按收藏时间排列</span>
     </div>
-    <div class="browse-toolbar">
-    <div class="collection-controls">
-      <nav id="sources" class="sources" aria-label="作品来源"><button class="source-link active" data-source="" aria-current="page">全部作品</button></nav>
-    </div>
-    <form id="filter-form" class="filterbar">
-      <label class="source-select" hidden><span class="sr-only">作品来源</span><select id="source" aria-label="作品来源"><option value="">全部来源</option></select></label>
-      <label class="tag-filter"><span aria-hidden="true">#</span><span class="sr-only">筛选标签</span><input id="tag" list="taglist" placeholder="选择或输入标签" maxlength="64" autocomplete="off" /><datalist id="taglist"></datalist></label>
+    <!-- Kept for its submit handler and the hidden source select; tags are chosen from the strip or the tag index. -->
+    <form id="filter-form" class="filterbar" hidden>
+      <label class="source-select"><span class="sr-only">作品来源</span><select id="source" aria-label="作品来源"><option value="">全部来源</option></select></label>
+      <label class="tag-filter"><span class="sr-only">筛选标签</span><input id="tag" list="taglist" maxlength="64" autocomplete="off" /><datalist id="taglist"></datalist></label>
       <button type="submit" class="filter-apply">筛选</button>
-      <button id="reset" type="button" class="text-button" hidden>清除</button>
     </form>
-    </div>
     <div class="tag-strip"><div id="popular-tags" class="popular-tags" aria-label="热门标签"></div><button id="browse-tags" type="button" class="text-button" aria-expanded="false" aria-controls="tag-browser">全部标签</button></div>
     <section id="tag-browser" class="tag-browser" hidden aria-label="标签索引"><label class="tag-search">查找标签<input id="tag-search" type="search" placeholder="输入标签关键词" maxlength="64" /></label><div id="all-tags" class="popular-tags"></div><p id="tag-empty" hidden>没有匹配的标签。</p><p id="tag-status" class="status" role="status"></p><button id="tag-more" class="text-button" hidden>加载更多标签</button><button id="tag-retry" class="text-button" hidden>重试</button></section>
     <div id="active-filters" class="active-filters" aria-label="当前筛选条件"></div>
