@@ -42,23 +42,22 @@
 .topbar .brand { min-height: 48px; align-items: center; }
 .brand > span { color: var(--brass); }
 .brand small { margin-left: 18px; font: 15px var(--hand); letter-spacing: .14em; color: var(--muted); }
-.search { display: flex; gap: 6px; align-items: center; margin-left: auto; width: min(420px, 48%); min-height: 42px; padding: 0 2px 0 16px; border: 1px solid transparent; border-radius: 8px; background: var(--inset); }
+.search { display: flex; gap: 6px; align-items: center; margin-left: auto; width: min(420px, 48%); min-height: 44px; padding: 0 4px 0 20px; border: 1px solid var(--line); border-radius: 999px; background: var(--panel); }
 .search:focus-within { border-color: var(--gilt-line); }
 .search svg { width: 19px; height: 19px; fill: none; stroke: currentColor; stroke-width: 1.7; }
 .search input { width: 100%; min-width: 0; border: 0; border-radius: 0; background: transparent; outline: none; font-size: 16px; -webkit-appearance: none; appearance: none; }
 .search input::placeholder { color: var(--muted); }
-.search button { display: grid; place-items: center; width: 40px; height: 40px; flex-shrink: 0; }
-.search button:hover { color: var(--link); }
+.search button { display: grid; place-items: center; width: 36px; height: 36px; flex-shrink: 0; border-radius: 50%; }
+.search button:hover { color: var(--link); background: var(--inset); }
 #theme-toggle { width: 44px; height: 44px; border: 0; border-radius: 8px; background: none; }
 #theme-toggle:hover { color: var(--link); }
 .topbar:has(.search[hidden]) #theme-toggle { margin-left: auto; }
 @media (max-width: 1100px) { .brand small { display: none; } }
 @media (max-width: 760px) {
   .topbar { gap: 12px; width: calc(100% - 32px); min-height: 56px; margin-top: calc(10px + env(safe-area-inset-top)); }
-  .search { padding-left: 12px; }
+  .search { padding-left: 16px; }
   .brand { font-size: 28px; }
   .search { width: auto; flex: 1; }
-  .search button { width: 36px; }
   #theme-toggle { width: 40px; height: 40px; }
 }
 @media (max-width: 370px) { .brand { font-size: 24px; } .topbar { gap: 10px; } }

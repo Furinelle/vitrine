@@ -38,7 +38,7 @@ h1 span { color: var(--brass); }
 .source-count { font-size: var(--fs-xs); font-variant-numeric: tabular-nums; opacity: .75; }
 .sort-label { display: none; color: var(--muted); font-size: var(--fs-sm); white-space: nowrap; }
 /* Same soft inset field as the header search, not a framed plate. */
-.filterbar { display: flex; align-items: center; gap: 12px; padding: 5px 5px 5px 16px; margin-bottom: 0; width: 340px; max-width: 45%; border: 1px solid transparent; border-radius: 8px; background: var(--inset); }
+.filterbar { display: flex; align-items: center; gap: 12px; padding: 4px 4px 4px 20px; margin-bottom: 0; width: 340px; max-width: 45%; border: 1px solid var(--line); border-radius: 999px; background: var(--panel); }
 .filterbar:focus-within { border-color: var(--gilt-line); }
 .source-select { border-right: 1px solid var(--line); padding: 0 12px; }
 .source-select select { max-width: 130px; height: 38px; font-size: var(--fs-md); }
@@ -46,7 +46,7 @@ h1 span { color: var(--brass); }
 .tag-filter { display: flex; flex: 1; gap: 10px; align-items: center; min-width: 0; }
 .tag-filter > span:first-child { color: var(--muted); font-size: var(--fs-md); }
 .tag-filter input { width: 100%; height: 38px; outline: none; font-size: var(--fs-md); }
-.filter-apply { background: var(--text); color: var(--bg); border-radius: 5px; min-height: 38px; padding: 0 18px; font-size: var(--fs-sm); flex-shrink: 0; }
+.filter-apply { background: var(--text); color: var(--bg); border-radius: 999px; min-height: 36px; padding: 0 18px; font-size: var(--fs-sm); flex-shrink: 0; }
 .text-button { font-size: var(--fs-sm); min-height: 40px; padding: 4px 8px; color: var(--muted); }
 .text-button:hover { color: var(--text); text-decoration: underline; text-underline-offset: 4px; }
 .tag-strip { display: flex; align-items: center; gap: 12px; margin-bottom: 16px; }
@@ -177,7 +177,7 @@ dialog[open] { animation: enter .22s var(--ease); }
   .source-count { display: none; }
   .browse-toolbar { display: block; margin-bottom: 8px; }
   .collection-controls { gap: 6px; margin-bottom: 14px; }
-  .filterbar { gap: 8px; padding: 6px 6px 6px 14px; width: 100%; max-width: none; }
+  .filterbar { gap: 8px; padding: 4px 4px 4px 16px; width: 100%; max-width: none; }
   .source-select { padding: 0 8px; }
   .source-select select { font-size: 16px; width: 100px; }
   .tag-filter input { font-size: 16px; }
