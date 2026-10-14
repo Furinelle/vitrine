@@ -480,14 +480,20 @@ struct WorkOut {
     page_count: i64,
     created_at: String,
     cover_url: Option<String>,
+    // Lets the gallery reserve each cover's real shape before the image loads.
+    cover_width: Option<i64>,
+    cover_height: Option<i64>,
     tags: Vec<String>,
 }
 
 const WORK_SELECT: &str = r#"
     SELECT w.*,
       (SELECT i.r2_key FROM images i WHERE i.work_id = w.id ORDER BY i.page_index LIMIT 1) AS cover_key,
+      cover.width AS cover_width, cover.height AS cover_height,
       (SELECT GROUP_CONCAT(wt.tag, ',') FROM work_tags wt WHERE wt.work_id = w.id) AS tags
     FROM works w
+    LEFT JOIN image_fingerprints cover ON cover.r2_key =
+      (SELECT i.r2_key FROM images i WHERE i.work_id = w.id ORDER BY i.page_index LIMIT 1)
 "#;
 
 fn work_cursor(value: &str) -> std::result::Result<Option<(String, String)>, ()> {
@@ -644,6 +650,8 @@ fn public_work(row: WorkRow) -> WorkOut {
         page_count: row.page_count,
         created_at: row.created_at,
         cover_url: cover_url_from_key(row.cover_key.as_deref()),
+        cover_width: row.cover_width,
+        cover_height: row.cover_height,
         tags: tags_from_group_concat(row.tags.as_deref()),
     }
 }
@@ -661,6 +669,8 @@ struct WorkRow {
     page_count: i64,
     created_at: String,
     cover_key: Option<String>,
+    cover_width: Option<i64>,
+    cover_height: Option<i64>,
     tags: Option<String>,
 }
 
@@ -2269,6 +2279,11 @@ async fn handle_list_sources(url: &Url, env: &Env) -> Result<Response> {
     Ok(response)
 }
 
+const PUBLIC_MEDIA_CACHE: &str = "private, max-age=3600";
+// Cloudflare's resizer may keep originals at the edge; viewers still reach them
+// only through this Worker's visibility check.
+const RESIZER_MEDIA_CACHE: &str = "public, max-age=604800";
+
 /// Build media response header pairs from R2 HTTP metadata.
 /// `Headers::clone()` is a deep copy in worker 0.8, so we must not write into a clone.
 pub fn media_header_pairs(
@@ -2292,9 +2307,10 @@ pub fn media_header_pairs(
     if let Some(v) = content_encoding.filter(|s| !s.is_empty()) {
         pairs.push(("Content-Encoding".into(), v.to_string()));
     }
-    // Revalidate visibility before serving cached bytes after a catalog deletion.
+    // Browsers may reuse public bytes for an hour after a catalog deletion; every
+    // new request still passes the visibility check in `handle_media`.
     let _ = cache_control;
-    pairs.push(("Cache-Control".into(), "private, no-cache".into()));
+    pairs.push(("Cache-Control".into(), PUBLIC_MEDIA_CACHE.into()));
     // Prevent browsers from MIME-sniffing image responses into executable contexts.
     pairs.push(("X-Content-Type-Options".into(), "nosniff".into()));
     if !etag.is_empty() {
@@ -2338,6 +2354,7 @@ async fn handle_media(key: &str, req: &Request, env: &Env) -> Result<Response> {
         return Ok(response);
     }
 
+    let mut resize_fallback = None;
     // Only these three variants may be generated. Check visibility above even
     // when Cloudflare already has a resized image in its internal cache.
     // Skip transformation for loopback development URLs.
@@ -2372,18 +2389,16 @@ async fn handle_media(key: &str, req: &Request, env: &Env) -> Result<Response> {
             .await;
         if let Ok(mut response) = resized {
             if response.status_code() == 200
-                && ingest::normalize_allowed_image_mime(
+                && resized_mime_allowed(
                     response
                         .headers()
                         .get("Content-Type")?
                         .as_deref()
                         .unwrap_or_default(),
-                    "",
                 )
-                .is_ok()
             {
                 let headers = response.headers().clone();
-                headers.set("Cache-Control", "private, no-cache")?;
+                headers.set("Cache-Control", PUBLIC_MEDIA_CACHE)?;
                 headers.set("Vary", "Accept")?;
                 if let Some(etag) = headers.get("ETag")? {
                     if media_not_modified(req.headers().get("If-None-Match")?.as_deref(), &etag) {
@@ -2396,6 +2411,14 @@ async fn handle_media(key: &str, req: &Request, env: &Env) -> Result<Response> {
                 response = response.with_headers(headers);
                 return Ok(response);
             }
+            resize_fallback = Some(format!(
+                "{} {} {}",
+                response.status_code(),
+                response.headers().get("Content-Type")?.unwrap_or_default(),
+                response.headers().get("cf-resized")?.unwrap_or_default()
+            ));
+        } else {
+            resize_fallback = Some("fetch failed".to_string());
         }
         console_warn!("image resize unavailable; serving original");
         // Unsupported/failed resizing keeps the original image usable.
@@ -2431,9 +2454,19 @@ async fn handle_media(key: &str, req: &Request, env: &Env) -> Result<Response> {
     for (name, value) in pairs {
         let _ = headers.set(&name, &value);
     }
+    // Says why a requested thumbnail fell back to the original bytes.
+    if let Some(reason) = &resize_fallback {
+        headers.set("X-Resize-Fallback", reason)?;
+    }
     if private {
         headers.set("Cache-Control", "private, no-store")?;
         headers.set("Cross-Origin-Resource-Policy", "same-origin")?;
+    } else if req
+        .headers()
+        .get("Via")?
+        .is_some_and(|via| via.contains("image-resizing"))
+    {
+        headers.set("Cache-Control", RESIZER_MEDIA_CACHE)?;
     }
 
     if !private
@@ -2450,6 +2483,13 @@ async fn handle_media(key: &str, req: &Request, env: &Env) -> Result<Response> {
     }
 
     Ok(Response::from_body(response_body)?.with_headers(headers))
+}
+
+/// Resized output may be AVIF, which uploads never are; anything else must
+/// still pass the ingest allow-list.
+fn resized_mime_allowed(content_type: &str) -> bool {
+    content_type.trim().eq_ignore_ascii_case("image/avif")
+        || ingest::normalize_allowed_image_mime(content_type, "").is_ok()
 }
 
 fn media_not_modified(value: Option<&str>, etag: &str) -> bool {
@@ -2550,6 +2590,10 @@ mod tests {
         for width in ["160", "640", "1280"] {
             assert!(media_width(Some(width)).is_ok());
         }
+        assert!(resized_mime_allowed("image/avif"));
+        assert!(resized_mime_allowed("image/webp"));
+        assert!(!resized_mime_allowed("text/html"));
+        assert!(!resized_mime_allowed(""));
         for width in ["", "0", "00160", "999999", "640,1280"] {
             assert!(media_width(Some(width)).is_err());
         }
@@ -2579,6 +2623,8 @@ mod tests {
             page_count: 1,
             created_at: "2026-01-01T00:00:00Z".into(),
             cover_url: Some("/media/pixiv/1/00.jpg".into()),
+            cover_width: Some(1200),
+            cover_height: None,
             tags: vec!["foo".into(), "bar".into()],
         };
         let v = serde_json::to_value(&work).unwrap();
@@ -2586,6 +2632,8 @@ mod tests {
         assert_eq!(v["cover_url"], "/media/pixiv/1/00.jpg");
         assert_eq!(v["tags"][0], "foo");
         assert_eq!(v["is_r18"], false);
+        assert_eq!(v["cover_width"], 1200);
+        assert!(v["cover_height"].is_null());
         assert!(v.get("origin").is_none());
     }
 
@@ -2628,7 +2676,7 @@ mod tests {
         assert_eq!(map.get("Content-Language").map(String::as_str), Some("en"));
         assert_eq!(
             map.get("Cache-Control").map(String::as_str),
-            Some("private, no-cache")
+            Some("private, max-age=3600")
         );
         assert_eq!(
             map.get("X-Content-Type-Options").map(String::as_str),

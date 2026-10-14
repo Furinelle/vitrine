@@ -103,7 +103,7 @@ function cardsFixture(withObserver = true) {
   function element(tag) {
     const classes = new Set();
     return {
-      tagName: tag, children: [], dataset: {}, attributes: {}, assignments: [], isConnected: true,
+      tagName: tag, children: [], dataset: {}, attributes: {}, style: {}, assignments: [], isConnected: true,
       classList: { add(name) { classes.add(name); }, contains(name) { return classes.has(name); } },
       setAttribute(name, value) { this.attributes[name] = value; },
       addEventListener() {},
@@ -133,6 +133,7 @@ function cardsFixture(withObserver = true) {
   ]) vm.runInContext(source.slice(source.indexOf(start), source.indexOf(end)), cards);
   const works = Array.from({ length: 6 }, (_, i) => ({
     id: `x:${i}`, title: `Work ${i}`, source: 'x', page_count: 1, cover_url: `/media/x/${i}/0.jpg`,
+    ...(i === 0 ? { cover_width: 600, cover_height: 900 } : i === 1 ? { cover_width: 100, cover_height: 1000 } : {}),
   }));
   return { cards, grid, works, observed, get intersect() { return intersect; },
     get observerOptions() { return observerOptions; }, get disconnected() { return disconnected; },
@@ -155,6 +156,16 @@ function cardsFixture(withObserver = true) {
     assert.equal(image.src, '', 'distant covers must not initiate a request');
     assert.ok(f.observed.has(image));
   }
+  const arts = f.grid.children.map(card => card.children[0]);
+  assert.equal(arts[0].style.aspectRatio, String(600 / 900), 'known covers reserve their real shape');
+  assert.equal(arts[1].style.aspectRatio, '0.5', 'very tall covers are cropped to a bounded shape');
+  assert.equal(arts[2].style.aspectRatio, '0.75', 'unknown covers start from a portrait placeholder');
+  Object.assign(images[2], { naturalWidth: 1600, naturalHeight: 900 });
+  images[2].onload();
+  assert.equal(arts[2].style.aspectRatio, String(1600 / 900), 'loaded covers correct an unknown shape');
+  Object.assign(images[0], { naturalWidth: 100, naturalHeight: 100 });
+  images[0].onload();
+  assert.equal(arts[0].style.aspectRatio, String(600 / 900), 'catalog dimensions win over the thumbnail');
   const image = images[4], thumbnail = image.dataset.src;
   f.intersect([{ target: image, isIntersecting: false }]);
   assert.equal(image.assignments.length, 0);

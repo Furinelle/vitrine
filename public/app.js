@@ -179,6 +179,10 @@ const coverObserver = typeof IntersectionObserver === "function" ? new Intersect
     coverObserver.unobserve(image);
   }
 }, { rootMargin: "360px 0px" }) : null;
+// Extreme strips and panoramas are cropped so one cover never dominates a column.
+function coverRatio(width, height) {
+  return width > 0 && height > 0 ? Math.min(1.8, Math.max(.5, width / height)) : 0;
+}
 function renderLoadingCards() {
   coverObserver?.disconnect();
   $("grid").replaceChildren(...Array.from({ length: 8 }, () => {
@@ -195,7 +199,10 @@ function renderCards(works, append) {
     const title = work.title || work.source_id;
     const card = node("article", "card");
     card.dataset.workId = work.id;
+    card.style.animationDelay = `${(i % 12) * 40}ms`;
     const art = node("a", "art-button");
+    const ratio = coverRatio(work.cover_width, work.cover_height);
+    art.style.aspectRatio = String(ratio || .75);
     art.href = galleryUrl(work.id);
     art.setAttribute("aria-label", `查看 ${title}，${work.page_count} 张图片`);
     const image = node("img");
@@ -204,7 +211,10 @@ function renderCards(works, append) {
     image.decoding = "async";
     if (!append && i < 2) image.fetchPriority = "high";
     const original = coverUrl(work.cover_url);
-    image.onload = () => art.classList.add("image-loaded");
+    image.onload = () => {
+      if (!ratio) art.style.aspectRatio = String(coverRatio(image.naturalWidth, image.naturalHeight) || .75);
+      art.classList.add("image-loaded");
+    };
     image.onerror = () => art.classList.add("image-broken");
     if (original) {
       if (image.loading === "eager" || !coverObserver) image.src = thumbUrl(original);
@@ -224,7 +234,7 @@ function renderCards(works, append) {
       openLightbox(work, card);
     });
     const meta = node("div", "card-meta");
-    meta.append(node("span", "card-author", work.author_name || "未署名"), node("span", "card-source", (names[work.source] || work.source).toUpperCase()));
+    meta.append(node("span", "card-author", work.author_name || "未署名"), node("span", "card-source", names[work.source] || work.source));
     const tags = node("div", "card-tags");
     for (const tag of (work.tags || []).slice(0, 2)) tags.append(button("", `#${tag}`, () => applyFilters({ tag })));
     body.append(heading, meta, tags);
@@ -298,7 +308,9 @@ async function loadWorks(reset = false) {
 }
 function showImage(index, updateUrl = true, retry = false) {
   if (!state.images.length) return;
+  const previous = state.imageIndex;
   state.imageIndex = Math.max(0, Math.min(Number.isFinite(index) ? index : 0, state.images.length - 1));
+  const direction = Math.sign(state.imageIndex - previous);
   const image = state.images[state.imageIndex];
   const original = coverUrl(image.r2_key ? mediaUrl(image.r2_key) : image.cover_url);
   $("lb-original").hidden = !original;
@@ -344,6 +356,10 @@ function showImage(index, updateUrl = true, retry = false) {
       if (state.imageRequest !== ticket) return;
       full.classList.add("ready");
       $("lb-image-loading").hidden = true;
+      // The new picture enters from the side the reader is moving toward.
+      if (direction && !matchMedia("(prefers-reduced-motion: reduce)").matches) full.animate([
+        { opacity: 0, transform: `translateX(${direction * 32}px)` }, { opacity: 1, transform: "none" },
+      ], { duration: 420, easing: "cubic-bezier(.22, 1, .36, 1)" });
     };
     full.onerror = () => {
       if (state.imageRequest !== ticket) return;
@@ -353,6 +369,10 @@ function showImage(index, updateUrl = true, retry = false) {
     };
     if (url) full.src = url;
     else full.onerror();
+  }
+  for (const near of [state.images[state.imageIndex + 1], state.images[state.imageIndex - 1]]) {
+    const nearUrl = near?.r2_key ? thumbUrl(mediaUrl(near.r2_key), width) : "";
+    if (nearUrl) new Image().src = nearUrl;
   }
   if (updateUrl && state.viewing) history.replaceState(history.state, "", galleryUrl(state.viewing.id, state.imageIndex));
 }
@@ -574,6 +594,52 @@ if (!matchMedia("(prefers-reduced-motion: reduce)").matches && matchMedia("(poin
     glass.style.setProperty("--shine-x", `${Math.round((event.clientX - rect.left) / rect.width * 100)}%`);
   }, { passive: true });
 }
+// Masonry: cards keep DOM (and keyboard) order; each is translated into the shortest column.
+if (typeof ResizeObserver === "function") {
+  const grid = $("grid");
+  let frame = 0;
+  const layout = () => {
+    frame = 0;
+    const items = [...grid.children];
+    const style = getComputedStyle(grid);
+    const columns = Math.max(1, parseInt(style.getPropertyValue("--columns"), 10) || 2);
+    const gapX = parseFloat(style.columnGap) || 0, gapY = parseFloat(style.rowGap) || 0;
+    const width = (grid.clientWidth - gapX * (columns - 1)) / columns;
+    grid.style.setProperty("--card-width", `${width}px`);
+    const heights = items.map((item) => item.offsetHeight);
+    const bottoms = Array(columns).fill(0);
+    const fresh = [];
+    items.forEach((item, i) => {
+      const column = bottoms.indexOf(Math.min(...bottoms));
+      item.style.translate = `${column * (width + gapX)}px ${bottoms[column]}px`;
+      bottoms[column] += heights[i] + gapY;
+      if (!item.classList.contains("placed")) fresh.push(item);
+    });
+    grid.style.height = items.length ? `${Math.max(...bottoms) - gapY}px` : "";
+    // Commit first positions before enabling the slide used for later reflows.
+    if (fresh.length) { void grid.offsetWidth; for (const item of fresh) item.classList.add("placed"); }
+  };
+  const schedule = () => { frame ||= requestAnimationFrame(layout); };
+  const sizes = new ResizeObserver(schedule);
+  new MutationObserver((records) => {
+    for (const record of records) {
+      for (const item of record.addedNodes) if (item.nodeType === 1) sizes.observe(item);
+      for (const item of record.removedNodes) if (item.nodeType === 1) sizes.unobserve(item);
+    }
+    schedule();
+  }).observe(grid, { childList: true });
+  sizes.observe(grid);
+  grid.classList.add("masonry");
+}
+// The brush-script title is drawn on, left to right, whenever the collection changes.
+let drawnTitle = "";
+new MutationObserver(() => {
+  if ($("collection-title").textContent === drawnTitle) return;
+  drawnTitle = $("collection-title").textContent;
+  if (!matchMedia("(prefers-reduced-motion: reduce)").matches) $("collection-title").animate([
+    { clipPath: "inset(-10% 100% -10% 0)", opacity: .4 }, { clipPath: "inset(-10% 0 -10% 0)", opacity: 1 },
+  ], { duration: 700, easing: "cubic-bezier(.65, 0, .35, 1)" });
+}).observe($("collection-title"), { childList: true, characterData: true, subtree: true });
 window.addEventListener("popstate", syncRoute);
 syncFilters();
 loadWorks(true);
