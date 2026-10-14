@@ -36,14 +36,14 @@
 @media (forced-colors: active) { button, .art-button, .surface, .thumb.active { border: 1px solid ButtonText; } }
 
 /* Both public and admin pages share this header: a solid rail across the top of the wall. */
-.topbar { position: sticky; top: var(--viewport-offset, 0px); z-index: 20; display: flex; align-items: center; gap: 28px; min-height: 68px; padding: env(safe-area-inset-top) max(32px, calc((100% - 1536px) / 2)) 0; background: var(--bg); border-bottom: 1px solid var(--line); }
-.topbar::after { content: ""; position: absolute; left: 0; right: 0; bottom: -4px; height: 1px; background: var(--gilt-line); pointer-events: none; }
+/* The header is a plate floating just below the top edge, aligned with the content column. */
+.topbar { position: sticky; top: calc(12px + env(safe-area-inset-top) + var(--viewport-offset, 0px)); z-index: 20; display: flex; align-items: center; gap: 24px; width: min(1536px, calc(100% - 64px)); min-height: 62px; margin: calc(12px + env(safe-area-inset-top)) auto 0; padding: 0 10px 0 24px; background: var(--panel); border: 1px solid var(--line); border-radius: 12px; box-shadow: inset 0 0 0 3px var(--panel), inset 0 0 0 4px var(--gilt-line), 0 10px 28px -20px rgb(var(--ink) / .45); }
 .brand { display: flex; align-items: baseline; font: italic 600 34px/1 var(--brand); letter-spacing: -.05em; flex-shrink: 0; }
 .topbar .brand { min-height: 48px; align-items: center; }
 .brand > span { color: var(--brass); }
 .brand small { margin-left: 18px; font: 15px var(--hand); letter-spacing: .14em; color: var(--muted); }
-.search { display: flex; gap: 6px; align-items: center; margin-left: auto; width: min(420px, 48%); min-height: 44px; padding: 0 0 0 2px; border: 0; border-bottom: 1px solid var(--line); border-radius: 0; background: none; }
-.search:focus-within { border-bottom-color: var(--text); }
+.search { display: flex; gap: 6px; align-items: center; margin-left: auto; width: min(420px, 48%); min-height: 42px; padding: 0 2px 0 16px; border: 1px solid transparent; border-radius: 8px; background: var(--inset); }
+.search:focus-within { border-color: var(--gilt-line); }
 .search svg { width: 19px; height: 19px; fill: none; stroke: currentColor; stroke-width: 1.7; }
 .search input { width: 100%; min-width: 0; border: 0; border-radius: 0; background: transparent; outline: none; font-size: 16px; -webkit-appearance: none; appearance: none; }
 .search input::placeholder { color: var(--muted); }
@@ -54,7 +54,8 @@
 .topbar:has(.search[hidden]) #theme-toggle { margin-left: auto; }
 @media (max-width: 1100px) { .brand small { display: none; } }
 @media (max-width: 760px) {
-  .topbar { gap: 14px; min-height: 58px; padding-inline: 16px; }
+  .topbar { gap: 12px; width: calc(100% - 32px); min-height: 56px; margin-top: calc(10px + env(safe-area-inset-top)); top: calc(10px + env(safe-area-inset-top) + var(--viewport-offset, 0px)); padding: 0 6px 0 16px; border-radius: 10px; }
+  .search { padding-left: 12px; }
   .brand { font-size: 28px; }
   .search { width: auto; flex: 1; }
   .search button { width: 36px; }
