@@ -7,8 +7,8 @@ const source = readFileSync(new URL('../public/admin.js', import.meta.url), 'utf
 const css = readFileSync(new URL('../public/styles.css', import.meta.url), 'utf8');
 const galleryHtml = readFileSync(new URL('../public/index.html', import.meta.url), 'utf8');
 assert.ok(html.indexOf('/theme.css') < html.indexOf('/styles.css'));
-assert.ok(html.indexOf('/theme.js') < html.indexOf('/glass.js'));
-assert.ok(html.indexOf('/glass.js') < html.indexOf('/admin.js'));
+assert.ok(html.indexOf('/theme.js') < html.indexOf('/admin.js'));
+assert.doesNotMatch(html, /glass\.js/, 'the CSS glass needs no per-frame script');
 assert.equal((html.match(/id="theme-toggle"/g) || []).length, 1);
 for (const page of [html, galleryHtml]) {
   const ids = [...page.matchAll(/\bid="([^"]+)"/g)].map(match => match[1]);
@@ -20,11 +20,11 @@ for (const page of [html, galleryHtml]) {
     assert.ok(headers[0][1].includes(`id="${id}"`), id);
   }
   assert.ok(page.indexOf('/theme.css') < page.indexOf('/theme.js'));
-  assert.ok(page.indexOf('/theme.js') < page.indexOf('/glass.js'));
+  assert.doesNotMatch(page, /glass\.js/);
 }
 assert.ok(html.indexOf('</header>') < html.indexOf('id="console"'), 'theme remains available during login');
 assert.doesNotMatch(html, /id="(?:admin-sidebar|mobile-nav-works|mobile-nav-similar)"/);
-for (const script of ['theme', 'glass', 'admin']) {
+for (const script of ['theme', 'admin']) {
   assert.match(html, new RegExp(`<script src="/${script}\\.js[^>]* defer>`));
 }
 for (const id of ['login', 'login-form', 'login-token', 'console', 'search-form', 'q', 'source',
