@@ -19,10 +19,11 @@
   --link: light-dark(#0f2e73, #a6dcff);
   --ease: cubic-bezier(.22, 1, .36, 1);
   --sans: -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", "Noto Sans CJK SC", sans-serif;
-  /* Three faces, one job each: the wordmark, brush-script headings, and Kai for all other gallery text. */
+  /* Gallery type: Cormorant for the wordmark, a serif for headings and work titles, a clean sans for everything else; brush script only beside the wordmark. */
   --brand: "Vitrine Display", Georgia, serif;
   --hand: "Vitrine Hand", "Kaiti SC", "STKaiti", "KaiTi", serif;
-  --kai: "LXGW WenKai", "Kaiti SC", "STKaiti", "KaiTi", serif;
+  --serif: "Noto Serif SC", "Source Han Serif SC", "Songti SC", "STSong", serif;
+  --text-sans: "LXGW Neo XiHei", -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", sans-serif;
   --fs-xs: 12px;
   --fs-sm: 13px;
   --fs-md: 14px;
