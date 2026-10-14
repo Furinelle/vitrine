@@ -124,7 +124,7 @@ def main():
     # Matching D1 rows are insufficient if the original object has disappeared.
     missing = local.ingest(count=1, publication=False)[0]
     hide(missing["work_id"])
-    subprocess.run(local.WRANGLER + ["r2", "object", "delete", "shirogane-media/" + missing["r2_key"],
+    subprocess.run(local.WRANGLER + ["r2", "object", "delete", "vitrine-media/" + missing["r2_key"],
                                    "--local", "--persist-to", local.STATE], check=True, capture_output=True)
     restore(missing["work_id"], expected=409)
     assert detail(missing["work_id"])["work"]["deleted_at"]

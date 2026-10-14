@@ -115,7 +115,7 @@ def main():
     # This fails deterministically if deletion resumes physically deleting originals.
     with tempfile.TemporaryDirectory() as directory:
         output = Path(directory) / 'original.png'
-        subprocess.run(WRANGLER + ['r2', 'object', 'get', 'shirogane-media/' + key, '--local', '--persist-to', STATE, '--file', str(output)], check=True, capture_output=True)
+        subprocess.run(WRANGLER + ['r2', 'object', 'get', 'vitrine-media/' + key, '--local', '--persist-to', STATE, '--file', str(output)], check=True, capture_output=True)
         assert output.read_bytes() == original
     act('delete')
     restored = restore_targets(prepared)
@@ -187,7 +187,7 @@ def main():
     single_prepared = single_act('prepare')
     single_act('delete')
     public_images(single['work_id'], expected=404)
-    subprocess.run(WRANGLER + ['r2', 'object', 'delete', 'shirogane-media/' + single['r2_key'], '--local', '--persist-to', STATE], check=True, capture_output=True)
+    subprocess.run(WRANGLER + ['r2', 'object', 'delete', 'vitrine-media/' + single['r2_key'], '--local', '--persist-to', STATE], check=True, capture_output=True)
     single_act('restore', restored=restore_targets(single_prepared))
     assert len(public_images(single['work_id'])['images']) == 1
     fetch('/media/' + single['r2_key'], auth=False)
@@ -293,7 +293,7 @@ def main():
         with tempfile.TemporaryDirectory() as directory:
             for object_key in (selected['r2_key'], 'review-trash/' + decision + '/' + selected['r2_key']):
                 output = Path(directory) / 'original.png'
-                subprocess.run(WRANGLER + ['r2', 'object', 'get', 'shirogane-media/' + object_key, '--local', '--persist-to', STATE, '--file', str(output)], check=True, capture_output=True)
+                subprocess.run(WRANGLER + ['r2', 'object', 'get', 'vitrine-media/' + object_key, '--local', '--persist-to', STATE, '--file', str(output)], check=True, capture_output=True)
                 assert output.read_bytes() == original
         gallery_only('restore', restored=[])
         assert catalog(selected['work_id']) == unmapped

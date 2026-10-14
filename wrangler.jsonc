@@ -6,6 +6,8 @@
   "main": "build/worker/shim.mjs",
   "compatibility_date": "2026-07-01",
   "workers_dev": false,
+  // Per-request logs with CPU time; Analytics alone cannot attribute 1102s to a route.
+  "observability": { "enabled": true },
   "preview_urls": false,
   "routes": [
     {
@@ -27,8 +29,8 @@
   "r2_buckets": [
     {
       "binding": "MEDIA",
-      // Existing production bucket retained so the rename does not copy or invalidate media.
-      "bucket_name": "shirogane-media"
+      // Copied from shirogane-media on 2026-10-14; the old bucket is kept only for rollback.
+      "bucket_name": "vitrine-media"
     }
   ],
   "d1_databases": [
@@ -48,6 +50,10 @@
     // Ingest limits (optional; safe defaults applied in Rust if unset/invalid)
     "MAX_FILE_COUNT": "40",
     "MAX_FILE_BYTES": "52428800",
-    "MAX_TOTAL_BYTES": "104857600"
+    "MAX_TOTAL_BYTES": "104857600",
+    // S3 endpoint for presigned direct uploads; must name the MEDIA bucket above.
+    // R2_ACCESS_KEY_ID / R2_SECRET_ACCESS_KEY are secrets scoped to this bucket.
+    "R2_S3_HOST": "162b16d65f8f218eb5c4c4c8bdb9606c.r2.cloudflarestorage.com",
+    "R2_BUCKET_NAME": "vitrine-media"
   }
 }

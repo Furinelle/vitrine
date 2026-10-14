@@ -756,7 +756,6 @@ struct OldKeyRow {
 
 struct PreparedFile {
     page: usize,
-    file: web_sys::File,
     content_type: String,
     sha256: String,
     r2_key: String,
@@ -793,6 +792,7 @@ fn r2_put_failure_cleanup_keys(uploaded_keys: &[String], current_key: &str) -> V
 async fn put_prepared_file(
     bucket: &Bucket,
     file: &PreparedFile,
+    body: &web_sys::File,
     work_id: &str,
     ingest_id: &str,
 ) -> Result<()> {
@@ -806,7 +806,7 @@ async fn put_prepared_file(
         custom.insert("sha256".to_string(), file.sha256.clone());
 
         let result = bucket
-            .put(file.r2_key.clone(), file.file.stream())
+            .put(file.r2_key.clone(), body.stream())
             .http_metadata(HttpMetadata {
                 content_type: Some(file.content_type.clone()),
                 cache_control: Some("public, max-age=31536000, immutable".into()),
@@ -1033,6 +1033,7 @@ pub async fn handle_ingest(mut req: Request, env: Env) -> Result<Response> {
     let ingest_id = shape_ingest_id(&[&now, &wid, &fingerprint, &hex::encode(entropy)]);
 
     let mut prepared: Vec<PreparedFile> = Vec::with_capacity(bodies.len());
+    let mut files: Vec<web_sys::File> = Vec::with_capacity(bodies.len());
     for (i, (ct, file)) in bodies.into_iter().enumerate() {
         let ext = ext_from_content_type(&ct);
         let sha = digests[i].clone();
@@ -1040,29 +1041,19 @@ pub async fn handle_ingest(mut req: Request, env: Env) -> Result<Response> {
         let byte_size = file.size() as u64;
         prepared.push(PreparedFile {
             page: i,
-            file,
             content_type: ct,
             sha256: sha,
             r2_key: key,
             byte_size,
         });
+        files.push(file);
     }
-
-    // Collect old image keys before mutation (for orphan/GC tracking).
-    let old_rows = db
-        .prepare("SELECT r2_key FROM images WHERE work_id = ?")
-        .bind(&[JsValue::from_str(&wid)])?
-        .all()
-        .await?
-        .results::<OldKeyRow>()
-        .unwrap_or_default();
-    let old_keys: Vec<String> = old_rows.into_iter().map(|r| r.r2_key).collect();
 
     let bucket = env.bucket("MEDIA")?;
     let mut uploaded_keys: Vec<String> = Vec::new();
 
-    for file in &prepared {
-        match put_prepared_file(&bucket, file, &wid, &ingest_id).await {
+    for (file, body) in prepared.iter().zip(&files) {
+        match put_prepared_file(&bucket, file, body, &wid, &ingest_id).await {
             Ok(()) => uploaded_keys.push(file.r2_key.clone()),
             Err(e) => {
                 console_error!("ingest r2 upload failed: {e}");
@@ -1091,6 +1082,42 @@ pub async fn handle_ingest(mut req: Request, env: Env) -> Result<Response> {
         }
     }
 
+    commit_ingest(
+        &db,
+        &meta,
+        &wid,
+        &ingest_id,
+        &fingerprint,
+        idem_key.as_deref(),
+        &prepared,
+        &now,
+    )
+    .await
+}
+
+/// Record objects already stored in R2 in one D1 batch, reconciling ambiguous
+/// batch errors against the success audit and the idempotency receipt.
+#[allow(clippy::too_many_arguments)]
+async fn commit_ingest(
+    db: &D1Database,
+    meta: &ValidatedMeta,
+    wid: &str,
+    ingest_id: &str,
+    fingerprint: &str,
+    idem_key: Option<&str>,
+    prepared: &[PreparedFile],
+    now: &str,
+) -> Result<Response> {
+    // Collect old image keys before mutation (for orphan/GC tracking).
+    let old_rows = db
+        .prepare("SELECT r2_key FROM images WHERE work_id = ?")
+        .bind(&[JsValue::from_str(wid)])?
+        .all()
+        .await?
+        .results::<OldKeyRow>()
+        .unwrap_or_default();
+    let old_keys: Vec<String> = old_rows.into_iter().map(|r| r.r2_key).collect();
+
     // Single D1 batch for work / images / tags / work_tags / orphans / idempotency / audit.
     let saved: Vec<SavedImage> = prepared
         .iter()
@@ -1102,24 +1129,24 @@ pub async fn handle_ingest(mut req: Request, env: Env) -> Result<Response> {
         })
         .collect();
 
-    let response_body = success_response_body(&wid, &meta.tags, &saved, &ingest_id, false);
+    let response_body = success_response_body(wid, &meta.tags, &saved, ingest_id, false);
     let response_json = response_body.to_string();
     let total_bytes: u64 = prepared.iter().map(|p| p.byte_size).sum();
-    let audit_id = shape_ingest_id(&["audit", &ingest_id, &now]);
+    let audit_id = shape_ingest_id(&["audit", ingest_id, now]);
 
     match commit_d1_batch(
-        &db,
-        &meta,
-        &wid,
-        &ingest_id,
-        &fingerprint,
-        idem_key.as_deref(),
-        &prepared,
+        db,
+        meta,
+        wid,
+        ingest_id,
+        fingerprint,
+        idem_key,
+        prepared,
         &old_keys,
         &response_json,
         &audit_id,
         total_bytes,
-        &now,
+        now,
     )
     .await
     {
@@ -1139,13 +1166,10 @@ pub async fn handle_ingest(mut req: Request, env: Env) -> Result<Response> {
                 )
                 .bind(&[
                     JsValue::from_str(&audit_id),
-                    JsValue::from_str(&wid),
-                    JsValue::from_str(&ingest_id),
-                    JsValue::from_str(&fingerprint),
-                    idem_key
-                        .as_deref()
-                        .map(JsValue::from_str)
-                        .unwrap_or(JsValue::NULL),
+                    JsValue::from_str(wid),
+                    JsValue::from_str(ingest_id),
+                    JsValue::from_str(fingerprint),
+                    idem_key.map(JsValue::from_str).unwrap_or(JsValue::NULL),
                     JsValue::from_f64(prepared.len() as f64),
                     JsValue::from_f64(total_bytes as f64),
                 ])?
@@ -1158,7 +1182,7 @@ pub async fn handle_ingest(mut req: Request, env: Env) -> Result<Response> {
 
             // A peer may have won the Idempotency-Key race. Reconcile even when
             // the transport error does not mention a constraint.
-            if let Some(key) = idem_key.as_deref() {
+            if let Some(key) = idem_key {
                 let row = db
                     .prepare(
                         "SELECT fingerprint, response_json, status_code FROM idempotency_receipts WHERE idempotency_key = ?",
@@ -1167,7 +1191,7 @@ pub async fn handle_ingest(mut req: Request, env: Env) -> Result<Response> {
                     .first::<IdempotencyRow>(None)
                     .await?;
                 match resolve_idempotency_race(
-                    &fingerprint,
+                    fingerprint,
                     row.as_ref().map(|r| {
                         (
                             r.fingerprint.as_str(),
@@ -1204,17 +1228,17 @@ pub async fn handle_ingest(mut req: Request, env: Env) -> Result<Response> {
                 return Err(e);
             }
             let _ = write_audit(
-                &db,
-                &wid,
-                &meta,
-                &ingest_id,
-                &fingerprint,
-                idem_key.as_deref(),
+                db,
+                wid,
+                meta,
+                ingest_id,
+                fingerprint,
+                idem_key,
                 prepared.len(),
                 total_bytes,
                 "failed",
                 Some(&err_s),
-                &now,
+                now,
             )
             .await;
             Ok(with_cors(json_response(
@@ -1223,6 +1247,296 @@ pub async fn handle_ingest(mut req: Request, env: Env) -> Result<Response> {
             )?))
         }
     }
+}
+
+/// One original in a direct-to-R2 ingest manifest. Hanabi uploads the bytes
+/// itself, so the Worker never buffers or hashes image bodies.
+#[derive(Debug, Deserialize)]
+struct DirectFile {
+    name: String,
+    content_type: String,
+    size: u64,
+    sha256: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct DirectIngestBody {
+    meta: String,
+    files: Vec<DirectFile>,
+    #[serde(default)]
+    ingest_id: Option<String>,
+}
+
+struct DirectIngest {
+    meta: ValidatedMeta,
+    files: Vec<DirectFile>,
+    ingest_id: Option<String>,
+    idem_key: Option<String>,
+    fingerprint: String,
+}
+
+const PRESIGN_EXPIRES_SECS: u32 = 900;
+const ORIGINAL_CACHE_CONTROL: &str = "public, max-age=31536000, immutable";
+
+fn reject(error: &str, status: u16) -> Result<Response> {
+    Ok(with_cors(json_response(
+        &json!({ "ok": false, "error": error }),
+        status,
+    )?))
+}
+
+fn is_lower_hex(value: &str, len: usize) -> bool {
+    value.len() == len
+        && value
+            .bytes()
+            .all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+}
+
+/// Authenticate and validate a prepare/commit manifest with the same rules as
+/// multipart ingest, except magic bytes, which commit checks on the stored object.
+async fn parse_direct(
+    mut req: Request,
+    env: &Env,
+) -> Result<std::result::Result<DirectIngest, Response>> {
+    if let Some(response) = crate::require_catalog_auth(&req, env)? {
+        return Ok(Err(response));
+    }
+    let idem_key = req
+        .headers()
+        .get("Idempotency-Key")?
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+    if idem_key.as_ref().is_some_and(|k| k.len() > 256) {
+        return Ok(Err(reject("Idempotency-Key too long", 400)?));
+    }
+    let Ok(body) = req.json::<DirectIngestBody>().await else {
+        return Ok(Err(reject("invalid JSON body", 400)?));
+    };
+    if body.meta.len() > 64 * 1024 {
+        return Ok(Err(reject("meta too large", 413)?));
+    }
+    let meta = match validate_meta_json(&body.meta) {
+        Ok(meta) => meta,
+        Err(e) => return Ok(Err(reject(e.message(), 400)?)),
+    };
+    let sizes: Vec<u64> = body.files.iter().map(|f| f.size).collect();
+    if let Err(e) = check_file_limits(body.files.len(), &sizes, &limits_from_env(env)) {
+        return Ok(Err(reject(&e.message(), 400)?));
+    }
+    let mut files = body.files;
+    for file in &mut files {
+        file.content_type = match normalize_allowed_image_mime(&file.content_type, &file.name) {
+            Ok(ct) => ct.to_string(),
+            Err(e) => return Ok(Err(reject(&e.message(), 400)?)),
+        };
+        if !is_lower_hex(&file.sha256, 64) {
+            return Ok(Err(reject("sha256 must be 64 lowercase hex chars", 400)?));
+        }
+    }
+    let digests: Vec<String> = files.iter().map(|f| f.sha256.clone()).collect();
+    let fingerprint = compute_fingerprint(&meta, &digests);
+    Ok(Ok(DirectIngest {
+        meta,
+        files,
+        ingest_id: body.ingest_id,
+        idem_key,
+        fingerprint,
+    }))
+}
+
+/// Same Idempotency-Key semantics as multipart ingest: replay or 409.
+async fn idempotent_replay(
+    db: &D1Database,
+    idem_key: Option<&str>,
+    fingerprint: &str,
+) -> Result<Option<Response>> {
+    let Some(key) = idem_key else {
+        return Ok(None);
+    };
+    let Some(row) = db
+        .prepare(
+            "SELECT fingerprint, response_json, status_code FROM idempotency_receipts WHERE idempotency_key = ?",
+        )
+        .bind(&[JsValue::from_str(key)])?
+        .first::<IdempotencyRow>(None)
+        .await?
+    else {
+        return Ok(None);
+    };
+    if row.fingerprint == fingerprint {
+        let body = mark_idempotent_replay(&row.response_json);
+        return Ok(Some(with_cors(json_response(
+            &body,
+            row.status_code as u16,
+        )?)));
+    }
+    Ok(Some(with_cors(json_response(
+        &json!({
+            "ok": false,
+            "error": "idempotency key reuse with different payload",
+            "conflict": true,
+        }),
+        409,
+    )?)))
+}
+
+fn direct_r2_keys(direct: &DirectIngest, ingest_id: &str) -> Vec<String> {
+    direct
+        .files
+        .iter()
+        .enumerate()
+        .map(|(i, f)| {
+            versioned_r2_key(
+                &direct.meta.source,
+                &direct.meta.source_id,
+                ingest_id,
+                i,
+                ext_from_content_type(&f.content_type),
+            )
+        })
+        .collect()
+}
+
+/// Entry for POST /api/ingest/prepare: presigned PUT URLs for a new ingest id.
+/// A replayed Idempotency-Key returns the stored result, which has no `uploads`.
+pub async fn handle_ingest_prepare(req: Request, env: Env) -> Result<Response> {
+    let direct = match parse_direct(req, &env).await? {
+        Ok(direct) => direct,
+        Err(response) => return Ok(response),
+    };
+    let db = env.d1("DB")?;
+    if let Some(response) =
+        idempotent_replay(&db, direct.idem_key.as_deref(), &direct.fingerprint).await?
+    {
+        return Ok(response);
+    }
+
+    let access_key_id = env.secret("R2_ACCESS_KEY_ID")?.to_string();
+    let secret_access_key = env.secret("R2_SECRET_ACCESS_KEY")?.to_string();
+    let host = env.var("R2_S3_HOST")?.to_string();
+    let bucket = env.var("R2_BUCKET_NAME")?.to_string();
+    let creds = crate::presign::S3Credentials {
+        access_key_id: &access_key_id,
+        secret_access_key: &secret_access_key,
+    };
+    let now = js_iso_now();
+    let amz_date = crate::presign::amz_date_from_iso(&now)
+        .ok_or_else(|| Error::RustError(format!("bad clock value: {now}")))?;
+    let mut entropy = [0u8; 16];
+    getrandom::getrandom(&mut entropy)
+        .map_err(|e| Error::RustError(format!("ingest rng failed: {e}")))?;
+    let wid = work_id(&direct.meta.source, &direct.meta.source_id);
+    let ingest_id = shape_ingest_id(&[&now, &wid, &direct.fingerprint, &hex::encode(entropy)]);
+
+    let uploads: Vec<Value> = direct
+        .files
+        .iter()
+        .zip(direct_r2_keys(&direct, &ingest_id))
+        .enumerate()
+        .map(|(page, (file, r2_key))| {
+            let digest = hex::decode(&file.sha256).expect("validated hex");
+            let checksum = crate::presign::base64(&digest);
+            let headers = [
+                ("cache-control", ORIGINAL_CACHE_CONTROL),
+                ("content-type", file.content_type.as_str()),
+                ("x-amz-checksum-sha256", checksum.as_str()),
+                ("x-amz-meta-sha256", file.sha256.as_str()),
+            ];
+            let url = crate::presign::presign_url(
+                &creds,
+                "PUT",
+                &host,
+                &format!("/{bucket}/{r2_key}"),
+                "auto",
+                &amz_date,
+                PRESIGN_EXPIRES_SECS,
+                &headers,
+            );
+            json!({
+                "page": page,
+                "r2_key": r2_key,
+                "url": url,
+                "headers": headers.iter().map(|(k, v)| (k.to_string(), json!(v))).collect::<serde_json::Map<_, _>>(),
+            })
+        })
+        .collect();
+    Ok(with_cors(json_response(
+        &json!({ "ok": true, "ingest_id": ingest_id, "uploads": uploads }),
+        200,
+    )?))
+}
+
+/// Entry for POST /api/ingest/commit: verify every presigned upload landed
+/// intact, then record the work exactly like multipart ingest.
+pub async fn handle_ingest_commit(req: Request, env: Env) -> Result<Response> {
+    let direct = match parse_direct(req, &env).await? {
+        Ok(direct) => direct,
+        Err(response) => return Ok(response),
+    };
+    let Some(ingest_id) = direct.ingest_id.clone().filter(|id| is_lower_hex(id, 32)) else {
+        return reject("ingest_id must be 32 lowercase hex chars", 400);
+    };
+    let db = env.d1("DB")?;
+    if let Some(response) =
+        idempotent_replay(&db, direct.idem_key.as_deref(), &direct.fingerprint).await?
+    {
+        return Ok(response);
+    }
+
+    let bucket = env.bucket("MEDIA")?;
+    let mut prepared = Vec::with_capacity(direct.files.len());
+    for (page, (file, r2_key)) in direct
+        .files
+        .iter()
+        .zip(direct_r2_keys(&direct, &ingest_id))
+        .enumerate()
+    {
+        let Some(object) = bucket
+            .get(r2_key.as_str())
+            .range(Range::Prefix {
+                length: IMAGE_MAGIC_BYTES as u64,
+            })
+            .execute()
+            .await?
+        else {
+            return reject(&format!("upload missing for page {page}"), 422);
+        };
+        // R2 verified x-amz-checksum-sha256 on PUT; the signed header pins it to the manifest.
+        let stored_sha = object.checksum().sha256.map(hex::encode);
+        let header = match object.body() {
+            Some(body) => body.bytes().await?,
+            None => Vec::new(),
+        };
+        if object.size() != file.size
+            || stored_sha.as_deref() != Some(file.sha256.as_str())
+            || verify_image_magic(&file.content_type, &header).is_err()
+        {
+            return reject(
+                &format!("upload does not match manifest for page {page}"),
+                422,
+            );
+        }
+        prepared.push(PreparedFile {
+            page,
+            content_type: file.content_type.clone(),
+            sha256: file.sha256.clone(),
+            r2_key,
+            byte_size: file.size,
+        });
+    }
+
+    let wid = work_id(&direct.meta.source, &direct.meta.source_id);
+    commit_ingest(
+        &db,
+        &direct.meta,
+        &wid,
+        &ingest_id,
+        &direct.fingerprint,
+        direct.idem_key.as_deref(),
+        &prepared,
+        &js_iso_now(),
+    )
+    .await
 }
 
 async fn best_effort_delete(bucket: &Bucket, keys: &[String]) {

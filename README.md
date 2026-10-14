@@ -3,7 +3,7 @@
 配合 [hanabi](https://github.com/Furinelle/hanabi) 使用的二次元图库：
 
 - **存储**：图片进 R2，元数据/标签进 D1  
-- **入库**：`POST /api/ingest`（Bearer token + multipart）  
+- **入库**：`POST /api/ingest/prepare` → 预签名直传 R2 → `POST /api/ingest/commit`（Bearer token + JSON 清单）；旧的 `POST /api/ingest` multipart 仍可用  
 - **浏览**：Workers 静态页，按 **来源** / **标签** / 关键词筛选  
 - **标签**：使用帖子自带 tags（Pixiv/X），不做 AI 打标  
 
@@ -52,6 +52,24 @@ export HANABI_GALLERY_TOKEN='与 INGEST_TOKEN 相同'
 ```
 
 ## API
+
+### `POST /api/ingest/prepare` · `POST /api/ingest/commit`
+
+Hanabi 的默认入库方式。图片字节不经过 Worker，单次请求 CPU 约 3–11 ms，避免免费版 10 ms 上限在批量审批时触发 1102。
+
+Header：`Authorization: Bearer <INGEST_TOKEN>`、`Idempotency-Key`（与 multipart 相同语义）。Body 为 JSON：
+
+| 字段 | 说明 |
+|---|---|
+| `meta` | 与 multipart 的 `meta` 相同的 JSON **字符串** |
+| `files[]` | `name`、`content_type`、`size`、`sha256`（64 位小写十六进制） |
+| `ingest_id` | 仅 commit：prepare 返回的值 |
+
+1. `prepare` 校验清单（数量、大小、MIME）后返回 `ingest_id` 和每页的 `uploads[]`（`url`、`headers`）。同一 `Idempotency-Key` 已提交过时直接返回原回执，没有 `uploads`。
+2. 调用方按 `headers` 原样 `PUT` 到 `url`（15 分钟有效）。签名包含 `x-amz-checksum-sha256`，内容与清单不符时 R2 返回 `400 BadDigest`。
+3. `commit` 逐页读取对象，核对大小、R2 记录的 SHA-256 和文件头魔数，不符返回 422；之后与 multipart 走同一 D1 batch、审计与对账逻辑，响应格式相同。
+
+预签名需要 secrets `R2_ACCESS_KEY_ID` / `R2_SECRET_ACCESS_KEY`（只授权 `vitrine-media` 的对象读写）和变量 `R2_S3_HOST`、`R2_BUCKET_NAME`。上传后未 commit 的对象不会被自动清理。
 
 ### `POST /api/ingest`
 

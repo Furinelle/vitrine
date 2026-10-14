@@ -1,6 +1,7 @@
 mod admin;
 mod image_review;
 mod ingest;
+mod presign;
 pub mod similar;
 
 use serde::{Deserialize, Serialize};
@@ -193,6 +194,12 @@ async fn handle_request(req: Request, env: Env) -> Result<Response> {
 
     if path == "/api/ingest" && method == Method::Post {
         return ingest::handle_ingest(req, env).await;
+    }
+    if path == "/api/ingest/prepare" && method == Method::Post {
+        return ingest::handle_ingest_prepare(req, env).await;
+    }
+    if path == "/api/ingest/commit" && method == Method::Post {
+        return ingest::handle_ingest_commit(req, env).await;
     }
 
     if path == "/api/works" && method == Method::Get {
