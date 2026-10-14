@@ -3,11 +3,11 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-  <meta name="theme-color" content="#f5f3ee" />
+  <meta name="theme-color" content="#eef3f9" />
   <meta name="robots" content="noindex, nofollow" />
   <meta name="description" content="Vitrine 图库管理" />
   <title>Vitrine · 管理后台</title>
-  <link rel="stylesheet" href="/theme.css?v=20261014-cssglass" />
+  <link rel="stylesheet" href="/theme.css?v=20261014-vitrine" />
   <link rel="stylesheet" href="/styles.css?v=20261010-source" />
 </head>
 <body class="admin-app">
@@ -16,13 +16,13 @@
 
 
   <header class="topbar">
-    <a class="brand liquid-glass" href="/admin" aria-label="Vitrine 管理首页">Vitrine<span>.</span><small>图库管理</small></a>
-    <form id="search-form" class="search liquid-glass" role="search">
+    <a class="brand" href="/admin" aria-label="Vitrine 管理首页">Vitrine<span>.</span><small>图库管理</small></a>
+    <form id="search-form" class="search" role="search">
       <label class="sr-only" for="q">搜索标题、作者或作品 ID</label>
       <input id="q" type="search" placeholder="搜索作品或作者" maxlength="160" autocomplete="off" enterkeyhint="search" />
       <button type="submit" aria-label="搜索作品"><svg aria-hidden="true" viewBox="0 0 24 24"><circle cx="10.8" cy="10.8" r="6.8"/><path d="m16 16 4.5 4.5"/></svg></button>
     </form>
-    <button id="theme-toggle" class="icon-button liquid-glass" type="button" aria-label="切换到深色外观" title="切换外观"><svg aria-hidden="true" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/><path class="fill" d="M12 4a8 8 0 0 1 0 16z"/></svg></button>
+    <button id="theme-toggle" class="icon-button" type="button" aria-label="切换到深色外观" title="切换外观"><svg aria-hidden="true" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/><path class="fill" d="M12 4a8 8 0 0 1 0 16z"/></svg></button>
   </header>
 
   <!-- 未登录：居中登录卡片 -->
@@ -66,7 +66,7 @@
           <div class="admin-filterbar" id="works-filterbar">
             <div id="sidebar-sources-section"><nav id="admin-sources" aria-label="作品来源"><button type="button" class="source-link active" data-source="">全部作品</button></nav></div>
             <label class="source-dropdown" hidden>作品来源<select id="source"><option value="">全部来源</option></select></label>
-            <label class="admin-status-filter liquid-glass"><span>作品状态</span><select id="work-status" aria-label="作品状态"><option value="active">在线作品</option><option value="hidden">已下线作品</option></select></label>
+            <label class="admin-status-filter surface"><span>作品状态</span><select id="work-status" aria-label="作品状态"><option value="active">在线作品</option><option value="hidden">已下线作品</option></select></label>
             <button id="list-retry" type="button" class="text-button" hidden>重试加载</button>
           </div>
 
@@ -172,7 +172,7 @@
 
   <button id="back-to-top" class="icon-button back-to-top" type="button" aria-label="回到顶部" title="回到顶部" hidden><svg aria-hidden="true" viewBox="0 0 24 24"><path d="M5 10l7-7 7 7M12 3v18"/></svg></button>
 
-  <script src="/theme.js?v=20261008-unified" defer></script>
+  <script src="/theme.js?v=20261014-vitrine" defer></script>
   <script src="/admin.js?v=20261010-manual" defer></script>
 </body>
 </html>

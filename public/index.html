@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-  <meta name="theme-color" content="#f5f3ee" />
+  <meta name="theme-color" content="#eef3f9" />
   <meta name="description" content="Vitrine 图库，收藏来自 Pixiv、X 和抖音的插画。可按作者、标题、来源或标签查找。" />
   <meta property="og:title" content="Vitrine · 图库" />
   <meta property="og:description" content="插画收藏，保留作者与原帖。" />
@@ -12,21 +12,21 @@
   <title>Vitrine · 图库</title>
   <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
   <link rel="stylesheet" href="/fonts/lxgw-wenkai-1.7.0/lxgwwenkai-regular.css" />
-  <link rel="stylesheet" href="/theme.css?v=20261014-cssglass" />
-  <link rel="stylesheet" href="/gallery.css?v=20261014-kai" />
-  <script src="/theme.js?v=20261008-unified" defer></script>
-  <script src="/app.js?v=20261014-type" defer></script>
+  <link rel="stylesheet" href="/theme.css?v=20261014-vitrine" />
+  <link rel="stylesheet" href="/gallery.css?v=20261014-vitrine" />
+  <script src="/theme.js?v=20261014-vitrine" defer></script>
+  <script src="/app.js?v=20261014-vitrine" defer></script>
 </head>
 <body id="top">
   <a class="skip-link" href="#collection">跳到作品</a>
   <header class="topbar">
-    <a class="brand liquid-glass" href="/" aria-label="Vitrine 图库首页">Vitrine<span>.</span><small>插画收藏</small></a>
-    <form id="search-form" class="search liquid-glass" role="search">
+    <a class="brand" href="/" aria-label="Vitrine 图库首页">Vitrine<span>.</span><small>插画收藏</small></a>
+    <form id="search-form" class="search" role="search">
       <label class="sr-only" for="q">搜索标题、作者或作品 ID</label>
       <input id="q" type="search" placeholder="搜索作品或作者" maxlength="160" autocomplete="off" enterkeyhint="search" />
       <button type="submit" aria-label="搜索作品"><svg aria-hidden="true" viewBox="0 0 24 24"><circle cx="10.8" cy="10.8" r="6.8"/><path d="m16 16 4.5 4.5"/></svg></button>
     </form>
-    <button id="theme-toggle" class="icon-button liquid-glass" type="button" aria-label="切换到深色外观" title="切换外观"><svg aria-hidden="true" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/><path class="fill" d="M12 4a8 8 0 0 1 0 16z"/></svg></button>
+    <button id="theme-toggle" class="icon-button" type="button" aria-label="切换到深色外观" title="切换外观"><svg aria-hidden="true" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/><path class="fill" d="M12 4a8 8 0 0 1 0 16z"/></svg></button>
   </header>
   <main id="collection" tabindex="-1">
     <div class="collection-heading">
@@ -37,7 +37,7 @@
     <div class="collection-controls">
       <nav id="sources" class="sources" aria-label="作品来源"><button class="source-link active" data-source="" aria-current="page">全部作品</button></nav>
     </div>
-    <form id="filter-form" class="filterbar liquid-glass">
+    <form id="filter-form" class="filterbar surface">
       <label class="source-select" hidden><span class="sr-only">作品来源</span><select id="source" aria-label="作品来源"><option value="">全部来源</option></select></label>
       <label class="tag-filter"><span aria-hidden="true">#</span><span class="sr-only">筛选标签</span><input id="tag" list="taglist" placeholder="选择或输入标签" maxlength="64" autocomplete="off" /><datalist id="taglist"></datalist></label>
       <button type="submit" class="filter-apply">筛选</button>

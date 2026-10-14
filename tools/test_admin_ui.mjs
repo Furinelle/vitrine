@@ -15,7 +15,7 @@ for (const page of [html, galleryHtml]) {
   assert.equal(new Set(ids).size, ids.length, 'DOM IDs must be unique');
   const headers = [...page.matchAll(/<header class="topbar">([\s\S]*?)<\/header>/g)];
   assert.equal(headers.length, 1, 'one shared floating header');
-  assert.match(headers[0][1], /class="brand liquid-glass"/);
+  assert.match(headers[0][1], /class="brand"/);
   for (const id of ['search-form', 'q', 'theme-toggle']) {
     assert.ok(headers[0][1].includes(`id="${id}"`), id);
   }
