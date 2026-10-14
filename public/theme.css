@@ -15,12 +15,13 @@
   --rim: light-dark(rgb(255 255 255 / .95), rgb(255 255 255 / .52));
   --ease: cubic-bezier(.22, 1, .36, 1);
   --sans: -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", "Noto Sans CJK SC", sans-serif;
-  /* Three faces, one job each: the wordmark, brush-script headings, and every other piece of text. */
+  /* Three faces, one job each: the wordmark, brush-script headings, and Kai for all other gallery text. */
   --brand: "Vitrine Display", Georgia, serif;
   --hand: "Vitrine Hand", "Kaiti SC", "STKaiti", "KaiTi", serif;
-  --fs-xs: 11px;
-  --fs-sm: 12px;
-  --fs-md: 13px;
+  --kai: "LXGW WenKai", "Kaiti SC", "STKaiti", "KaiTi", serif;
+  --fs-xs: 12px;
+  --fs-sm: 13px;
+  --fs-md: 14px;
   font-family: var(--sans);
   background: var(--bg);
   color: var(--text);
