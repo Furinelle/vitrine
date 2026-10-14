@@ -8,7 +8,7 @@
   <meta name="description" content="Vitrine 图库管理" />
   <title>Vitrine · 管理后台</title>
   <link rel="stylesheet" href="/theme.css?v=20261015-system" />
-  <link rel="stylesheet" href="/styles.css?v=20261014-plain" />
+  <link rel="stylesheet" href="/styles.css?v=20261015-refresh" />
 </head>
 <body class="admin-app">
   <a class="skip-link" href="#admin-main">跳到内容</a>
@@ -17,12 +17,18 @@
 
   <header class="topbar">
     <a class="brand" href="/admin" aria-label="Vitrine 管理首页">Vitrine<span>.</span><small>图库管理</small></a>
+    <nav class="admin-nav" aria-label="管理导航">
+      <a href="/admin" id="nav-works" class="source-link active" aria-current="page">作品管理 <span id="nav-works-count" class="source-count"></span></a>
+      <a href="/admin/similar" id="nav-similar" class="source-link">相似图审批 <span id="nav-similar-count" class="source-count"></span></a>
+    </nav>
     <form id="search-form" class="search" role="search">
       <label class="sr-only" for="q">搜索标题、作者或作品 ID</label>
       <input id="q" type="search" placeholder="搜索作品或作者" maxlength="160" autocomplete="off" enterkeyhint="search" />
       <button type="submit" aria-label="搜索作品"><svg aria-hidden="true" viewBox="0 0 24 24"><circle cx="10.8" cy="10.8" r="6.8"/><path d="m16 16 4.5 4.5"/></svg></button>
     </form>
     <button id="theme-toggle" class="icon-button" type="button" aria-label="切换到深色外观" title="切换外观"><svg aria-hidden="true" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/><path class="fill" d="M12 4a8 8 0 0 1 0 16z"/></svg></button>
+    <a href="/" id="nav-gallery" class="text-button" target="_blank" rel="noopener noreferrer">浏览图库 ↗</a>
+    <button id="logout" type="button" class="text-button">退出登录</button>
   </header>
 
   <!-- 未登录：居中登录卡片 -->
@@ -39,7 +45,7 @@
         <span>管理密钥</span>
         <input id="login-token" type="password" name="token" required autocomplete="current-password" placeholder="输入管理密钥" />
       </label>
-      <button type="submit" class="primary-button">进入管理后台 <span aria-hidden="true">→</span></button>
+      <button type="submit" class="primary-button">进入管理后台</button>
       <p id="login-status" class="status" role="status" aria-live="polite"></p>
     </form>
   </section>
@@ -47,12 +53,6 @@
   <!-- 已登录：完整后台控制台 -->
   <div id="console" class="admin-console" hidden>
     <div class="workspace" id="admin-workspace">
-      <nav class="admin-nav" aria-label="管理导航">
-        <a href="/admin" id="nav-works" class="source-link active" aria-current="page">作品管理 <span id="nav-works-count" class="source-count"></span></a>
-        <a href="/admin/similar" id="nav-similar" class="source-link">相似图审批 <span id="nav-similar-count" class="source-count"></span></a>
-        <a href="/" id="nav-gallery" class="text-button" target="_blank" rel="noopener noreferrer">浏览图库 ↗</a>
-        <button id="logout" type="button" class="text-button">退出登录</button>
-      </nav>
 
       <!-- 主视图 -->
       <main id="admin-main" class="admin-main" tabindex="-1">
@@ -66,7 +66,7 @@
           <div class="admin-filterbar" id="works-filterbar">
             <div id="sidebar-sources-section"><nav id="admin-sources" aria-label="作品来源"><button type="button" class="source-link active" data-source="">全部作品</button></nav></div>
             <label class="source-dropdown" hidden>作品来源<select id="source"><option value="">全部来源</option></select></label>
-            <label class="admin-status-filter surface"><span>作品状态</span><select id="work-status" aria-label="作品状态"><option value="active">在线作品</option><option value="hidden">已下线作品</option></select></label>
+            <label class="admin-status-filter"><span>作品状态</span><select id="work-status" aria-label="作品状态"><option value="active">在线作品</option><option value="hidden">已下线作品</option></select></label>
             <button id="list-retry" type="button" class="text-button" hidden>重试加载</button>
           </div>
 
@@ -75,14 +75,14 @@
             <div class="admin-list-pane">
               <div id="grid" class="admin-grid" aria-label="在线作品列表"></div>
               <div class="pagination">
-                <button id="more" type="button" class="more-button" hidden>加载更多 <span aria-hidden="true">↓</span></button>
+                <button id="more" type="button" class="more-button" hidden>加载更多</button>
               </div>
             </div>
 
             <!-- 右列：编辑抽屉面板 -->
             <aside id="editor" class="admin-editor" aria-labelledby="editor-title" tabindex="-1">
               <div id="editor-empty" class="admin-editor-empty">
-                <span class="admin-empty-glyph" aria-hidden="true">✎</span>
+                <svg class="admin-empty-glyph" aria-hidden="true" viewBox="0 0 24 24"><path d="M4 20h4L19 9l-4-4L4 16z"/><path d="m13.5 6.5 4 4"/></svg>
                 <h3>未选定作品</h3>
                 <p>选择一件作品，即可修改信息、管理图片或调整公开状态。</p>
               </div>
@@ -93,9 +93,7 @@
                     <p id="editor-work-state" class="work-state">在线</p>
                     <h2 id="editor-title">编辑作品</h2>
                   </div>
-                  <button id="editor-close" type="button" class="icon-button admin-close-btn" aria-label="关闭面板" title="关闭面板">
-                    <span aria-hidden="true">×</span>
-                  </button>
+                  <button id="editor-close" type="button" class="icon-button admin-close-btn" aria-label="关闭面板" title="关闭面板"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="M6.5 6.5l11 11M17.5 6.5l-11 11"/></svg></button>
                 </div>
 
                 <form id="edit-form" class="admin-edit-form">
@@ -157,7 +155,6 @@
             <div class="similar-filterbar-right">
               <button id="similar-clean-dup" type="button" class="danger-button" hidden>清理建议项</button>
               <button id="similar-refresh" type="button" class="text-button" title="刷新相似列表">
-                <span aria-hidden="true">↻</span>
                 <span>刷新</span>
               </button>
             </div>
