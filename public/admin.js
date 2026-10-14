@@ -666,8 +666,13 @@ function renderSimilar(groups, preserveSelection = false) {
 
   if (!groups.length) {
     const empty = node("div", "similar-empty-state");
+    const mark = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    mark.setAttribute("class", "empty-mark");
+    mark.setAttribute("viewBox", "0 0 24 24");
+    mark.setAttribute("aria-hidden", "true");
+    mark.innerHTML = '<circle cx="12" cy="12" r="9"/><path d="m8 12.5 2.8 2.8L16.5 9.5"/>';
     empty.append(
-      node("span", "empty-mark", "✓"),
+      mark,
       node("h2", "", "无待审批相似图"),
       node("p", "", "图库目前没有检测到需要人工审批的疑似重复图片。"),
     );
