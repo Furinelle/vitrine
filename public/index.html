@@ -12,8 +12,8 @@
   <title>Vitrine · 图库</title>
   <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
   <link rel="stylesheet" href="/fonts/lxgw-wenkai-1.7.0/lxgwwenkai-regular.css" />
-  <link rel="stylesheet" href="/theme.css?v=20261014-floating" />
-  <link rel="stylesheet" href="/gallery.css?v=20261014-softer" />
+  <link rel="stylesheet" href="/theme.css?v=20261014-plain" />
+  <link rel="stylesheet" href="/gallery.css?v=20261014-plain" />
   <script src="/theme.js?v=20261014-vitrine" defer></script>
   <script src="/app.js?v=20261014-vitrine" defer></script>
 </head>
@@ -37,7 +37,7 @@
     <div class="collection-controls">
       <nav id="sources" class="sources" aria-label="作品来源"><button class="source-link active" data-source="" aria-current="page">全部作品</button></nav>
     </div>
-    <form id="filter-form" class="filterbar surface">
+    <form id="filter-form" class="filterbar">
       <label class="source-select" hidden><span class="sr-only">作品来源</span><select id="source" aria-label="作品来源"><option value="">全部来源</option></select></label>
       <label class="tag-filter"><span aria-hidden="true">#</span><span class="sr-only">筛选标签</span><input id="tag" list="taglist" placeholder="选择或输入标签" maxlength="64" autocomplete="off" /><datalist id="taglist"></datalist></label>
       <button type="submit" class="filter-apply">筛选</button>
