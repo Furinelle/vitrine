@@ -201,6 +201,9 @@ async fn handle_request(req: Request, env: Env) -> Result<Response> {
     if path == "/api/ingest/commit" && method == Method::Post {
         return ingest::handle_ingest_commit(req, env).await;
     }
+    if path == "/api/catalog/dedup" && method == Method::Post {
+        return similar::handle_dedup(req, env).await;
+    }
 
     if path == "/api/works" && method == Method::Get {
         return Ok(with_cors(handle_list_works(&url, &env).await?));

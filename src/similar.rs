@@ -102,12 +102,15 @@ pub struct SimilarGroup {
     pub items: Vec<SimilarItem>,
 }
 
-#[derive(Deserialize)]
-struct FingerprintIn {
-    r2_key: String,
+/// Fingerprint as computed off-Worker. Direct ingest omits `r2_key` and the
+/// commit fills it in from the versioned key it verified.
+#[derive(Clone, Deserialize)]
+pub(crate) struct FingerprintIn {
+    #[serde(default)]
+    pub(crate) r2_key: String,
     #[serde(default)]
     solid_color: bool,
-    content_sha256: String,
+    pub(crate) content_sha256: String,
     strict_key: String,
     average_hash: String,
     difference_hash: String,
@@ -115,10 +118,88 @@ struct FingerprintIn {
     detail_key: String,
     width: u32,
     height: u32,
-    bytes: u64,
+    pub(crate) bytes: u64,
     format: String,
     #[serde(default)]
     regions: Vec<RegionFingerprint>,
+}
+
+impl FingerprintIn {
+    pub(crate) fn is_valid(&self) -> bool {
+        !self.r2_key.is_empty()
+            && self.r2_key.len() <= 1024
+            && parse_hash(&self.average_hash).is_some()
+            && parse_hash(&self.difference_hash).is_some()
+            && self.content_sha256.len() <= 64
+            && self.strict_key.len() <= 128
+            && self.color_key.len() <= 256
+            && self.detail_key.len() <= 256
+            && self.format.len() <= 32
+            && self.regions.len() <= 32
+    }
+
+    pub(crate) fn upsert(
+        &self,
+        db: &D1Database,
+        work_id: &str,
+        now: &str,
+    ) -> Result<D1PreparedStatement> {
+        let regions_json =
+            serde_json::to_string(&self.regions).map_err(|e| Error::RustError(e.to_string()))?;
+        db.prepare(
+            r#"
+            INSERT INTO image_fingerprints (
+              r2_key, work_id, solid_color, content_sha256, strict_key,
+              average_hash, difference_hash, color_key, detail_key,
+              width, height, bytes, format, regions_json, updated_at
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            ON CONFLICT(r2_key) DO UPDATE SET
+              work_id=excluded.work_id,
+              solid_color=excluded.solid_color,
+              content_sha256=excluded.content_sha256,
+              strict_key=excluded.strict_key,
+              average_hash=excluded.average_hash,
+              difference_hash=excluded.difference_hash,
+              color_key=excluded.color_key,
+              detail_key=excluded.detail_key,
+              width=excluded.width,
+              height=excluded.height,
+              bytes=excluded.bytes,
+              format=excluded.format,
+              regions_json=excluded.regions_json,
+              updated_at=excluded.updated_at
+            WHERE (image_fingerprints.work_id, image_fingerprints.solid_color,
+                   image_fingerprints.content_sha256, image_fingerprints.strict_key,
+                   image_fingerprints.average_hash, image_fingerprints.difference_hash,
+                   image_fingerprints.color_key, image_fingerprints.detail_key,
+                   image_fingerprints.width, image_fingerprints.height, image_fingerprints.bytes,
+                   image_fingerprints.format, image_fingerprints.regions_json)
+              IS NOT (excluded.work_id, excluded.solid_color,
+                      excluded.content_sha256, excluded.strict_key,
+                      excluded.average_hash, excluded.difference_hash,
+                      excluded.color_key, excluded.detail_key,
+                      excluded.width, excluded.height, excluded.bytes,
+                      excluded.format, excluded.regions_json)
+            "#,
+        )
+        .bind(&[
+            JsValue::from_str(&self.r2_key),
+            JsValue::from_str(work_id),
+            JsValue::from_f64(if self.solid_color { 1.0 } else { 0.0 }),
+            JsValue::from_str(&self.content_sha256),
+            JsValue::from_str(&self.strict_key),
+            JsValue::from_str(&self.average_hash),
+            JsValue::from_str(&self.difference_hash),
+            JsValue::from_str(&self.color_key),
+            JsValue::from_str(&self.detail_key),
+            JsValue::from_f64(self.width as f64),
+            JsValue::from_f64(self.height as f64),
+            JsValue::from_f64(self.bytes as f64),
+            JsValue::from_str(&self.format),
+            JsValue::from_str(&regions_json),
+            JsValue::from_str(now),
+        ])
+    }
 }
 
 #[derive(Deserialize)]
@@ -779,17 +860,7 @@ pub async fn handle_put(mut req: Request, env: Env) -> Result<Response> {
     let now = crate::js_iso_now();
     let mut statements = Vec::new();
     for image in &body.images {
-        if image.r2_key.is_empty()
-            || image.r2_key.len() > 1024
-            || parse_hash(&image.average_hash).is_none()
-            || parse_hash(&image.difference_hash).is_none()
-            || image.content_sha256.len() > 64
-            || image.strict_key.len() > 128
-            || image.color_key.len() > 256
-            || image.detail_key.len() > 256
-            || image.format.len() > 32
-            || image.regions.len() > 32
-        {
+        if !image.is_valid() {
             return reject(400, "invalid fingerprint");
         }
         let work = db
@@ -800,63 +871,7 @@ pub async fn handle_put(mut req: Request, env: Env) -> Result<Response> {
         let Some(work) = work else {
             return reject(400, "unknown r2_key");
         };
-        let regions_json =
-            serde_json::to_string(&image.regions).map_err(|e| Error::RustError(e.to_string()))?;
-        statements.push(
-            db.prepare(
-                r#"
-                INSERT INTO image_fingerprints (
-                  r2_key, work_id, solid_color, content_sha256, strict_key,
-                  average_hash, difference_hash, color_key, detail_key,
-                  width, height, bytes, format, regions_json, updated_at
-                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-                ON CONFLICT(r2_key) DO UPDATE SET
-                  work_id=excluded.work_id,
-                  solid_color=excluded.solid_color,
-                  content_sha256=excluded.content_sha256,
-                  strict_key=excluded.strict_key,
-                  average_hash=excluded.average_hash,
-                  difference_hash=excluded.difference_hash,
-                  color_key=excluded.color_key,
-                  detail_key=excluded.detail_key,
-                  width=excluded.width,
-                  height=excluded.height,
-                  bytes=excluded.bytes,
-                  format=excluded.format,
-                  regions_json=excluded.regions_json,
-                  updated_at=excluded.updated_at
-                WHERE (image_fingerprints.work_id, image_fingerprints.solid_color,
-                       image_fingerprints.content_sha256, image_fingerprints.strict_key,
-                       image_fingerprints.average_hash, image_fingerprints.difference_hash,
-                       image_fingerprints.color_key, image_fingerprints.detail_key,
-                       image_fingerprints.width, image_fingerprints.height, image_fingerprints.bytes,
-                       image_fingerprints.format, image_fingerprints.regions_json)
-                  IS NOT (excluded.work_id, excluded.solid_color,
-                          excluded.content_sha256, excluded.strict_key,
-                          excluded.average_hash, excluded.difference_hash,
-                          excluded.color_key, excluded.detail_key,
-                          excluded.width, excluded.height, excluded.bytes,
-                          excluded.format, excluded.regions_json)
-                "#,
-            )
-            .bind(&[
-                JsValue::from_str(&image.r2_key),
-                JsValue::from_str(&work.work_id),
-                JsValue::from_f64(if image.solid_color { 1.0 } else { 0.0 }),
-                JsValue::from_str(&image.content_sha256),
-                JsValue::from_str(&image.strict_key),
-                JsValue::from_str(&image.average_hash),
-                JsValue::from_str(&image.difference_hash),
-                JsValue::from_str(&image.color_key),
-                JsValue::from_str(&image.detail_key),
-                JsValue::from_f64(image.width as f64),
-                JsValue::from_f64(image.height as f64),
-                JsValue::from_f64(image.bytes as f64),
-                JsValue::from_str(&image.format),
-                JsValue::from_str(&regions_json),
-                JsValue::from_str(&now),
-            ])?,
-        );
+        statements.push(image.upsert(&db, &work.work_id, &now)?);
     }
     db.batch(statements).await?;
     Ok(with_cors(json_response(
@@ -1840,6 +1855,192 @@ async fn delete_item(
     unreachable!()
 }
 
+/// Index of the copy to keep among strict duplicates: most pixels, then most
+/// bytes; on a tie the earlier upload stays, so a repost never replaces it.
+fn dedup_keeper(members: &[(ImageFingerprint, String)]) -> usize {
+    (0..members.len())
+        .max_by(|&a, &b| {
+            let (left, left_at) = &members[a];
+            let (right, right_at) = &members[b];
+            (u64::from(left.width) * u64::from(left.height), left.bytes)
+                .cmp(&(
+                    u64::from(right.width) * u64::from(right.height),
+                    right.bytes,
+                ))
+                .then_with(|| right_at.cmp(left_at))
+                .then_with(|| right.r2_key.cmp(&left.r2_key))
+        })
+        .unwrap_or(0)
+}
+
+#[derive(Deserialize)]
+struct DedupMeta {
+    r2_key: String,
+    work_id: String,
+    created_at: String,
+    review_version: i64,
+}
+
+#[derive(Deserialize)]
+struct StateRow {
+    state: String,
+}
+
+const ACTIVE_FINGERPRINTS: &str = r#"
+    SELECT f.r2_key,f.work_id,f.solid_color,f.content_sha256,f.strict_key,
+           f.average_hash,f.difference_hash,f.color_key,f.detail_key,
+           f.width,f.height,f.bytes,f.format,f.regions_json,w.source,w.title
+    FROM image_fingerprints f CROSS JOIN images i ON i.r2_key=f.r2_key
+    CROSS JOIN works w ON w.id=i.work_id
+    WHERE f.work_id=i.work_id AND f.solid_color=0 AND w.deleted_at IS NULL"#;
+
+/// Keep only the best copy of `r2_key`'s strict duplicates in other active works,
+/// removing the rest through the recoverable image review the admin uses
+/// (review-trash backup, D1 update, Telegram message deletion).
+pub(crate) async fn dedup_image(env: &Env, r2_key: &str) -> Result<Value> {
+    let db = env.d1("DB")?;
+    let Some(target) = db
+        .prepare(format!("{ACTIVE_FINGERPRINTS} AND f.r2_key=?"))
+        .bind(&[JsValue::from_str(r2_key)])?
+        .first::<FingerprintRow>(None)
+        .await?
+        .and_then(row_to_fingerprint)
+    else {
+        return Ok(json!({ "ok": true, "removed": [] }));
+    };
+    let mut members: Vec<ImageFingerprint> = db
+        .prepare(format!(
+            "{ACTIVE_FINGERPRINTS} AND f.work_id!=? AND (f.content_sha256=? OR (f.color_key=? AND f.detail_key=?))"
+        ))
+        .bind(&[
+            JsValue::from_str(&target.work_id),
+            JsValue::from_str(&target.content_sha256),
+            JsValue::from_str(&target.color_key),
+            JsValue::from_str(&target.detail_key),
+        ])?
+        .all()
+        .await?
+        .results::<FingerprintRow>()?
+        .into_iter()
+        .filter_map(row_to_fingerprint)
+        .filter(|other| classify_similarity(&target, other) == MatchKind::StrictSame)
+        .collect();
+    if members.is_empty() {
+        return Ok(json!({ "ok": true, "removed": [] }));
+    }
+    members.push(target);
+    let keys: Vec<&str> = members.iter().map(|m| m.r2_key.as_str()).collect();
+    let metas: std::collections::HashMap<String, DedupMeta> = db
+        .prepare("SELECT i.r2_key,i.work_id,i.created_at,w.review_version FROM images i JOIN works w ON w.id=i.work_id WHERE i.r2_key IN (SELECT value FROM json_each(?))")
+        .bind(&[JsValue::from_str(&serde_json::to_string(&keys).unwrap())])?
+        .all()
+        .await?
+        .results::<DedupMeta>()?
+        .into_iter()
+        .map(|meta| (meta.r2_key.clone(), meta))
+        .collect();
+    let ranked: Vec<(ImageFingerprint, String)> = members
+        .into_iter()
+        .filter_map(|m| Some((metas.get(&m.r2_key)?.created_at.clone(), m)))
+        .map(|(created_at, m)| (m, created_at))
+        .collect();
+    let keep = dedup_keeper(&ranked);
+    let keeper_meta = &metas[&ranked[keep].0.r2_key];
+    let keeper = crate::image_review::SimilarKeeper {
+        r2_key: keeper_meta.r2_key.clone(),
+        work_id: keeper_meta.work_id.clone(),
+        review_version: keeper_meta.review_version,
+    };
+    let bot = env
+        .secret("TELEGRAM_BOT_TOKEN")
+        .map(|value| value.to_string())
+        .or_else(|_| env.var("TELEGRAM_BOT_TOKEN").map(|value| value.to_string()))
+        .unwrap_or_default();
+    let mut removed = Vec::new();
+    let mut failed = Vec::new();
+    for (index, (image, _)) in ranked.iter().enumerate() {
+        if index == keep {
+            continue;
+        }
+        let decision_id = format!(
+            "dedup-{}",
+            &sha256_hex(format!("{}\n{}", image.r2_key, keeper.r2_key).as_bytes())[..40]
+        );
+        // A restored decision means the owner chose to keep this copy.
+        let prior = db
+            .prepare("SELECT state FROM catalog_image_reviews WHERE decision_id=?")
+            .bind(&[JsValue::from_str(&decision_id)])?
+            .first::<StateRow>(None)
+            .await?;
+        if prior.is_some_and(|row| row.state != "prepared") {
+            continue;
+        }
+        let mut outcome = None;
+        for action in ["prepare", "delete"] {
+            let response = crate::image_review::apply_with_survivors(
+                env,
+                crate::image_review::ImageRequest {
+                    decision_id: decision_id.clone(),
+                    r2_key: image.r2_key.clone(),
+                    action: action.into(),
+                    allow_missing_telegram: true,
+                    restored: Vec::new(),
+                },
+                &[vec![keeper.clone()]],
+                None,
+            )
+            .await?;
+            let result = prepare_json(response).await?;
+            if result.get("ok") != Some(&Value::Bool(true)) {
+                outcome = Some(Err(result));
+                break;
+            }
+            outcome = Some(Ok(result));
+        }
+        match outcome {
+            Some(Ok(result)) => {
+                for target in result["targets"].as_array().into_iter().flatten() {
+                    if let (Some(chat_id), Some(message_id)) =
+                        (target["chat_id"].as_i64(), target["message_id"].as_i64())
+                    {
+                        if let Err(error) = delete_telegram_message(&bot, chat_id, message_id).await
+                        {
+                            console_error!(
+                                "dedup telegram delete failed for {}: {error}",
+                                image.r2_key
+                            );
+                        }
+                    }
+                }
+                removed.push(image.r2_key.clone());
+            }
+            Some(Err(result)) => {
+                failed.push(json!({"r2_key": image.r2_key, "error": result.get("error")}))
+            }
+            None => {}
+        }
+    }
+    Ok(json!({ "ok": true, "keep": keeper.r2_key, "removed": removed, "failed": failed }))
+}
+
+/// POST /api/catalog/dedup `{ "r2_key": "..." }` (Bearer): dedup one image on demand.
+pub async fn handle_dedup(mut req: Request, env: Env) -> Result<Response> {
+    #[derive(Deserialize)]
+    struct Body {
+        r2_key: String,
+    }
+    let Ok(body) = req.json::<Body>().await else {
+        return reject(400, "invalid json");
+    };
+    if body.r2_key.is_empty() || body.r2_key.len() > 1024 {
+        return reject(400, "invalid r2_key");
+    }
+    Ok(with_cors(json_response(
+        &dedup_image(&env, &body.r2_key).await?,
+        200,
+    )?))
+}
+
 async fn prepare_json(mut response: Response) -> Result<Value> {
     let text = response.text().await?;
     serde_json::from_str(&text).map_err(|e| Error::RustError(e.to_string()))
@@ -1886,6 +2087,47 @@ async fn delete_telegram_message(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn dedup_keeps_best_quality_then_earliest_upload() {
+        let image = |key: &str, width: u32, bytes: u64| ImageFingerprint {
+            r2_key: key.into(),
+            work_id: format!("x:{key}"),
+            solid_color: false,
+            content_sha256: "same".into(),
+            strict_key: String::new(),
+            average_hash: 0,
+            difference_hash: 0,
+            color_key: String::new(),
+            detail_key: String::new(),
+            width,
+            height: 100,
+            bytes,
+            format: "JPEG".into(),
+            regions: Vec::new(),
+            source: "x".into(),
+            title: String::new(),
+        };
+        let at = |s: &str| s.to_string();
+        // More pixels beats more bytes and an earlier upload.
+        let members = [
+            (image("old", 100, 900), at("2026-01-01")),
+            (image("new", 200, 100), at("2026-02-01")),
+        ];
+        assert_eq!(dedup_keeper(&members), 1);
+        // Same pixels: more bytes wins.
+        let members = [
+            (image("old", 100, 100), at("2026-01-01")),
+            (image("new", 100, 200), at("2026-02-01")),
+        ];
+        assert_eq!(dedup_keeper(&members), 1);
+        // Identical quality: the earlier upload stays, whatever the order.
+        let members = [
+            (image("new", 100, 100), at("2026-02-01")),
+            (image("old", 100, 100), at("2026-01-01")),
+        ];
+        assert_eq!(dedup_keeper(&members), 1);
+    }
 
     #[test]
     fn offline_contract_preserves_strict_only_and_empty_results() {

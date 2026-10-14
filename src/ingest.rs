@@ -760,6 +760,7 @@ struct PreparedFile {
     sha256: String,
     r2_key: String,
     byte_size: u64,
+    fingerprint: Option<crate::similar::FingerprintIn>,
 }
 
 const R2_PUT_MAX_ATTEMPTS: u32 = 3;
@@ -1045,6 +1046,7 @@ pub async fn handle_ingest(mut req: Request, env: Env) -> Result<Response> {
             sha256: sha,
             r2_key: key,
             byte_size,
+            fingerprint: None,
         });
         files.push(file);
     }
@@ -1251,15 +1253,18 @@ async fn commit_ingest(
 
 /// One original in a direct-to-R2 ingest manifest. Hanabi uploads the bytes
 /// itself, so the Worker never buffers or hashes image bodies.
-#[derive(Debug, Deserialize)]
+#[derive(Deserialize)]
 struct DirectFile {
     name: String,
     content_type: String,
     size: u64,
     sha256: String,
+    /// Optional perceptual fingerprint; enables strict-duplicate cleanup at commit.
+    #[serde(default)]
+    fingerprint: Option<crate::similar::FingerprintIn>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Deserialize)]
 struct DirectIngestBody {
     meta: String,
     files: Vec<DirectFile>,
@@ -1331,6 +1336,13 @@ async fn parse_direct(
         };
         if !is_lower_hex(&file.sha256, 64) {
             return Ok(Err(reject("sha256 must be 64 lowercase hex chars", 400)?));
+        }
+        if file
+            .fingerprint
+            .as_ref()
+            .is_some_and(|fp| fp.content_sha256 != file.sha256 || fp.bytes != file.size)
+        {
+            return Ok(Err(reject("fingerprint does not describe the file", 400)?));
         }
     }
     let digests: Vec<String> = files.iter().map(|f| f.sha256.clone()).collect();
@@ -1516,17 +1528,25 @@ pub async fn handle_ingest_commit(req: Request, env: Env) -> Result<Response> {
                 422,
             );
         }
+        let fingerprint = file.fingerprint.clone().map(|mut fp| {
+            fp.r2_key = r2_key.clone();
+            fp
+        });
+        if fingerprint.as_ref().is_some_and(|fp| !fp.is_valid()) {
+            return reject(&format!("invalid fingerprint for page {page}"), 400);
+        }
         prepared.push(PreparedFile {
             page,
             content_type: file.content_type.clone(),
             sha256: file.sha256.clone(),
             r2_key,
             byte_size: file.size,
+            fingerprint,
         });
     }
 
     let wid = work_id(&direct.meta.source, &direct.meta.source_id);
-    commit_ingest(
+    let response = commit_ingest(
         &db,
         &direct.meta,
         &wid,
@@ -1536,7 +1556,20 @@ pub async fn handle_ingest_commit(req: Request, env: Env) -> Result<Response> {
         &prepared,
         &js_iso_now(),
     )
-    .await
+    .await?;
+    if response.status_code() == 200 {
+        // Best effort: the ingest is committed; a failed cleanup can be rerun via /api/catalog/dedup.
+        for file in prepared.iter().filter(|f| f.fingerprint.is_some()) {
+            match crate::similar::dedup_image(&env, &file.r2_key).await {
+                Ok(result) if result["removed"].as_array().is_some_and(|r| !r.is_empty()) => {
+                    console_log!("ingest dedup {}: {result}", file.r2_key)
+                }
+                Ok(_) => {}
+                Err(e) => console_error!("ingest dedup {} failed: {e}", file.r2_key),
+            }
+        }
+    }
+    Ok(response)
 }
 
 async fn best_effort_delete(bucket: &Bucket, keys: &[String]) {
@@ -1660,6 +1693,12 @@ async fn commit_d1_batch(
                 JsValue::from_str(&file.sha256),
             ])?,
         );
+    }
+
+    for file in prepared {
+        if let Some(fingerprint) = &file.fingerprint {
+            stmts.push(fingerprint.upsert(db, wid, now)?);
+        }
     }
 
     // Replace tags.

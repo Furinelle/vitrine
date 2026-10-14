@@ -62,12 +62,14 @@ Header：`Authorization: Bearer <INGEST_TOKEN>`、`Idempotency-Key`（与 multip
 | 字段 | 说明 |
 |---|---|
 | `meta` | 与 multipart 的 `meta` 相同的 JSON **字符串** |
-| `files[]` | `name`、`content_type`、`size`、`sha256`（64 位小写十六进制） |
+| `files[]` | `name`、`content_type`、`size`、`sha256`（64 位小写十六进制），可选 `fingerprint`（与 `PUT /api/catalog/fingerprints` 同格式，省略 `r2_key`；其 `content_sha256`、`bytes` 必须与该文件一致） |
 | `ingest_id` | 仅 commit：prepare 返回的值 |
 
 1. `prepare` 校验清单（数量、大小、MIME）后返回 `ingest_id` 和每页的 `uploads[]`（`url`、`headers`）。同一 `Idempotency-Key` 已提交过时直接返回原回执，没有 `uploads`。
 2. 调用方按 `headers` 原样 `PUT` 到 `url`（15 分钟有效）。签名包含 `x-amz-checksum-sha256`，内容与清单不符时 R2 返回 `400 BadDigest`。
 3. `commit` 逐页读取对象，核对大小、R2 记录的 SHA-256 和文件头魔数，不符返回 422；之后与 multipart 走同一 D1 batch、审计与对账逻辑，响应格式相同。
+
+带 `fingerprint` 的页面，指纹与图片在同一 D1 batch 写入；提交成功后逐页查找其他在线作品中的严格同图（与相似图分组相同的 `strict` 判定），只保留画质最高的一份：先比像素数，再比文件大小，都相同则保留先入库的。其余副本走与 admin 相同的可恢复单图删除（备份到 `review-trash/`、更新 D1、删除对应 Telegram 消息），决策 ID 为 `dedup-…`；在 admin 恢复过的副本不会被再次删除。去重失败不影响入库结果，可用 `POST /api/catalog/dedup`（Bearer，`{"r2_key": "..."}`）对单张图重跑。相似但不严格相同的图片仍进入 admin 相似图审批。
 
 预签名需要 secrets `R2_ACCESS_KEY_ID` / `R2_SECRET_ACCESS_KEY`（只授权 `vitrine-media` 的对象读写）和变量 `R2_S3_HOST`、`R2_BUCKET_NAME`。上传后未 commit 的对象不会被自动清理。
 
