@@ -301,7 +301,7 @@ async function loadWorks(reset = false) {
       state.loading = false;
       $("grid").setAttribute("aria-busy", "false");
       $("more").disabled = false;
-      $("more").textContent = "继续浏览 ↓";
+      $("more").textContent = "继续浏览";
       if (!$("more").hidden) moreObserver?.observe($("more"));
     }
   }
