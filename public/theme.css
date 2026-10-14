@@ -19,11 +19,12 @@
   --link: light-dark(#0f2e73, #a6dcff);
   --ease: cubic-bezier(.22, 1, .36, 1);
   --sans: -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", "Noto Sans CJK SC", sans-serif;
-  /* Gallery type: Cormorant for the wordmark, a serif for headings and work titles, a clean sans for everything else; brush script only beside the wordmark. */
+  /* Gallery type: Cormorant for the wordmark, a serif for headings and work titles, the system UI face for everything else; brush script only beside the wordmark. */
   --brand: "Vitrine Display", Georgia, serif;
   --hand: "Vitrine Hand", "Kaiti SC", "STKaiti", "KaiTi", serif;
   --serif: "Noto Serif SC", "Source Han Serif SC", "Songti SC", "STSong", serif;
-  --text-sans: "LXGW Neo XiHei", -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", sans-serif;
+  /* Body text uses each platform's own UI face, as Pixiv, sspai, ZCOOL and bilibili do: PingFang on Apple, HarmonyOS Sans, YaHei on Windows. */
+  --text-sans: -apple-system, BlinkMacSystemFont, "PingFang SC", "HarmonyOS Sans SC", "Microsoft YaHei", "Noto Sans SC", sans-serif;
   --fs-xs: 12px;
   --fs-sm: 13px;
   --fs-md: 14px;
