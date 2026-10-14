@@ -209,6 +209,7 @@ const requests = [];
 const pagination = vm.createContext({
   state: paging, URLSearchParams, AbortController, $: id => elements[id],
   renderLoadingCards() { elements.grid.replaceChildren('skeleton'); },
+  renderFeatured() {},
   renderCards(works, append) {
     if (!append) elements.grid.replaceChildren();
     elements.grid.children.push(...works);
