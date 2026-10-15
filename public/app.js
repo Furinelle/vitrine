@@ -405,15 +405,25 @@ function animateLightbox(closing = false) {
   state.viewerMotion = null;
   if (reduced || !dialog.animate) return null;
   const rest = { opacity: 1, transform: "translateY(0) scale(1)" };
-  const small = { opacity: 0, transform: "translateY(18px) scale(.95)" };
-  const motion = dialog.animate(closing ? [current, small] : [small, rest], {
-    duration: closing ? 230 : 360, easing: "cubic-bezier(.22, 1, .36, 1)", fill: "both",
+  const small = { opacity: 0, transform: lightboxOrigin(dialog) };
+  // Fade in over the first third so the panel is seen growing out of the card.
+  const motion = dialog.animate(closing ? [current, small] : [small, { opacity: 1, offset: .35 }, rest], {
+    duration: closing ? 320 : 520, easing: closing ? "cubic-bezier(.4, 0, .6, 1)" : "cubic-bezier(.22, 1, .36, 1)", fill: "both",
   });
   state.viewerMotion = motion;
   if (!closing) motion.finished.then(() => {
     if (state.viewerMotion === motion) { motion.cancel(); state.viewerMotion = null; }
   }, () => {});
   return motion;
+}
+// Grow the viewer out of (and back into) the card it was opened from.
+function lightboxOrigin(dialog) {
+  const card = state.lastCard?.isConnected ? state.lastCard.getBoundingClientRect() : null;
+  const frame = dialog.getBoundingClientRect();
+  if (!card?.width || !frame.width) { dialog.style.transformOrigin = "50% 60%"; return "translateY(18px) scale(.95)"; }
+  const at = (point, start, size) => Math.max(0, Math.min(100, (point - start) / size * 100));
+  dialog.style.transformOrigin = `${at(card.x + card.width / 2, frame.x, frame.width)}% ${at(card.y + card.height / 2, frame.y, frame.height)}%`;
+  return `scale(${Math.min(.85, Math.max(.25, card.width / frame.width))})`;
 }
 async function dismissLightbox() {
   const dialog = $("lightbox");
@@ -458,12 +468,7 @@ async function openLightbox(work, cardEl, { push = true, page = 0 } = {}) {
   const dialog = $("lightbox");
   const entering = !dialog.open || dialog.classList.contains("is-closing");
   if (!dialog.open) { dialog.showModal(); dialog.scrollTop = 0; }
-  if (entering) {
-    const card = cardEl?.getBoundingClientRect();
-    const frame = dialog.getBoundingClientRect();
-    dialog.style.transformOrigin = card ? `${Math.max(0, Math.min(100, (card.x + card.width / 2 - frame.x) / frame.width * 100))}% ${Math.max(0, Math.min(100, (card.y + card.height / 2 - frame.y) / frame.height * 100))}%` : "50% 60%";
-    animateLightbox();
-  }
+  if (entering) animateLightbox();
   if (state.images.length && page === 0) showImage(0, false);
   try {
     const data = await getJson(`/api/works/${encodeURIComponent(work.id)}`, controller.signal);

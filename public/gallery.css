@@ -144,7 +144,7 @@ h1 span { color: var(--brass); }
 dialog { color: var(--text); background: var(--panel); border: 1px solid var(--gilt-line); padding: 0; border-radius: 10px; max-width: 94vw; box-shadow: 0 25px 90px rgb(2 6 20 / .5); }
 dialog::backdrop { background: rgb(2 6 20 / .78); }
 #lightbox::backdrop { animation: backdrop-in .32s var(--ease); }
-#lightbox.is-closing::backdrop { animation: backdrop-out .23s ease forwards; }
+#lightbox.is-closing::backdrop { animation: backdrop-out .32s ease forwards; }
 @keyframes backdrop-in { from { opacity: 0; } to { opacity: 1; } }
 @keyframes backdrop-out { to { opacity: 0; } }
 #lightbox[open] { animation: none; }
@@ -154,6 +154,8 @@ dialog[open] { animation: enter .22s var(--ease); }
 #lightbox { width: min(1340px, 94vw); max-height: 94dvh; overflow-y: auto; overscroll-behavior: contain; }
 #lightbox[open] { display: grid; grid-template-columns: minmax(0, 1fr) 310px; }
 .close { position: absolute; top: 14px; right: 14px; z-index: 5; background: var(--panel); }
+.close { border-radius: 50%; transition: color .2s, border-color .2s, rotate .4s var(--ease); }
+.close:hover { rotate: 90deg; }
 .viewer { min-width: 0; background: light-dark(#e2e9f2, #030a20); display: flex; flex-direction: column; }
 .viewer-toolbar { min-height: 64px; padding: 12px 24px; display: flex; align-items: center; justify-content: space-between; font-size: var(--fs-sm); color: var(--muted); }
 .viewer-toolbar a { min-height: 40px; display: inline-flex; align-items: center; }
