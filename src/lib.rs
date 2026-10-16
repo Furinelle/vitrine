@@ -734,16 +734,14 @@ struct SourceRow {
     cnt: i64,
 }
 
-/// Tag list query: counts only work_tags attached to non-deleted works.
+/// Tag list query: `tag_counts` is kept by triggers (migration 0015) to the
+/// number of non-deleted works carrying each tag, so a miss reads one row per tag.
 pub fn tags_list_sql() -> &'static str {
     r#"
-            SELECT t.name, COUNT(w.id) AS cnt
-            FROM tags t
-            LEFT JOIN work_tags wt ON wt.tag = t.name
-            LEFT JOIN works w ON w.id = wt.work_id AND w.deleted_at IS NULL
-            GROUP BY t.name
-            HAVING cnt > 0
-            ORDER BY cnt DESC, t.name ASC
+            SELECT tag AS name, cnt
+            FROM tag_counts
+            WHERE cnt > 0
+            ORDER BY cnt DESC, name ASC
             "#
 }
 
@@ -2705,15 +2703,12 @@ mod tests {
     }
 
     #[test]
-    fn tags_list_sql_excludes_soft_deleted_works() {
+    fn tags_list_sql_reads_maintained_counts() {
+        // Soft-delete handling lives in the 0015 triggers; tools/test_tag_counts.py checks them.
         let sql = tags_list_sql();
-        assert!(sql.contains("deleted_at IS NULL"));
-        assert!(
-            sql.contains("JOIN works w")
-                || sql.contains("join works w")
-                || sql.contains("works w ON")
-        );
-        assert!(sql.contains("COUNT(w.id)"));
+        assert!(sql.contains("FROM tag_counts"));
+        assert!(sql.contains("cnt > 0"));
+        assert!(!sql.contains("JOIN"));
     }
 
     #[test]
