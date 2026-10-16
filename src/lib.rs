@@ -845,6 +845,12 @@ async fn handle_work_images(work_id: &str, env: &Env) -> Result<Response> {
 struct TagRow {
     name: String,
     cnt: i64,
+    /// Tag library fields (migration 0019): kind, the work it belongs to and
+    /// the other display names; absent for a tag nobody has sorted yet.
+    kind: String,
+    parent: Option<String>,
+    ja: Option<String>,
+    en: Option<String>,
 }
 
 #[derive(Debug, serde::Deserialize, Serialize)]
@@ -854,13 +860,15 @@ struct SourceRow {
 }
 
 /// Tag list query: `tag_counts` is kept by triggers (migration 0015) to the
-/// number of non-deleted works carrying each tag, so a miss reads one row per tag.
+/// number of non-deleted works carrying each tag, so a miss reads one row per
+/// tag, plus the few curated `tag_items` rows (migration 0019) by primary key.
 pub fn tags_list_sql() -> &'static str {
     r#"
-            SELECT tag AS name, cnt
-            FROM tag_counts
-            WHERE cnt > 0
-            ORDER BY cnt DESC, name ASC
+            SELECT c.tag AS name, c.cnt, COALESCE(i.kind, 'unsorted') AS kind, i.parent, i.ja, i.en
+            FROM tag_counts c
+            LEFT JOIN tag_items i ON i.name = c.tag
+            WHERE c.cnt > 0
+            ORDER BY c.cnt DESC, c.tag ASC
             "#
 }
 
@@ -2302,7 +2310,7 @@ async fn cached_filter_rows<T: serde::de::DeserializeOwned + Serialize>(
     let generation = similar::current_generation(&db).await?;
     let cache = Cache::default();
     let key = format!(
-        "{}/__filters/v1/{kind}/{generation}",
+        "{}/__filters/v2/{kind}/{generation}",
         url.origin().ascii_serialization()
     );
     let cached = match cache.get(key.clone(), false).await {
@@ -2337,7 +2345,13 @@ fn filter_tags(
 ) -> (Vec<TagRow>, Option<u64>) {
     // SQLite LIKE folds ASCII only; the API treats %, _ and backslash literally.
     let needle = q.trim_start_matches('#').to_ascii_lowercase();
-    tags.retain(|tag| tag.name.to_ascii_lowercase().contains(&needle));
+    // Any display name finds the tag: "furina" or "フリーナ" reach 芙宁娜.
+    tags.retain(|tag| {
+        [Some(&tag.name), tag.ja.as_ref(), tag.en.as_ref()]
+            .into_iter()
+            .flatten()
+            .any(|name| name.to_ascii_lowercase().contains(&needle))
+    });
     if by_name {
         tags.sort_by(|a, b| a.name.cmp(&b.name));
     }
@@ -2862,7 +2876,34 @@ mod tests {
         let sql = tags_list_sql();
         assert!(sql.contains("FROM tag_counts"));
         assert!(sql.contains("cnt > 0"));
-        assert!(!sql.contains("JOIN"));
+        assert!(sql.contains("LEFT JOIN tag_items") && !sql.contains("work_tags"));
+    }
+
+    #[test]
+    fn filter_tags_matches_every_display_name() {
+        let tag = |name: &str, ja: Option<&str>, en: Option<&str>| TagRow {
+            name: name.into(),
+            cnt: 1,
+            kind: "character".into(),
+            parent: None,
+            ja: ja.map(Into::into),
+            en: en.map(Into::into),
+        };
+        let rows = || {
+            vec![
+                tag("芙宁娜", Some("フリーナ"), Some("Furina")),
+                tag("百合", None, None),
+            ]
+        };
+        for q in ["furina", "フリーナ", "芙宁娜", "#Furina"] {
+            let (found, _) = filter_tags(rows(), q, false, 10, 0);
+            assert_eq!(
+                found.iter().map(|t| t.name.as_str()).collect::<Vec<_>>(),
+                ["芙宁娜"],
+                "{q}"
+            );
+        }
+        assert_eq!(filter_tags(rows(), "", false, 10, 0).0.len(), 2);
     }
 
     #[test]
