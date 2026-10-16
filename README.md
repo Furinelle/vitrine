@@ -150,7 +150,7 @@ Hanabi 拿到 targets 后删除对应频道消息，再调用 `POST /api/catalog
 
 ### 后台 `/admin`
 
-同源管理页：改标题/作者/标签/R18，删/恢复单图，下线整部作品（只写 `works.deleted_at`，不动频道），以及「相似图」按张去重。登录用现有 `INGEST_TOKEN`，Worker 发 HttpOnly cookie。频道删帖另需 `npx wrangler secret put TELEGRAM_BOT_TOKEN`。首次部署须按顺序应用迁移 `0001`–`0015`；已有实例先核对实际迁移状态，保留 D1 备份与回滚方案，再由操作者执行 `npm run db:remote`。
+同源管理页：改标题/作者/标签/R18，删/恢复单图，下线整部作品（只写 `works.deleted_at`，不动频道），以及「相似图」按张去重。登录用现有 `INGEST_TOKEN`，Worker 发 HttpOnly cookie。频道删帖另需 `npx wrangler secret put TELEGRAM_BOT_TOKEN`。首次部署须按顺序应用迁移 `0001`–`0016`；已有实例先核对实际迁移状态，保留 D1 备份与回滚方案，再由操作者执行 `npm run db:remote`。
 
 WAF Managed Challenge 已加在 zone `fontaine.blue`（规则 id `a7940432beeb4799a74e515a9dd1bf4b`）：
 
@@ -226,7 +226,7 @@ npm ci
 # rustup target add wasm32-unknown-unknown
 # cargo install worker-build
 
-npm run db:local    # 仅本地应用 D1 迁移 0001–0015
+npm run db:local    # 仅本地应用 D1 迁移 0001–0016
 npm run build:dev   # worker-build --dev → build/worker/shim.mjs
 npx wrangler dev
 
@@ -273,4 +273,6 @@ node tools/test_frontend.mjs
 
 完整 HTTP 验收统一运行 `npm run test:integration`：自动创建独立配置、临时 D1/R2、测试令牌，不加载项目 `.dev.vars`，执行浏览/安全/后台生命周期/去重并发/撤销/目录增量协议/96 MiB 流式入库回归，完成后清理测试数据。相似结果由 Oracle 上的原生 Rust 程序计算；D1 写入触发器递增数据版本，分页导出和结果发布都校验同一版本。旧候选须通过当前特征和保留项核验才能删除；删除事务仍校验同一目录版本，已完成回执可继续重放。
 
-公开标签和来源统计在 Cache API 中按目录版本保存；标签查询在同一份完整统计上筛选、排序、分页，避免每次搜索重做全库聚合。作品隐藏/恢复及元数据修改使缓存失效。`0013_catalog_read_cost.sql` 追加可见作品排序索引与直接 work_tags 修改的失效触发器。`0015_tag_counts.sql` 用触发器维护每个标签的可见作品数，缓存未命中时只读 `tag_counts` 每个标签一行，不再联表扫描 work_tags 与 works；`tools/test_tag_counts.py` 在本地 SQLite 上核对触发器与联表结果一致。正式迁移状态以部署记录为准。
+公开标签和来源统计在 Cache API 中按目录版本保存；标签查询在同一份完整统计上筛选、排序、分页，避免每次搜索重做全库聚合。作品隐藏/恢复及元数据修改使缓存失效。`0013_catalog_read_cost.sql` 追加可见作品排序索引与直接 work_tags 修改的失效触发器。`0015_tag_counts.sql` 用触发器维护每个标签的可见作品数，缓存未命中时只读 `tag_counts` 每个标签一行，不再联表扫描 work_tags 与 works；`tools/test_tag_counts.py` 在本地 SQLite 上核对触发器与联表结果一致。
+
+标签按 `tag_key` 归并：去掉不可见字符后，全角转半角、统一小写、去掉空格和标点（含 `:` `/`）、繁体逐字转简体（对照表 `src/tag_fold.rs` 由 `tools/gen_tag_fold.swift` 从系统 ICU 生成）。`0016_tag_keys.sql` 的 `tag_keys` 记录每个键对应的唯一写法：导入和管理页改标签时，同一批处理里先登记首次出现的写法，后续变体都存成它；`/api/works?tag=` 也先经它换成存储写法。游戏名等跨语言别名写在 `tools/tag_aliases.json`（每个游戏的各种写法统一为中文全名）。已有标签用 `tools/tag_merge.py` 生成合并清单和 SQL（别名表里的按表归并，其余每组保留可见作品最多的写法），审阅后由操作者对远端执行；`tools/test_tag_merge.py` 与集成测试 `test_tag_keys.py` 覆盖合并与导入归并。正式迁移状态以部署记录为准。
