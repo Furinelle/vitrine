@@ -163,5 +163,16 @@
   "喜多郁代": {"kind": "character", "parent": "孤独摇滚"},
   "千早愛音": {"kind": "character", "parent": "BanG_Dream!"},
   "若叶睦": {"kind": "character", "parent": "BanG_Dream!"},
-  "长崎素世": {"kind": "character", "parent": "BanG_Dream!"}
+  "长崎素世": {"kind": "character", "parent": "BanG_Dream!"},
+  "浮波柚叶": {"kind": "character", "parent": "绝区零"},
+  "爱丽丝": {"kind": "character", "parent": "绝区零"},
+  "心月狐": {"kind": "character", "parent": "鸣潮", "zh_aliases": ["心", "心(鳴潮)"]},
+  "织窃": {"kind": "cp", "members": ["阿格莱雅", "赛飞儿"]},
+  "窃织": {"kind": "cp", "members": ["赛飞儿", "阿格莱雅"]},
+  "织窃织": {"kind": "cp", "members": ["阿格莱雅", "赛飞儿"]},
+  "浮波柚叶爱丽丝": {"kind": "cp", "members": ["浮波柚叶", "爱丽丝"]},
+  "知更鸟晴歌": {"kind": "skin", "parent": "知更鸟", "zh_aliases": ["晴歌"]},
+  "RobinSummeretto": {"kind": "skin", "parent": "知更鸟", "zh_aliases": ["ロビン・夏空の歌"]},
+  "HimekoNova": {"kind": "skin", "parent": "姬子", "zh_aliases": ["姫子・旅立ち"]},
+  "銀狼LV999": {"kind": "skin", "parent": "银狼"}
 }
