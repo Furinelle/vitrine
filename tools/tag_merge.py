@@ -159,8 +159,9 @@ def main(rows_path, plan_path, sql_path):
     rows = json.loads(pathlib.Path(rows_path).read_text())[0]["results"]
     aliases, links = load_aliases()
     fixes, keep = load_fixes()
-    assert not set(fixes) & set(aliases), "a fix target is already a game name"
-    aliases = {**aliases, **fixes}
+    # A fix target may also be a linked name (e.g. a character); its misspellings fold into it either way.
+    for name, spellings in fixes.items():
+        aliases[name] = aliases.get(name, []) + spellings
     spellings = [s for name, more in aliases.items() for s in (name, *more)]
     keys = keys_for(sorted({r["name"] for r in rows} | set(spellings) | set(keep)))
     merges, targets, report = plan(rows, keys, aliases)
