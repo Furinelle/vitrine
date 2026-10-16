@@ -19,8 +19,10 @@ SEED = {
     "w3": (None, ["鸣潮", "Genshin_Impact", "digitalartㅤ"]),
     "w4": ("2026-10-01", ["鸣潮", "鸣潮", "genshinimpact"]),  # hidden work still has its tags moved
     "w5": (None, ["原神", "原神芙宁娜", "銀狼", "Miku"]),  # containment is not a duplicate
-    "w6": (None, ["银狼", "WutheringWaves"]),  # tie on works: Simplified wins; alias below
+    "w6": (None, ["银狼", "WutheringWaves", "求流量", "NovelAI"]),  # tie: Simplified wins; drop; implied tag
 }
+DROPS = ["求流量"]
+IMPLIES = [("NovelAI", "AI生成")]
 # Curated name beats the more common 鳴潮; the English name stays a separate, linked tag.
 ALIASES = {"鸣潮": [], "WutheringWaves": ["WuWa"], "初音未来": [], "初音ミク": [], "miku": []}
 LINKS = [("鸣潮", "WutheringWaves"), ("初音未来", "初音ミク", "miku")]  # a Japanese work links three names
@@ -34,7 +36,7 @@ def run(db):
     data = rows(db)
     names = {r["name"] for r in data} | {s for k, v in ALIASES.items() for s in (k, *v)}
     merges, targets, report = tag_merge.plan(data, tag_merge.keys_for(sorted(names)), ALIASES)
-    db.executescript(tag_merge.merge_sql(merges, targets, LINKS))
+    db.executescript(tag_merge.merge_sql(merges, targets, LINKS, IMPLIES, DROPS))
     return merges
 
 
@@ -58,25 +60,31 @@ def main():
     tags = dict(db.execute("SELECT name, use_count FROM tags WHERE name IN ('鸣潮','WutheringWaves','genshinimpact','digitalart','银狼')"))
     assert tags == {"鸣潮": 5, "WutheringWaves": 5, "genshinimpact": 4, "digitalart": 1, "银狼": 2}, tags
     assert {n for (n,) in db.execute("SELECT name FROM tags")} == {
-        "鸣潮", "WutheringWaves", "genshinimpact", "digitalart", "原神", "原神芙宁娜", "银狼", "初音未来", "初音ミク", "miku"}
+        "鸣潮", "WutheringWaves", "genshinimpact", "digitalart", "原神", "原神芙宁娜", "银狼", "初音未来", "初音ミク", "miku",
+        "NovelAI", "AI生成"}
     pairs = set(db.execute("SELECT work_id, tag FROM work_tags"))
     # Every work with either game tag carries both, hidden w4 included.
     for work in ("w1", "w2", "w3", "w4", "w6"):
         assert {(work, "鸣潮"), (work, "WutheringWaves")} <= pairs, work
     assert {("w5", "miku"), ("w5", "初音未来"), ("w5", "初音ミク")} <= pairs  # Miku folds to miku, then all three
-    assert ("w2", "genshinimpact") in pairs and len(pairs) == 22, pairs
+    assert ("w6", "求流量") not in pairs and {("w6", "NovelAI"), ("w6", "AI生成")} <= pairs  # dropped; implied
+    assert ("w2", "genshinimpact") in pairs and len(pairs) == 24, pairs
     truth = dict(db.execute("SELECT wt.tag, COUNT(*) FROM work_tags wt JOIN works w ON w.id=wt.work_id "
                             "WHERE w.deleted_at IS NULL GROUP BY wt.tag"))
     assert dict(db.execute("SELECT tag, cnt FROM tag_counts")) == truth, truth
     keys = dict(db.execute("SELECT key, tag FROM tag_keys"))
     assert keys["鸣潮"] == "鸣潮" and keys["wutheringwaves"] == keys["wuwa"] == "WutheringWaves", keys
-    assert keys["genshinimpact"] == "genshinimpact" and keys["miku"] == "miku" and len(keys) == 11, keys
+    assert keys["genshinimpact"] == "genshinimpact" and keys["miku"] == "miku" and len(keys) == 13, keys
     assert not db.execute("SELECT name FROM sqlite_master WHERE name='tag_merge'").fetchall()
 
-    # Later writes get the companion from the 0017 trigger, with tag_counts kept exact.
+    # Later writes get the companion from the 0017 trigger, blocked tags are removed by the 0018 triggers,
+    # and tag_counts stays exact.
     db.execute("INSERT INTO works (id, source, source_id, created_at) VALUES ('w7', 'x', 'w7', 't')")
-    db.execute("INSERT OR IGNORE INTO work_tags (work_id, tag) VALUES ('w7', 'WutheringWaves')")
-    assert {t for (t,) in db.execute("SELECT tag FROM work_tags WHERE work_id='w7'")} == {"鸣潮", "WutheringWaves"}
+    for tag in ("WutheringWaves", "求流量", "NovelAI"):
+        db.execute("INSERT OR IGNORE INTO tags (name) VALUES (?)", (tag,))
+        db.execute("INSERT OR IGNORE INTO work_tags (work_id, tag) VALUES ('w7', ?)", (tag,))
+    assert {t for (t,) in db.execute("SELECT tag FROM work_tags WHERE work_id='w7'")} == {"鸣潮", "WutheringWaves", "NovelAI", "AI生成"}
+    assert not db.execute("SELECT 1 FROM tags WHERE name='求流量'").fetchall()
     truth = dict(db.execute("SELECT wt.tag, COUNT(*) FROM work_tags wt JOIN works w ON w.id=wt.work_id "
                             "WHERE w.deleted_at IS NULL GROUP BY wt.tag"))
     assert {t: c for t, c in db.execute("SELECT tag, cnt FROM tag_counts") if c} == truth, truth
@@ -85,7 +93,7 @@ def main():
     assert run(db) == {}
     assert set(db.execute("SELECT work_id, tag FROM work_tags")) == before
     print("PASS: tag_merge folds case/width/invisible/Traditional variants, links bilingual game tags on old and new "
-          "works, keeps counts and tag_counts exact, keys every tag, and is idempotent")
+          "works, drops and blocks tags, adds implied tags, keeps counts and tag_counts exact, keys every tag, and is idempotent")
 
 
 if __name__ == "__main__":

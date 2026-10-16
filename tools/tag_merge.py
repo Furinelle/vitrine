@@ -87,7 +87,9 @@ def plan(rows, keys, aliases=None):
     return merges, targets, [(t, sorted(m, key=lambda r: (-r["visible"], r["name"]))) for t, m in merged.items()]
 
 
-def merge_sql(merges, targets, links=()):
+def merge_sql(merges, targets, links=(), implies=(), drops=()):
+    """links: groups of names linked both ways; implies: (name, implied name) one-way pairs;
+    drops: names removed from every work and blocked from coming back (migration 0018)."""
     lines = []
     if merges:
         lines += ["CREATE TABLE tag_merge (name TEXT PRIMARY KEY, tag TEXT NOT NULL);",
@@ -103,16 +105,24 @@ def merge_sql(merges, targets, links=()):
             "UPDATE tags SET use_count = (SELECT COUNT(*) FROM work_tags WHERE tag = tags.name) WHERE name IN (SELECT tag FROM tag_merge);",
             "DROP TABLE tag_merge;",
         ]
-    if links:
-        pairs = sorted({(a, b) for group in links for a in group for b in group if a != b})
+    if drops:
+        lines += ["DELETE FROM tag_blocks;", "INSERT INTO tag_blocks (name) VALUES"]
+        lines += [f"  ({sql_text(n)})" + ("," if i < len(drops) - 1 else ";") for i, n in enumerate(sorted(drops))]
+        lines += [
+            "DELETE FROM work_tags WHERE tag IN (SELECT name FROM tag_blocks);",
+            "DELETE FROM tags WHERE name IN (SELECT name FROM tag_blocks);",
+            "DELETE FROM tag_counts WHERE tag IN (SELECT name FROM tag_blocks) AND cnt = 0;",
+        ]
+    if links or implies:
+        pairs = sorted({(a, b) for group in links for a in group for b in group if a != b} | set(implies))
         lines += ["DELETE FROM tag_links;", "INSERT INTO tag_links (tag, also) VALUES"]
         lines += [f"  ({sql_text(a)}, {sql_text(b)})" + ("," if i < len(pairs) - 1 else ";")
                   for i, (a, b) in enumerate(pairs)]
         lines += [
-            "INSERT OR IGNORE INTO tags (name, use_count) SELECT DISTINCT tag, 0 FROM tag_links;",
+            "INSERT OR IGNORE INTO tags (name, use_count) SELECT tag, 0 FROM tag_links UNION SELECT also, 0 FROM tag_links;",
             # Existing works get their companion tag; new writes go through the 0017 trigger.
             "INSERT OR IGNORE INTO work_tags (work_id, tag) SELECT wt.work_id, l.also FROM work_tags wt JOIN tag_links l ON l.tag = wt.tag;",
-            "UPDATE tags SET use_count = (SELECT COUNT(*) FROM work_tags WHERE tag = tags.name) WHERE name IN (SELECT tag FROM tag_links);",
+            "UPDATE tags SET use_count = (SELECT COUNT(*) FROM work_tags WHERE tag = tags.name) WHERE name IN (SELECT tag FROM tag_links UNION SELECT also FROM tag_links);",
         ]
     items = sorted(targets.items())
     for start in range(0, len(items), 200):
@@ -150,26 +160,31 @@ def load_aliases(path=ROOT / "tools/tag_aliases.json"):
 
 
 def load_fixes(path=ROOT / "tools/tag_fixes.json"):
-    """Returns ({correct name: [misspellings]}, [names that must never be merged or renamed])."""
+    """Returns (fixes {correct name: [misspellings]}, keep [never merged or renamed],
+    drop [removed and blocked], implies {name: [tags whose works also get it]})."""
     data = json.loads(pathlib.Path(path).read_text())
-    return data["fixes"], data["keep"]
+    return data["fixes"], data["keep"], data.get("drop", []), data.get("implies", {})
 
 
 def main(rows_path, plan_path, sql_path):
     rows = json.loads(pathlib.Path(rows_path).read_text())[0]["results"]
     aliases, links = load_aliases()
-    fixes, keep = load_fixes()
+    fixes, keep, drops, implied_by = load_fixes()
     # A fix target may also be a linked name (e.g. a character); its misspellings fold into it either way.
     for name, spellings in fixes.items():
         aliases[name] = aliases.get(name, []) + spellings
     spellings = [s for name, more in aliases.items() for s in (name, *more)]
     keys = keys_for(sorted({r["name"] for r in rows} | set(spellings) | set(keep)))
     merges, targets, report = plan(rows, keys, aliases)
+    linked = {n for group in links for n in group}
+    assert not set(drops) & (set(keep) | linked), "a dropped tag is protected or linked"
+    # Works carrying a source tag also get the implied name and everything linked to it.
+    implies = sorted({(src, member) for name, sources in implied_by.items()
+                      for member in next((g for g in links if name in g), (name,)) for src in sources})
     # CP and other protected tags stay exactly as they are.
     for name in keep:
         assert name not in merges and targets.get(keys[name][0], name) == name, f"protected tag would change: {name!r}"
     by_name = {r["name"]: r for r in rows}
-    linked = {n for group in links for n in group}
     report.sort(key=lambda item: (item[0] not in linked,
                                   item[0] not in fixes, -sum(r["visible"] for r in item[1])))
     out = [f"# 标签合并清单\n\n{len(rows)} 个标签，{len(report)} 组合并，{len(merges)} 个写法并入保留名。"
@@ -184,8 +199,10 @@ def main(rows_path, plan_path, sql_path):
     out += ["", "## 配对", "", "带其中一个标签的作品会同时带上同组的其他标签。括号里是现在的可见作品数，标“新建”的是线上还没有的标签。", ""]
     label = lambda n: f"{n} ({by_name[n]['visible']})" if n in by_name else f"{n}（新建）"
     out += ["- " + " / ".join(label(n) for n in group) for group in links]
+    out += ["", f"## 删除并屏蔽（{len(drops)} 个）", "", "、".join(label(n) for n in sorted(drops, key=lambda n: -by_name.get(n, {}).get("visible", 0)))]
+    out += ["", "## 自动补标", ""] + [f"- 带 {'、'.join(label(s) for s in srcs)} 的作品同时带上 {name}" for name, srcs in implied_by.items()]
     pathlib.Path(plan_path).write_text("\n".join(out) + "\n")
-    pathlib.Path(sql_path).write_text(merge_sql(merges, targets, links))
+    pathlib.Path(sql_path).write_text(merge_sql(merges, targets, links, implies, drops))
     print(f"{len(rows)} tags, {len(report)} groups, {len(merges)} names merged; plan -> {plan_path}, sql -> {sql_path}")
 
 

@@ -232,5 +232,8 @@
     "en": "Saki",
     "en_aliases": ["Toyokawa_Sakiko"]},
   "遠坂凛": {"en": "Rin",
-    "en_aliases": ["RinTohsaka"]}
+    "en_aliases": ["RinTohsaka"]},
+  "AI生成": {"en": "AIGenerated",
+    "zh_aliases": ["AIイラスト", "ai绘画", "AI生图", "抖音ai创作"],
+    "en_aliases": ["AIart", "aigc", "ai"]}
 }

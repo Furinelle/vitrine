@@ -51,7 +51,15 @@ def main():
     local.request('/api/admin/works/' + urllib.parse.quote(third, safe=''), {'tags': [zh]},
                   auth=False, headers=cookie, method='PATCH')
     assert work_tags(third) == sorted([zh, en]), work_tags(third)
-    print('PASS: ingest, admin edits and tag filters fold case, width, invisible and Traditional variants onto one stored tag; linked tags travel together')
+    # Blocked tags (migration 0018) are skipped on ingest, variants included, without touching counts.
+    blocked = 'Blocked' + stem
+    local.local_d1(f"INSERT INTO tag_blocks (name) VALUES ('{blocked}'); "
+                   f"INSERT INTO tag_keys (key, tag) VALUES ('{blocked.lower()}', '{blocked}')")
+    skipped = local.ingest(stem + 'e', count=1, publication=False, meta_overrides={'tags': [blocked.upper(), zh]})[0]['work_id']
+    assert work_tags(skipped) == sorted([zh, en]), work_tags(skipped)
+    found = local.request('/api/tags?' + urllib.parse.urlencode({'q': blocked}), auth=False)['tags']
+    assert not found, found
+    print('PASS: ingest, admin edits and tag filters fold case, width, invisible and Traditional variants onto one stored tag; linked tags travel together; blocked tags are skipped')
 
 
 if __name__ == '__main__':
