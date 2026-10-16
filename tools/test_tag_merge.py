@@ -19,8 +19,9 @@ SEED = {
     "w3": (None, ["鸣潮", "Genshin_Impact", "digitalartㅤ"]),
     "w4": ("2026-10-01", ["鸣潮", "鸣潮", "genshinimpact"]),  # hidden work still has its tags moved
     "w5": (None, ["原神", "原神芙宁娜", "銀狼"]),  # containment is not a duplicate
-    "w6": (None, ["银狼"]),  # tie on works: Simplified wins
+    "w6": (None, ["银狼", "WutheringWaves"]),  # tie on works: Simplified wins; alias below
 }
+ALIASES = {"鸣潮": ["WutheringWaves"]}  # curated name beats the more common 鳴潮
 
 
 def rows(db):
@@ -29,7 +30,8 @@ def rows(db):
 
 def run(db):
     data = rows(db)
-    merges, targets, report = tag_merge.plan(data, tag_merge.keys_for([r["name"] for r in data]))
+    names = {r["name"] for r in data} | {s for k, v in ALIASES.items() for s in (k, *v)}
+    merges, targets, report = tag_merge.plan(data, tag_merge.keys_for(sorted(names)), ALIASES)
     db.executescript(tag_merge.merge_sql(merges, targets))
     return merges
 
@@ -47,20 +49,21 @@ def main():
             db.execute("INSERT OR IGNORE INTO work_tags (work_id, tag) VALUES (?, ?)", (work, tag))
 
     merges = run(db)
-    # 鳴潮 has more visible works than 鸣潮; genshinimpact ties GenshinImpact on visible works
-    # and wins on all works (the hidden w4 counts there).
-    assert merges == {"鸣潮": "鳴潮", "GenshinImpact": "genshinimpact", "GenshinImpact\u3164": "genshinimpact",
-                      "Genshin_Impact": "genshinimpact", "digitalart\u3164": "digitalart", "銀狼": "银狼"}, merges
-    tags = dict(db.execute("SELECT name, use_count FROM tags WHERE name IN ('鳴潮','genshinimpact','digitalart','银狼')"))
-    assert tags == {"鳴潮": 4, "genshinimpact": 4, "digitalart": 1, "银狼": 2}, tags
-    assert {n for (n,) in db.execute("SELECT name FROM tags")} == {"鳴潮", "genshinimpact", "digitalart", "原神", "原神芙宁娜", "银狼"}
+    # genshinimpact ties GenshinImpact on visible works and wins on all works (the hidden w4
+    # counts there). 鳴潮 has more visible works, but the alias list names 鸣潮.
+    assert merges == {"鳴潮": "鸣潮", "WutheringWaves": "鸣潮", "GenshinImpact": "genshinimpact",
+                      "GenshinImpact\u3164": "genshinimpact", "Genshin_Impact": "genshinimpact",
+                      "digitalart\u3164": "digitalart", "銀狼": "银狼"}, merges
+    tags = dict(db.execute("SELECT name, use_count FROM tags WHERE name IN ('鸣潮','genshinimpact','digitalart','银狼')"))
+    assert tags == {"鸣潮": 5, "genshinimpact": 4, "digitalart": 1, "银狼": 2}, tags
+    assert {n for (n,) in db.execute("SELECT name FROM tags")} == {"鸣潮", "genshinimpact", "digitalart", "原神", "原神芙宁娜", "银狼"}
     pairs = set(db.execute("SELECT work_id, tag FROM work_tags"))
-    assert ("w2", "genshinimpact") in pairs and ("w4", "鳴潮") in pairs and len(pairs) == 13, pairs
+    assert ("w2", "genshinimpact") in pairs and ("w4", "鸣潮") in pairs and ("w6", "鸣潮") in pairs and len(pairs) == 14, pairs
     truth = dict(db.execute("SELECT wt.tag, COUNT(*) FROM work_tags wt JOIN works w ON w.id=wt.work_id "
                             "WHERE w.deleted_at IS NULL GROUP BY wt.tag"))
     assert dict(db.execute("SELECT tag, cnt FROM tag_counts")) == truth, truth
     keys = dict(db.execute("SELECT key, tag FROM tag_keys"))
-    assert keys["鸣潮"] == "鳴潮" and keys["genshinimpact"] == "genshinimpact" and len(keys) == 6, keys
+    assert keys["鸣潮"] == keys["wutheringwaves"] == "鸣潮" and keys["genshinimpact"] == "genshinimpact" and len(keys) == 7, keys
     assert not db.execute("SELECT name FROM sqlite_master WHERE name='tag_merge'").fetchall()
 
     assert run(db) == {}

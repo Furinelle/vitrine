@@ -3,8 +3,10 @@
 Tags whose `tag_key` (case, full-width, punctuation, invisible characters and
 Traditional/Simplified folded; computed by the Worker's own code through the
 vitrine-tag-keys binary) is equal are merged into the spelling carried by the
-most visible works. The output SQL also records every key in `tag_keys`, which
-ingest and admin edits use to keep new variants under the same name.
+most visible works, except spellings listed in tools/tag_aliases.json, which go
+to their curated name (each game's spellings -> its full Chinese title). The
+output SQL also records every key in `tag_keys`, which ingest and admin edits
+use to keep new variants under the same name.
 
     python3 tools/tag_merge.py rows.json plan.md merge.sql
 
@@ -41,24 +43,44 @@ def keys_for(names):
     return {name: (key, stored) for key, stored, name in rows}
 
 
-def plan(rows, keys):
-    """Returns ({variant: target}, {key: target}, groups) for every tag name in rows."""
+def alias_targets(aliases, keys):
+    """{key: name} for every spelling listed in tag_aliases.json (name keys itself)."""
+    out = {}
+    for name, spellings in aliases.items():
+        assert keys[name][1] == name, f"alias target is not a stored tag form: {name!r}"
+        for spelling in [name, *spellings]:
+            key = keys[spelling][0]
+            assert out.setdefault(key, name) == name, f"{spelling!r} maps to both {out[key]!r} and {name!r}"
+    return out
+
+
+def plan(rows, keys, aliases=None):
+    """Returns ({variant: target}, {key: target}, groups) for every tag name in rows.
+
+    Keys listed in tag_aliases.json go to their curated name; any other group keeps
+    the spelling with the most visible works.
+    """
+    fixed = alias_targets(aliases or {}, keys)
     groups = collections.defaultdict(list)
     for row in rows:
         groups[keys[row["name"]][0]].append(row)
-    merges, targets, report = {}, {}, []
+    merges, targets, report = {}, dict(fixed), []
     for key, members in groups.items():
         # Most visible works, then most works overall, then Simplified, then already clean, then stable.
         best = min(members, key=lambda r: (-r["visible"], -r["total"], any(c in TRAD for c in r["name"]),
                                            keys[r["name"]][1] != r["name"], r["name"]))
-        target = keys[best["name"]][1]
+        target = fixed.get(key, keys[best["name"]][1])
         targets[key] = target
         moved = [r for r in members if r["name"] != target]
         for r in moved:
             merges[r["name"]] = target
         if moved:
-            report.append((target, sorted(members, key=lambda r: (-r["visible"], r["name"]))))
-    return merges, targets, report
+            report.append((target, members))
+    # One report row per target: alias groups gather several keys.
+    merged = collections.defaultdict(list)
+    for target, members in report:
+        merged[target].extend(members)
+    return merges, targets, [(t, sorted(m, key=lambda r: (-r["visible"], r["name"]))) for t, m in merged.items()]
 
 
 def merge_sql(merges, targets):
@@ -91,17 +113,25 @@ def show(name):
     return "".join(f"<U+{ord(c):04X}>" if not c.isprintable() or c in "\u3164\u200c\u200b" else c for c in name)
 
 
+def load_aliases():
+    return json.loads((ROOT / "tools/tag_aliases.json").read_text())
+
+
 def main(rows_path, plan_path, sql_path):
     rows = json.loads(pathlib.Path(rows_path).read_text())[0]["results"]
-    keys = keys_for([r["name"] for r in rows])
-    merges, targets, report = plan(rows, keys)
-    report.sort(key=lambda item: -sum(r["visible"] for r in item[1]))
+    aliases = load_aliases()
+    spellings = [s for name, more in aliases.items() for s in (name, *more)]
+    keys = keys_for(sorted({r["name"] for r in rows} | set(spellings)))
+    merges, targets, report = plan(rows, keys, aliases)
+    by_name = {r["name"]: r for r in rows}
+    report.sort(key=lambda item: (item[0] not in aliases, -sum(r["visible"] for r in item[1])))
     out = [f"# 标签合并清单\n\n{len(rows)} 个标签，{len(report)} 组合并，{len(merges)} 个写法并入保留名。"
-           "括号里是可见作品数 / 全部作品数，第一列是保留的写法。\n",
+           "括号里是可见作品数 / 全部作品数，第一列是保留的写法。前面是 tools/tag_aliases.json 里的游戏名，"
+           "其余按可见作品最多的写法保留。\n",
            "| 保留 | 并入 |", "| --- | --- |"]
     for target, members in report:
         moved = [r for r in members if r["name"] != target]
-        kept = next((r for r in members if r["name"] == target), None)
+        kept = by_name.get(target)
         head = f"{show(target)} ({kept['visible']}/{kept['total']})" if kept else f"{show(target)}（新名）"
         out.append(f"| {head} | " + "、".join(f"{show(r['name'])} ({r['visible']}/{r['total']})" for r in moved) + " |")
     pathlib.Path(plan_path).write_text("\n".join(out) + "\n")

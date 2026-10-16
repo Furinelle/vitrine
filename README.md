@@ -275,4 +275,4 @@ node tools/test_frontend.mjs
 
 公开标签和来源统计在 Cache API 中按目录版本保存；标签查询在同一份完整统计上筛选、排序、分页，避免每次搜索重做全库聚合。作品隐藏/恢复及元数据修改使缓存失效。`0013_catalog_read_cost.sql` 追加可见作品排序索引与直接 work_tags 修改的失效触发器。`0015_tag_counts.sql` 用触发器维护每个标签的可见作品数，缓存未命中时只读 `tag_counts` 每个标签一行，不再联表扫描 work_tags 与 works；`tools/test_tag_counts.py` 在本地 SQLite 上核对触发器与联表结果一致。
 
-标签按 `tag_key` 归并：去掉不可见字符后，全角转半角、统一小写、去掉空格和标点、繁体逐字转简体（对照表 `src/tag_fold.rs` 由 `tools/gen_tag_fold.swift` 从系统 ICU 生成）。`0016_tag_keys.sql` 的 `tag_keys` 记录每个键对应的唯一写法：导入和管理页改标签时，同一批处理里先登记首次出现的写法，后续变体都存成它；`/api/works?tag=` 也先经它换成存储写法。已有标签用 `tools/tag_merge.py` 生成合并清单和 SQL（每组保留可见作品最多的写法），审阅后由操作者对远端执行；`tools/test_tag_merge.py` 与集成测试 `test_tag_keys.py` 覆盖合并与导入归并。正式迁移状态以部署记录为准。
+标签按 `tag_key` 归并：去掉不可见字符后，全角转半角、统一小写、去掉空格和标点（含 `:` `/`）、繁体逐字转简体（对照表 `src/tag_fold.rs` 由 `tools/gen_tag_fold.swift` 从系统 ICU 生成）。`0016_tag_keys.sql` 的 `tag_keys` 记录每个键对应的唯一写法：导入和管理页改标签时，同一批处理里先登记首次出现的写法，后续变体都存成它；`/api/works?tag=` 也先经它换成存储写法。游戏名等跨语言别名写在 `tools/tag_aliases.json`（每个游戏的各种写法统一为中文全名）。已有标签用 `tools/tag_merge.py` 生成合并清单和 SQL（别名表里的按表归并，其余每组保留可见作品最多的写法），审阅后由操作者对远端执行；`tools/test_tag_merge.py` 与集成测试 `test_tag_keys.py` 覆盖合并与导入归并。正式迁移状态以部署记录为准。

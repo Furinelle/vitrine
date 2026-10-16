@@ -481,6 +481,8 @@ pub fn tag_key(tag: &str) -> String {
                     | '!'
                     | '?'
                     | '~'
+                    | ':'
+                    | '/'
                     | '\''
                     | '"'
                     | '“'
@@ -2681,6 +2683,8 @@ mod tests {
             ("鸣潮", "鳴潮"),
             ("崩坏星穹铁道", "崩壞星穹鐵道"),
             ("LUMINE", "lumine"),
+            ("崩壊スターレイル", "崩壊:スターレイル"),
+            ("Fate/GrandOrder", "FateGrandOrder"),
         ] {
             assert_eq!(tag_key(a), tag_key(b), "{a} / {b}");
         }
