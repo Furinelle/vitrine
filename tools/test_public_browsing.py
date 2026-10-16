@@ -59,7 +59,7 @@ def main():
     new_tag = prefix + '-cache-invalidation'
     local.local_d1(f"INSERT INTO tags(name,use_count) VALUES ('{new_tag}',999); INSERT INTO work_tags(work_id,tag) VALUES ('{survivor}','{new_tag}')")
     refreshed = cached('/api/tags?' + urllib.parse.urlencode({'q': new_tag}), 'MISS')
-    assert refreshed['tags'] == [{'name': new_tag, 'cnt': 1}]
+    assert [(t['name'], t['cnt'], t['kind']) for t in refreshed['tags']] == [(new_tag, 1, 'unsorted')]
     cached('/api/sources', 'MISS')
     local.request('/api/catalog/retract', {'work_id': survivor, 'decision_id': uuid.uuid4().hex})
     assert not cached('/api/tags?' + urllib.parse.urlencode({'q': new_tag}), 'MISS')['tags']

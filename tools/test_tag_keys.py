@@ -59,6 +59,11 @@ def main():
     assert work_tags(skipped) == sorted([zh, en]), work_tags(skipped)
     found = local.request('/api/tags?' + urllib.parse.urlencode({'q': blocked}), auth=False)['tags']
     assert not found, found
+    # Tag library (migration 0019): kind, parent and display names come back with the tag list,
+    # and any display name finds it.
+    local.local_d1(f"INSERT INTO tag_items (name, kind, parent, ja, en) VALUES ('{zh}', 'work', NULL, NULL, 'Lib{stem}')")
+    lib = local.request('/api/tags?' + urllib.parse.urlencode({'q': 'lib' + stem.lower()}), auth=False)['tags']
+    assert [(t['name'], t['kind'], t['en']) for t in lib] == [(zh, 'work', 'Lib' + stem)], lib
     print('PASS: ingest, admin edits and tag filters fold case, width, invisible and Traditional variants onto one stored tag; linked tags travel together; blocked tags are skipped')
 
 
