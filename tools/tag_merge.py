@@ -206,7 +206,8 @@ def main(rows_path, plan_path, sql_path):
     merges, targets, report = plan(rows, keys, aliases)
     library = {i[0] for i in items}
     assert not set(drops) & (set(keep) | library), "a dropped tag is protected or in the library"
-    edges += [(src, name) for name, sources in implied_by.items() for src in sources]
+    # A source that is merged away or dropped has no works left to imply anything for.
+    edges += [(src, name) for name, sources in implied_by.items() for src in sources if src not in merges and src not in drops]
     implies = closure(edges)
     assert all(b not in merges and b not in drops for _, b in implies), "an implied tag is merged away or dropped"
     # CP and other protected tags stay exactly as they are.
