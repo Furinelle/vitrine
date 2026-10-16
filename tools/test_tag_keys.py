@@ -41,7 +41,17 @@ def main():
     local.request('/api/admin/works/' + urllib.parse.quote(third, safe=''), {'tags': [stem.swapcase()]},
                   auth=False, headers=cookie, method='PATCH')
     assert work_tags(third) == [stem], work_tags(third)
-    print('PASS: ingest, admin edits and tag filters fold case, width, invisible and Traditional variants onto one stored tag')
+    # Linked bilingual tags: either side brings the other, through ingest and admin edits.
+    zh, en = '游戏' + stem, stem + 'Game'
+    # tools/tag_merge.py keys both names and links them; the key is the lowercase ASCII name.
+    local.local_d1(f"INSERT INTO tag_links (tag, also) VALUES ('{zh}', '{en}'), ('{en}', '{zh}'); "
+                   f"INSERT INTO tag_keys (key, tag) VALUES ('{en.lower()}', '{en}'), ('游戏{stem.lower()}', '{zh}')")
+    linked = local.ingest(stem + 'd', count=1, publication=False, meta_overrides={'tags': [en.upper()]})[0]['work_id']
+    assert work_tags(linked) == sorted([en, zh]), work_tags(linked)
+    local.request('/api/admin/works/' + urllib.parse.quote(third, safe=''), {'tags': [zh]},
+                  auth=False, headers=cookie, method='PATCH')
+    assert work_tags(third) == sorted([zh, en]), work_tags(third)
+    print('PASS: ingest, admin edits and tag filters fold case, width, invisible and Traditional variants onto one stored tag; linked tags travel together')
 
 
 if __name__ == '__main__':

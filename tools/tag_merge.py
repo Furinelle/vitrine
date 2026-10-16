@@ -4,9 +4,11 @@ Tags whose `tag_key` (case, full-width, punctuation, invisible characters and
 Traditional/Simplified folded; computed by the Worker's own code through the
 vitrine-tag-keys binary) is equal are merged into the spelling carried by the
 most visible works, except spellings listed in tools/tag_aliases.json, which go
-to their curated name (each game's spellings -> its full Chinese title). The
-output SQL also records every key in `tag_keys`, which ingest and admin edits
-use to keep new variants under the same name.
+to their curated name: each game's Chinese/Japanese spellings -> its Chinese
+title, English spellings -> its English name, and the two are linked in
+`tag_links` so every work carries both. The output SQL also records every key
+in `tag_keys`, which ingest and admin edits use to keep new variants under the
+same name.
 
     python3 tools/tag_merge.py rows.json plan.md merge.sql
 
@@ -83,7 +85,7 @@ def plan(rows, keys, aliases=None):
     return merges, targets, [(t, sorted(m, key=lambda r: (-r["visible"], r["name"]))) for t, m in merged.items()]
 
 
-def merge_sql(merges, targets):
+def merge_sql(merges, targets, links=()):
     lines = []
     if merges:
         lines += ["CREATE TABLE tag_merge (name TEXT PRIMARY KEY, tag TEXT NOT NULL);",
@@ -99,6 +101,17 @@ def merge_sql(merges, targets):
             "UPDATE tags SET use_count = (SELECT COUNT(*) FROM work_tags WHERE tag = tags.name) WHERE name IN (SELECT tag FROM tag_merge);",
             "DROP TABLE tag_merge;",
         ]
+    if links:
+        pairs = sorted({p for zh, en in links for p in ((zh, en), (en, zh))})
+        lines += ["DELETE FROM tag_links;", "INSERT INTO tag_links (tag, also) VALUES"]
+        lines += [f"  ({sql_text(a)}, {sql_text(b)})" + ("," if i < len(pairs) - 1 else ";")
+                  for i, (a, b) in enumerate(pairs)]
+        lines += [
+            "INSERT OR IGNORE INTO tags (name, use_count) SELECT DISTINCT tag, 0 FROM tag_links;",
+            # Existing works get their companion tag; new writes go through the 0017 trigger.
+            "INSERT OR IGNORE INTO work_tags (work_id, tag) SELECT wt.work_id, l.also FROM work_tags wt JOIN tag_links l ON l.tag = wt.tag;",
+            "UPDATE tags SET use_count = (SELECT COUNT(*) FROM work_tags WHERE tag = tags.name) WHERE name IN (SELECT tag FROM tag_links);",
+        ]
     items = sorted(targets.items())
     for start in range(0, len(items), 200):
         chunk = items[start:start + 200]
@@ -113,13 +126,23 @@ def show(name):
     return "".join(f"<U+{ord(c):04X}>" if not c.isprintable() or c in "\u3164\u200c\u200b" else c for c in name)
 
 
-def load_aliases():
-    return json.loads((ROOT / "tools/tag_aliases.json").read_text())
+def load_aliases(path=ROOT / "tools/tag_aliases.json"):
+    """Returns ({stored name: [spellings]}, [(Chinese title, English name)]).
+
+    Chinese and Japanese spellings go to the Chinese title, English ones and
+    abbreviations to the English name; the two are linked as companion tags.
+    """
+    names, links = {}, []
+    for zh, game in json.loads(pathlib.Path(path).read_text()).items():
+        names[zh] = game["zh_aliases"]
+        names[game["en"]] = game["en_aliases"]
+        links.append((zh, game["en"]))
+    return names, links
 
 
 def main(rows_path, plan_path, sql_path):
     rows = json.loads(pathlib.Path(rows_path).read_text())[0]["results"]
-    aliases = load_aliases()
+    aliases, links = load_aliases()
     spellings = [s for name, more in aliases.items() for s in (name, *more)]
     keys = keys_for(sorted({r["name"] for r in rows} | set(spellings)))
     merges, targets, report = plan(rows, keys, aliases)
@@ -134,8 +157,12 @@ def main(rows_path, plan_path, sql_path):
         kept = by_name.get(target)
         head = f"{show(target)} ({kept['visible']}/{kept['total']})" if kept else f"{show(target)}（新名）"
         out.append(f"| {head} | " + "、".join(f"{show(r['name'])} ({r['visible']}/{r['total']})" for r in moved) + " |")
+    out += ["", "## 中英配对", "", "带其中一个标签的作品会同时带上另一个。括号里是现在的可见作品数，没有括号的是新建标签。", "",
+            "| 中文 | 英文 |", "| --- | --- |"]
+    label = lambda n: f"{n} ({by_name[n]['visible']})" if n in by_name else n
+    out += [f"| {label(zh)} | {label(en)} |" for zh, en in links]
     pathlib.Path(plan_path).write_text("\n".join(out) + "\n")
-    pathlib.Path(sql_path).write_text(merge_sql(merges, targets))
+    pathlib.Path(sql_path).write_text(merge_sql(merges, targets, links))
     print(f"{len(rows)} tags, {len(report)} groups, {len(merges)} names merged; plan -> {plan_path}, sql -> {sql_path}")
 
 
