@@ -86,7 +86,7 @@
   "阿格莱雅": {"kind": "character", "parent": "崩坏星穹铁道", "en": "Aglaea"},
   "爱莉希雅": {"kind": "character", "parent": "崩坏3", "en": "Elysia", "zh_aliases": ["エリシア"]},
   "琪亚娜": {"kind": "character", "parent": "崩坏3", "en": "KianaKaslana", "en_aliases": ["kiana"]},
-  "布洛妮娅": {"kind": "character", "parent": "崩坏星穹铁道", "en": "Bronya", "zh_aliases": ["ブローニャ・ザイチク"]},
+  "布洛妮娅": {"kind": "character", "en": "Bronya", "zh_aliases": ["ブローニャ・ザイチク"]},
   "蕾米埃尔": {"kind": "character", "parent": "绝区零", "en": "Remielle", "zh_aliases": ["レミエール・ダン", "レミエール", "蕾米埃尔·丹", "绝区零蕾米埃尔"], "en_aliases": ["RemielleDan"]},
   "星见雅": {"kind": "character", "parent": "绝区零", "en": "Miyabi", "en_aliases": ["hoshimimiyabi"]},
   "薇薇安": {"kind": "character", "parent": "绝区零", "en": "Vivian", "zh_aliases": ["ビビアン", "ビビアン・バンシー", "ビビアン(ゼンゼロ)", "绝区零薇薇安"]},
@@ -379,7 +379,6 @@
   "博麗霊夢": {"kind": "character", "parent": "东方Project"},
   "原神冬妮娅": {"kind": "character", "parent": "原神"},
   "原神火神": {"kind": "lore", "parent": "原神"},
-  "召使": {"kind": "lore", "parent": "阿蕾奇诺"},
   "吊带袜天使": {"kind": "work"},
   "名探偵コナン": {"kind": "work"},
   "哀ちゃん": {"kind": "character", "parent": "名探偵コナン"},
@@ -472,7 +471,7 @@
   "爱诺": {"kind": "character", "parent": "原神", "en": "Aino"},
   "芙露德莉斯": {"kind": "character", "parent": "卡提希娅", "en": "Fleurdelys"},
   "拉米尔": {"kind": "character", "parent": "蕾米埃尔", "en": "Ramiel"},
-  "远坂凛": {"kind": "character", "parent": "崩坏星穹铁道", "en": "Rin", "en_aliases": ["RinTohsaka"], "zh_aliases": ["遠坂凛"]},
+  "远坂凛": {"kind": "character", "parent": "Fate/staynight", "en": "Rin", "en_aliases": ["RinTohsaka"], "zh_aliases": ["遠坂凛"]},
   "艾莲": {"kind": "character", "parent": "绝区零", "en": "EllenJoe", "zh_aliases": ["艾莲乔", "艾莲", "エレン", "エレン・ジョー"]},
   "锁暝": {"kind": "character", "parent": "鸣潮", "zh_aliases": ["鎖暝"]}
 }
