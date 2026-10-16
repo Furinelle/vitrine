@@ -1,7 +1,7 @@
 {
   "原神": ["Genshin", "GenshinImpact", "米哈游原神", "Genshinlmpact", "GenshinImapt", "GenshinImact", "Genshinpact", "Genshinpimpact"],
   "崩坏星穹铁道": ["星穹铁道", "崩铁", "星铁", "HonkaiStarRail", "StarRail", "HSR", "崩壊スターレイル", "崩壊:スターレイル", "スターレイル", "崩壊スタ一レイル", "崩壊スタ一レ一ル", "崩壊スタレール", "崩壊スターレイ", "HonkaiStaiRail", "HonakaiStarRail", "HonkaiStairRail", "HokaiStarRail", "HonkaiStaiRai", "HonkaiStai", "HonkaiStarRaill", "HonkailStarRail", "HonkairStarRail", "honkaistarreil", "honkaistarrrail"],
-  "崩坏3": ["崩坏三", "崩坏3rd", "崩壊3rd", "HonkaiImpact3rd", "HonkaiImapct3rd", "honkaiımpact3rd"],
+  "崩坏3": ["崩坏三", "崩坏3rd", "崩壊3rd", "HonkaiImpact3rd", "HonkaiImapct3rd", "honkaiımpact3rd", "Honkai"],
   "崩坏因缘精灵": ["崩坏：因缘精灵", "HonkaiNexusAnima", "崩壊ネクサスアニマ"],
   "绝区零": ["ZenlessZoneZero", "zzzero", "ZZZ", "ゼンゼロ", "Zenlessazonezero", "zzzeroo", "zzzro", "zzzzero"],
   "鸣潮": ["WutheringWaves", "WuWa"],
@@ -11,6 +11,6 @@
   "重返未来1999": ["Reverse1999", "リバース1999"],
   "命运-冠位指定": ["FGO", "Fate/GrandOrder", "FateGrandOrder"],
   "碧蓝航线": ["AzurLane", "アズールレーン"],
-  "世界计划彩色舞台": ["pjsk", "プロセカ", "ProjectSekai"],
+  "世界计划": ["世界计划彩色舞台", "pjsk", "プロセカ", "ProjectSekai"],
   "学园偶像大师": ["学マス", "GakuenIdolmaster"]
 }
