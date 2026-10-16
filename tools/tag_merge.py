@@ -6,7 +6,9 @@ vitrine-tag-keys binary) is equal are merged into the spelling carried by the
 most visible works, except spellings listed in tools/tag_aliases.json, which go
 to their curated name: each game's Chinese/Japanese spellings -> its Chinese
 title, English spellings -> its English name, and the two are linked in
-`tag_links` so every work carries both. The output SQL also records every key
+`tag_links` so every work carries both. tools/tag_fixes.json adds plain
+misspelling fixes and a `keep` list (CP names and the like) that must never be
+merged or renamed; the run stops if any would be. The output SQL also records every key
 in `tag_keys`, which ingest and admin edits use to keep new variants under the
 same name.
 
@@ -140,14 +142,27 @@ def load_aliases(path=ROOT / "tools/tag_aliases.json"):
     return names, links
 
 
+def load_fixes(path=ROOT / "tools/tag_fixes.json"):
+    """Returns ({correct name: [misspellings]}, [names that must never be merged or renamed])."""
+    data = json.loads(pathlib.Path(path).read_text())
+    return data["fixes"], data["keep"]
+
+
 def main(rows_path, plan_path, sql_path):
     rows = json.loads(pathlib.Path(rows_path).read_text())[0]["results"]
     aliases, links = load_aliases()
+    fixes, keep = load_fixes()
+    assert not set(fixes) & set(aliases), "a fix target is already a game name"
+    aliases = {**aliases, **fixes}
     spellings = [s for name, more in aliases.items() for s in (name, *more)]
-    keys = keys_for(sorted({r["name"] for r in rows} | set(spellings)))
+    keys = keys_for(sorted({r["name"] for r in rows} | set(spellings) | set(keep)))
     merges, targets, report = plan(rows, keys, aliases)
+    # CP and other protected tags stay exactly as they are.
+    for name in keep:
+        assert name not in merges and targets.get(keys[name][0], name) == name, f"protected tag would change: {name!r}"
     by_name = {r["name"]: r for r in rows}
-    report.sort(key=lambda item: (item[0] not in aliases, -sum(r["visible"] for r in item[1])))
+    report.sort(key=lambda item: (item[0] not in dict(links) and item[0] not in {en for _, en in links},
+                                  item[0] not in fixes, -sum(r["visible"] for r in item[1])))
     out = [f"# 标签合并清单\n\n{len(rows)} 个标签，{len(report)} 组合并，{len(merges)} 个写法并入保留名。"
            "括号里是可见作品数 / 全部作品数，第一列是保留的写法。前面是 tools/tag_aliases.json 里的游戏名，"
            "其余按可见作品最多的写法保留。\n",
