@@ -18,11 +18,20 @@
     "坎特蕾拉": ["坎特雷拉"],
     "珂莱塔": ["柯莱塔"],
     "她与她的隐秘往事": ["她与她的秘密往事"],
-    "Reverse1999Anniversary": ["Reverse999Anniversary"]
+    "Reverse1999Anniversary": ["Reverse999Anniversary"],
+    "原创": ["オリジナル"],
+    "百合": ["yuri", "gl"],
+    "泳装": ["水着"],
+    "バニーガール": ["バニー"],
+    "メイド": ["メイド服"],
+    "草稿": ["草图"],
+    "洛天依": ["luotianyi"],
+    "約束のネバーランド": ["約ネバ"],
+    "ギルティクラウン": ["ギルクラ"],
+    "魔法少女ノ魔女裁判": ["まのさば"],
+    "わたなれ": ["わたしが恋人になれるわけないじゃん、ムリムリ!"],
+    "BanG_Dream!": ["バンドリ"],
+    "avemujica": ["mujica"]
   },
-  "keep": [
-    "少偶", "沃黛", "黛沃", "沃黛沃", "vodette", "sandbina", "SandBinaWeek2026", "コロサン", "castlaea", "columdrone",
-    "odenitsa", "HomuMado", "ほむまど", "魔円", "魔円絵", "芙姬", "双芙", "爱祥", "睦祥", "素祥", "arlefuri",
-    "evermarch", "kafhime", "荧瓦"
-  ]
+  "keep": ["少偶", "沃黛", "黛沃", "沃黛沃", "vodette", "sandbina", "SandBinaWeek2026", "コロサン", "castlaea", "columdrone", "odenitsa", "HomuMado", "ほむまど", "魔円", "魔円絵", "芙姬", "双芙", "爱祥", "睦祥", "素祥", "arlefuri", "evermarch", "kafhime", "荧瓦"]
 }

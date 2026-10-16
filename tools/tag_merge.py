@@ -6,7 +6,7 @@ vitrine-tag-keys binary) is equal are merged into the spelling carried by the
 most visible works, except spellings listed in tools/tag_aliases.json, which go
 to their curated name: each game's Chinese/Japanese spellings -> its Chinese
 title, English spellings -> its English name, and the two are linked in
-`tag_links` so every work carries both. tools/tag_fixes.json adds plain
+`tag_links` so every work carries all of them (Japanese works also keep the Japanese name). tools/tag_fixes.json adds plain
 misspelling fixes and a `keep` list (CP names and the like) that must never be
 merged or renamed; the run stops if any would be. The output SQL also records every key
 in `tag_keys`, which ingest and admin edits use to keep new variants under the
@@ -104,7 +104,7 @@ def merge_sql(merges, targets, links=()):
             "DROP TABLE tag_merge;",
         ]
     if links:
-        pairs = sorted({p for zh, en in links for p in ((zh, en), (en, zh))})
+        pairs = sorted({(a, b) for group in links for a in group for b in group if a != b})
         lines += ["DELETE FROM tag_links;", "INSERT INTO tag_links (tag, also) VALUES"]
         lines += [f"  ({sql_text(a)}, {sql_text(b)})" + ("," if i < len(pairs) - 1 else ";")
                   for i, (a, b) in enumerate(pairs)]
@@ -129,16 +129,23 @@ def show(name):
 
 
 def load_aliases(path=ROOT / "tools/tag_aliases.json"):
-    """Returns ({stored name: [spellings]}, [(Chinese title, English name)]).
+    """Returns ({stored name: [spellings]}, [(Chinese name, Japanese name?, English name?)]).
 
-    Chinese and Japanese spellings go to the Chinese title, English ones and
-    abbreviations to the English name; the two are linked as companion tags.
+    Each entry is keyed by its Chinese name; `ja` (Japanese works and characters)
+    and `en` (only a common, instantly recognisable English name) are optional.
+    Each spelling list folds into its own language's name, and all names of an
+    entry are linked so every work carries each of them.
     """
     names, links = {}, []
-    for zh, game in json.loads(pathlib.Path(path).read_text()).items():
-        names[zh] = game["zh_aliases"]
-        names[game["en"]] = game["en_aliases"]
-        links.append((zh, game["en"]))
+    for zh, entry in json.loads(pathlib.Path(path).read_text()).items():
+        group = [zh]
+        names[zh] = entry.get("zh_aliases", [])
+        for side in ("ja", "en"):
+            if entry.get(side):
+                names[entry[side]] = entry.get(side + "_aliases", [])
+                group.append(entry[side])
+        if len(group) > 1:
+            links.append(tuple(group))
     return names, links
 
 
@@ -161,7 +168,8 @@ def main(rows_path, plan_path, sql_path):
     for name in keep:
         assert name not in merges and targets.get(keys[name][0], name) == name, f"protected tag would change: {name!r}"
     by_name = {r["name"]: r for r in rows}
-    report.sort(key=lambda item: (item[0] not in dict(links) and item[0] not in {en for _, en in links},
+    linked = {n for group in links for n in group}
+    report.sort(key=lambda item: (item[0] not in linked,
                                   item[0] not in fixes, -sum(r["visible"] for r in item[1])))
     out = [f"# 标签合并清单\n\n{len(rows)} 个标签，{len(report)} 组合并，{len(merges)} 个写法并入保留名。"
            "括号里是可见作品数 / 全部作品数，第一列是保留的写法。前面是 tools/tag_aliases.json 里的游戏名，"
@@ -172,10 +180,9 @@ def main(rows_path, plan_path, sql_path):
         kept = by_name.get(target)
         head = f"{show(target)} ({kept['visible']}/{kept['total']})" if kept else f"{show(target)}（新名）"
         out.append(f"| {head} | " + "、".join(f"{show(r['name'])} ({r['visible']}/{r['total']})" for r in moved) + " |")
-    out += ["", "## 中英配对", "", "带其中一个标签的作品会同时带上另一个。括号里是现在的可见作品数，没有括号的是新建标签。", "",
-            "| 中文 | 英文 |", "| --- | --- |"]
-    label = lambda n: f"{n} ({by_name[n]['visible']})" if n in by_name else n
-    out += [f"| {label(zh)} | {label(en)} |" for zh, en in links]
+    out += ["", "## 配对", "", "带其中一个标签的作品会同时带上同组的其他标签。括号里是现在的可见作品数，标“新建”的是线上还没有的标签。", ""]
+    label = lambda n: f"{n} ({by_name[n]['visible']})" if n in by_name else f"{n}（新建）"
+    out += ["- " + " / ".join(label(n) for n in group) for group in links]
     pathlib.Path(plan_path).write_text("\n".join(out) + "\n")
     pathlib.Path(sql_path).write_text(merge_sql(merges, targets, links))
     print(f"{len(rows)} tags, {len(report)} groups, {len(merges)} names merged; plan -> {plan_path}, sql -> {sql_path}")

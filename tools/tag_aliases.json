@@ -58,5 +58,22 @@
     "en_aliases": []},
   "边狱巴士": {"en": "LimbusCompany",
     "zh_aliases": [],
-    "en_aliases": []}
+    "en_aliases": []},
+  "至冬": {"en": "Snezhnaya",
+    "zh_aliases": ["スネージナヤ"],
+    "en_aliases": ["GenshinSnezhnaya"]},
+  "初音未来": {"ja": "初音ミク",
+    "en": "miku",
+    "zh_aliases": ["初音", "miku初音"],
+    "ja_aliases": [],
+    "en_aliases": ["HatsuneMiku"]},
+  "重音teto": {"ja": "重音テト",
+    "en": "teto"},
+  "镜音铃": {"ja": "鏡音リン"},
+  "VOCALOID": {"ja": "ボーカロイド",
+    "ja_aliases": ["ボカロ"]},
+  "孤独摇滚": {"ja": "ぼっち・ざ・ろっく"},
+  "无职转生": {"ja": "無職転生",
+    "ja_aliases": ["無職転生〜異世界行ったら本気だす〜"]},
+  "超时空辉夜姬": {"ja": "超かぐや姫"}
 }
