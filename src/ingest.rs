@@ -1,7 +1,7 @@
 //! POST /api/ingest — Hanabi-compatible multipart ingest with versioned R2 keys,
 //! D1 batch commit, idempotency receipts, and deferred GC of replaced objects.
 
-use crate::{json_response, normalize_tag, with_cors};
+use crate::{json_response, normalize_tag, tag_key, with_cors};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
@@ -387,12 +387,12 @@ fn opt_tags(v: Option<Value>) -> std::result::Result<Vec<String>, MetaError> {
     match v {
         None | Some(Value::Null) => Ok(Vec::new()),
         Some(Value::Array(items)) => {
-            let mut out = Vec::new();
+            let mut out: Vec<String> = Vec::new();
             for item in items {
                 match item {
                     Value::String(s) => {
                         let t = normalize_tag(&s);
-                        if !t.is_empty() && !out.contains(&t) {
+                        if !t.is_empty() && !out.iter().any(|o| tag_key(o) == tag_key(&t)) {
                             out.push(t);
                         }
                     }
@@ -1706,19 +1706,28 @@ async fn commit_d1_batch(
         db.prepare("DELETE FROM work_tags WHERE work_id = ?")
             .bind(&[JsValue::from_str(wid)])?,
     );
+    // The first spelling seen for a tag_key is the stored name; later variants
+    // resolve to it inside this batch, so concurrent ingests agree.
     for tag in &meta.tags {
+        let key = JsValue::from_str(&tag_key(tag));
+        stmts.push(
+            db.prepare("INSERT OR IGNORE INTO tag_keys (key, tag) VALUES (?, ?)")
+                .bind(&[key.clone(), JsValue::from_str(tag)])?,
+        );
         stmts.push(
             db.prepare(
                 r#"
-                INSERT INTO tags (name, use_count) VALUES (?, 1)
+                INSERT INTO tags (name, use_count) VALUES ((SELECT tag FROM tag_keys WHERE key = ?), 1)
                 ON CONFLICT(name) DO UPDATE SET use_count = use_count + 1
                 "#,
             )
-            .bind(&[JsValue::from_str(tag)])?,
+            .bind(std::slice::from_ref(&key))?,
         );
         stmts.push(
-            db.prepare("INSERT OR IGNORE INTO work_tags (work_id, tag) VALUES (?, ?)")
-                .bind(&[JsValue::from_str(wid), JsValue::from_str(tag)])?,
+            db.prepare(
+                "INSERT OR IGNORE INTO work_tags (work_id, tag) VALUES (?, (SELECT tag FROM tag_keys WHERE key = ?))",
+            )
+            .bind(&[JsValue::from_str(wid), key])?,
         );
     }
 

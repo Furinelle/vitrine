@@ -3,6 +3,7 @@ mod image_review;
 mod ingest;
 mod presign;
 pub mod similar;
+mod tag_fold;
 
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -424,11 +425,89 @@ pub(crate) fn json_response(data: &Value, status: u16) -> Result<Response> {
     Ok(res.with_headers(headers))
 }
 
-/// Normalize tag text the same way as the TypeScript Worker.
+/// Zero-width and Hangul filler characters that sources append to hashtags;
+/// they render as nothing but would make a separate tag.
+fn invisible_in_tag(c: char) -> bool {
+    matches!(
+        c,
+        '\u{00AD}'
+            | '\u{034F}'
+            | '\u{061C}'
+            | '\u{115F}'
+            | '\u{1160}'
+            | '\u{17B4}'
+            | '\u{17B5}'
+            | '\u{180E}'
+            | '\u{200B}'..='\u{200F}'
+            | '\u{202A}'..='\u{202E}'
+            | '\u{2060}'..='\u{206F}'
+            | '\u{3164}'
+            | '\u{FE00}'..='\u{FE0F}'
+            | '\u{FEFF}'
+            | '\u{FFA0}'
+    )
+}
+
+/// Normalize tag text the same way as the TypeScript Worker, minus invisible characters.
 pub fn normalize_tag(raw: &str) -> String {
-    let trimmed = raw.trim().trim_start_matches('#').trim();
+    let visible: String = raw.chars().filter(|c| !invisible_in_tag(*c)).collect();
+    let trimmed = visible.trim().trim_start_matches('#').trim();
     let collapsed: String = trimmed.split_whitespace().collect::<Vec<_>>().join("_");
     collapsed.chars().take(64).collect()
+}
+
+/// Matching key for duplicate tags: full-width ASCII folded, lowercase,
+/// spaces and punctuation dropped, Traditional characters mapped to Simplified.
+/// Tags with the same key are stored under one name (see `tag_keys`).
+pub fn tag_key(tag: &str) -> String {
+    let mut key = String::new();
+    for c in normalize_tag(tag).chars() {
+        let c = match c {
+            '\u{FF01}'..='\u{FF5E}' => char::from_u32(c as u32 - 0xFEE0).unwrap_or(c),
+            '\u{3000}' => ' ',
+            _ => c,
+        };
+        if c.is_whitespace()
+            || matches!(
+                c,
+                '#' | '_'
+                    | '-'
+                    | '·'
+                    | '・'
+                    | '.'
+                    | '。'
+                    | ','
+                    | '、'
+                    | '!'
+                    | '?'
+                    | '~'
+                    | '\''
+                    | '"'
+                    | '“'
+                    | '”'
+                    | '‘'
+                    | '’'
+                    | '('
+                    | ')'
+                    | '['
+                    | ']'
+                    | '【'
+                    | '】'
+            )
+        {
+            continue;
+        }
+        let c = tag_fold::TRAD_TO_SIMP
+            .binary_search_by_key(&c, |pair| pair.0)
+            .map_or(c, |i| tag_fold::TRAD_TO_SIMP[i].1);
+        key.extend(c.to_lowercase());
+    }
+    // A tag made only of punctuation keeps its own text as the key.
+    if key.is_empty() {
+        normalize_tag(tag)
+    } else {
+        key
+    }
 }
 
 /// Parse and clamp `limit`/`offset` query params like the TypeScript Worker.
@@ -563,6 +642,43 @@ fn works_from_clause(tag_count: usize) -> String {
     }
 }
 
+/// Maps filter tags to their stored spelling through `tag_keys`, so links that
+/// use a merged variant (case, script, punctuation) still match.
+async fn resolve_tags(env: &Env, tags: Vec<String>) -> Result<Vec<String>> {
+    #[derive(Deserialize)]
+    struct KeyRow {
+        key: String,
+        tag: String,
+    }
+    if tags.is_empty() {
+        return Ok(tags);
+    }
+    let keys: Vec<String> = tags.iter().map(|t| tag_key(t)).collect();
+    let sql = format!(
+        "SELECT key, tag FROM tag_keys WHERE key IN ({})",
+        vec!["?"; keys.len()].join(", ")
+    );
+    let values: Vec<JsValue> = keys.iter().map(|k| JsValue::from_str(k)).collect();
+    let rows = env
+        .d1("DB")?
+        .prepare(&sql)
+        .bind(&values)?
+        .all()
+        .await?
+        .results::<KeyRow>()?;
+    let mut out: Vec<String> = Vec::new();
+    for (tag, key) in tags.into_iter().zip(&keys) {
+        let stored = rows
+            .iter()
+            .find(|row| &row.key == key)
+            .map_or(tag, |row| row.tag.clone());
+        if !out.contains(&stored) {
+            out.push(stored);
+        }
+    }
+    Ok(out)
+}
+
 async fn handle_list_works(url: &Url, env: &Env) -> Result<Response> {
     let tag = query_param(url, "tag");
     let tags = tag_filter(&tag);
@@ -576,6 +692,7 @@ async fn handle_list_works(url: &Url, env: &Env) -> Result<Response> {
         return json_response(&json!({"ok": false, "error": "invalid cursor"}), 400);
     };
     let offset = if cursor.is_some() { 0 } else { offset };
+    let tags = resolve_tags(env, tags).await?;
 
     let mut where_parts: Vec<&str> = Vec::new();
     let mut binds: Vec<String> = Vec::new();
@@ -2543,6 +2660,39 @@ mod tests {
         assert_eq!(normalize_tag("  #foo bar  "), "foo_bar");
         assert_eq!(normalize_tag("#already_ok"), "already_ok");
         assert_eq!(normalize_tag(""), "");
+    }
+
+    #[test]
+    fn normalize_tag_drops_invisible_characters() {
+        assert_eq!(normalize_tag("原神\u{3164}"), "原神");
+        assert_eq!(normalize_tag("ZenlessZoneZero\u{200C}"), "ZenlessZoneZero");
+        assert_eq!(normalize_tag("\u{3164} #foo bar\u{200B}"), "foo_bar");
+    }
+
+    #[test]
+    fn tag_key_matches_case_width_punctuation_and_script_variants() {
+        for (a, b) in [
+            ("GenshinImpact", "genshin_impact"),
+            ("GenshinImpact", "GenshinImpact\u{3164}"),
+            ("知更鸟晴歌", "知更鸟·晴歌"),
+            ("ゼンゼロ2周年", "ゼンゼロ２周年"),
+            ("超かぐや姫", "超かぐや姫!"),
+            ("ルアンメェイ", "ルアン・メェイ"),
+            ("鸣潮", "鳴潮"),
+            ("崩坏星穹铁道", "崩壞星穹鐵道"),
+            ("LUMINE", "lumine"),
+        ] {
+            assert_eq!(tag_key(a), tag_key(b), "{a} / {b}");
+        }
+        for (a, b) in [
+            ("原神", "原神芙宁娜"),
+            ("Genshin", "GenshinImpact"),
+            ("ai", "AI绘画"),
+        ] {
+            assert_ne!(tag_key(a), tag_key(b), "{a} / {b}");
+        }
+        assert_eq!(tag_key("!!!"), "!!!");
+        assert!(tag_fold::TRAD_TO_SIMP.windows(2).all(|w| w[0].0 < w[1].0));
     }
 
     #[test]

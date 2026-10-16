@@ -1,7 +1,7 @@
 //! Cookie-authenticated gallery admin: metadata patch and gallery-only hide.
 
 use crate::ingest::{self, constant_time_eq, AuthCheck};
-use crate::{json_response, normalize_tag, validate_work_id_value, with_cors};
+use crate::{json_response, normalize_tag, tag_key, validate_work_id_value, with_cors};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
@@ -344,12 +344,12 @@ fn optional_tags(value: Option<&Value>) -> std::result::Result<Option<Vec<String
     match value {
         None | Some(Value::Null) => Ok(None),
         Some(Value::Array(items)) => {
-            let mut out = Vec::new();
+            let mut out: Vec<String> = Vec::new();
             for item in items {
                 match item {
                     Value::String(s) => {
                         let tag = normalize_tag(s);
-                        if !tag.is_empty() && !out.contains(&tag) {
+                        if !tag.is_empty() && !out.iter().any(|o| tag_key(o) == tag_key(&tag)) {
                             out.push(tag);
                         }
                     }
@@ -548,22 +548,24 @@ pub async fn handle_patch(mut req: Request, env: Env, work_id: &str) -> Result<R
             )
             .bind(&[JsValue::from_str(&work.id), JsValue::from_str(&work.id)])?,
         );
+        // Same tag_key resolution as ingest: variants are stored under the first spelling.
         for tag in &new_tags {
+            let key = JsValue::from_str(&tag_key(tag));
             statements.push(
-                db.prepare(
-                    "INSERT INTO tags (name, use_count) VALUES (?, 0) ON CONFLICT(name) DO NOTHING",
-                )
-                .bind(&[JsValue::from_str(tag)])?,
+                db.prepare("INSERT OR IGNORE INTO tag_keys (key, tag) VALUES (?, ?)")
+                    .bind(&[key.clone(), JsValue::from_str(tag)])?,
             );
             statements.push(
                 db.prepare(
-                    "INSERT OR IGNORE INTO work_tags (work_id, tag) SELECT ?, ? WHERE EXISTS(SELECT 1 FROM works WHERE id=? AND deleted_at IS NULL)",
+                    "INSERT INTO tags (name, use_count) VALUES ((SELECT tag FROM tag_keys WHERE key=?), 0) ON CONFLICT(name) DO NOTHING",
                 )
-                .bind(&[
-                    JsValue::from_str(&work.id),
-                    JsValue::from_str(tag),
-                    JsValue::from_str(&work.id),
-                ])?,
+                .bind(std::slice::from_ref(&key))?,
+            );
+            statements.push(
+                db.prepare(
+                    "INSERT OR IGNORE INTO work_tags (work_id, tag) SELECT ?, (SELECT tag FROM tag_keys WHERE key=?) WHERE EXISTS(SELECT 1 FROM works WHERE id=? AND deleted_at IS NULL)",
+                )
+                .bind(&[JsValue::from_str(&work.id), key, JsValue::from_str(&work.id)])?,
             );
         }
         let mut recount = current_tags;
@@ -576,10 +578,10 @@ pub async fn handle_patch(mut req: Request, env: Env, work_id: &str) -> Result<R
             statements.push(
                 db.prepare(
                     r#"UPDATE tags SET use_count=(
-                         SELECT COUNT(*) FROM work_tags WHERE tag=?
-                       ) WHERE name=?"#,
+                         SELECT COUNT(*) FROM work_tags WHERE tag=tags.name
+                       ) WHERE name=COALESCE((SELECT tag FROM tag_keys WHERE key=?), ?)"#,
                 )
-                .bind(&[JsValue::from_str(&tag), JsValue::from_str(&tag)])?,
+                .bind(&[JsValue::from_str(&tag_key(&tag)), JsValue::from_str(&tag)])?,
             );
         }
     }

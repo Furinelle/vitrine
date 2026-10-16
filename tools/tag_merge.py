@@ -1,0 +1,113 @@
+"""Plan and generate the SQL that folds duplicate tags into one name.
+
+Tags whose `tag_key` (case, full-width, punctuation, invisible characters and
+Traditional/Simplified folded; computed by the Worker's own code through the
+vitrine-tag-keys binary) is equal are merged into the spelling carried by the
+most visible works. The output SQL also records every key in `tag_keys`, which
+ingest and admin edits use to keep new variants under the same name.
+
+    python3 tools/tag_merge.py rows.json plan.md merge.sql
+
+rows.json is the `wrangler d1 execute --json` output of ROWS_SQL. Review
+plan.md, then apply merge.sql with `wrangler d1 execute DB --remote --file`.
+Re-running on a merged database yields only `tag_keys` upserts.
+"""
+import collections
+import json
+import pathlib
+import re
+import subprocess
+import sys
+
+ROOT = pathlib.Path(__file__).resolve().parents[1]
+ROWS_SQL = (
+    "SELECT t.name, COALESCE((SELECT cnt FROM tag_counts WHERE tag=t.name),0) AS visible, "
+    "(SELECT COUNT(*) FROM work_tags WHERE tag=t.name) AS total FROM tags t"
+)
+TRAD = {chr(int(a, 16)) for a, _ in re.findall(r"\('\\u\{([0-9A-F]+)\}', '\\u\{([0-9A-F]+)\}'\)",
+                                               (ROOT / "src/tag_fold.rs").read_text())}
+
+
+def sql_text(value):
+    return "'" + value.replace("'", "''") + "'"
+
+
+def keys_for(names):
+    subprocess.run(["cargo", "build", "-q", "--bin", "vitrine-tag-keys"], cwd=ROOT, check=True)
+    out = subprocess.run([str(ROOT / "target/debug/vitrine-tag-keys")], input="\n".join(names) + "\n",
+                         capture_output=True, text=True, check=True).stdout
+    rows = [line.split("\t") for line in out.splitlines()]
+    assert len(rows) == len(names) and all(len(r) == 3 and r[2] == n for r, n in zip(rows, names))
+    return {name: (key, stored) for key, stored, name in rows}
+
+
+def plan(rows, keys):
+    """Returns ({variant: target}, {key: target}, groups) for every tag name in rows."""
+    groups = collections.defaultdict(list)
+    for row in rows:
+        groups[keys[row["name"]][0]].append(row)
+    merges, targets, report = {}, {}, []
+    for key, members in groups.items():
+        # Most visible works, then most works overall, then Simplified, then already clean, then stable.
+        best = min(members, key=lambda r: (-r["visible"], -r["total"], any(c in TRAD for c in r["name"]),
+                                           keys[r["name"]][1] != r["name"], r["name"]))
+        target = keys[best["name"]][1]
+        targets[key] = target
+        moved = [r for r in members if r["name"] != target]
+        for r in moved:
+            merges[r["name"]] = target
+        if moved:
+            report.append((target, sorted(members, key=lambda r: (-r["visible"], r["name"]))))
+    return merges, targets, report
+
+
+def merge_sql(merges, targets):
+    lines = []
+    if merges:
+        lines += ["CREATE TABLE tag_merge (name TEXT PRIMARY KEY, tag TEXT NOT NULL);",
+                  "INSERT INTO tag_merge (name, tag) VALUES"]
+        lines += [f"  ({sql_text(a)}, {sql_text(b)})" + ("," if i < len(merges) - 1 else ";")
+                  for i, (a, b) in enumerate(sorted(merges.items()))]
+        lines += [
+            "INSERT OR IGNORE INTO tags (name, use_count) SELECT DISTINCT tag, 0 FROM tag_merge;",
+            "INSERT OR IGNORE INTO work_tags (work_id, tag) SELECT wt.work_id, m.tag FROM work_tags wt JOIN tag_merge m ON m.name = wt.tag;",
+            "DELETE FROM work_tags WHERE tag IN (SELECT name FROM tag_merge);",
+            "DELETE FROM tags WHERE name IN (SELECT name FROM tag_merge);",
+            "DELETE FROM tag_counts WHERE tag IN (SELECT name FROM tag_merge) AND cnt = 0;",
+            "UPDATE tags SET use_count = (SELECT COUNT(*) FROM work_tags WHERE tag = tags.name) WHERE name IN (SELECT tag FROM tag_merge);",
+            "DROP TABLE tag_merge;",
+        ]
+    items = sorted(targets.items())
+    for start in range(0, len(items), 200):
+        chunk = items[start:start + 200]
+        lines.append("INSERT INTO tag_keys (key, tag) VALUES")
+        lines += [f"  ({sql_text(k)}, {sql_text(t)})" + ("," if i < len(chunk) - 1 else "")
+                  for i, (k, t) in enumerate(chunk)]
+        lines.append("ON CONFLICT(key) DO UPDATE SET tag = excluded.tag;")
+    return "\n".join(lines) + "\n"
+
+
+def show(name):
+    return "".join(f"<U+{ord(c):04X}>" if not c.isprintable() or c in "\u3164\u200c\u200b" else c for c in name)
+
+
+def main(rows_path, plan_path, sql_path):
+    rows = json.loads(pathlib.Path(rows_path).read_text())[0]["results"]
+    keys = keys_for([r["name"] for r in rows])
+    merges, targets, report = plan(rows, keys)
+    report.sort(key=lambda item: -sum(r["visible"] for r in item[1]))
+    out = [f"# 标签合并清单\n\n{len(rows)} 个标签，{len(report)} 组合并，{len(merges)} 个写法并入保留名。"
+           "括号里是可见作品数 / 全部作品数，第一列是保留的写法。\n",
+           "| 保留 | 并入 |", "| --- | --- |"]
+    for target, members in report:
+        moved = [r for r in members if r["name"] != target]
+        kept = next((r for r in members if r["name"] == target), None)
+        head = f"{show(target)} ({kept['visible']}/{kept['total']})" if kept else f"{show(target)}（新名）"
+        out.append(f"| {head} | " + "、".join(f"{show(r['name'])} ({r['visible']}/{r['total']})" for r in moved) + " |")
+    pathlib.Path(plan_path).write_text("\n".join(out) + "\n")
+    pathlib.Path(sql_path).write_text(merge_sql(merges, targets))
+    print(f"{len(rows)} tags, {len(report)} groups, {len(merges)} names merged; plan -> {plan_path}, sql -> {sql_path}")
+
+
+if __name__ == "__main__":
+    main(*sys.argv[1:4])
