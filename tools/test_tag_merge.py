@@ -71,6 +71,7 @@ def main():
             db.execute("INSERT OR IGNORE INTO tags (name) VALUES (?)", (tag,))
             db.execute("INSERT OR IGNORE INTO work_tags (work_id, tag) VALUES (?, ?)", (work, tag))
 
+    db.execute("INSERT INTO tag_blocks (name) VALUES ('银狼')")  # blocked by an earlier run, unblocked now
     merges = run(db, library)
     # Display names (WutheringWaves, Miku) and listed spellings fold into the stored Chinese name;
     # genshinimpact ties GenshinImpact on visible works and wins on all works (the hidden w4 counts there).
