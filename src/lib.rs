@@ -2374,7 +2374,7 @@ async fn handle_list_tags(url: &Url, env: &Env) -> Result<Response> {
     let limit = query_param(url, "limit")
         .parse::<u32>()
         .unwrap_or(200)
-        .clamp(1, 200);
+        .clamp(1, 1000);
     let (_, offset) = parse_limit_offset(url);
     let Some((tags, source)) =
         cached_filter_rows::<TagRow>(url, env, "tags", tags_list_sql()).await?

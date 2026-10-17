@@ -1,9 +1,16 @@
 const $ = (id) => document.getElementById(id);
 const names = { pixiv: "Pixiv", x: "X / Twitter", douyin: "抖音" };
+// 中文浏览器显示标签的中文名，其他语言显示英文名，没有英文名时仍用中文名。
+const zh = /^zh\b/i.test(navigator.languages?.[0] || navigator.language || "");
+const tagInfo = new Map();
+const tagName = (tag) => (zh ? tag : tagInfo.get(tag)?.en || tag);
+const tagKinds = zh
+  ? { work: "作品", character: "角色", cp: "CP", skin: "皮肤", lore: "设定", theme: "题材", medium: "媒介", meta: "其他", unsorted: "未分类" }
+  : { work: "Works", character: "Characters", cp: "Pairings", skin: "Skins", lore: "Lore", theme: "Themes", medium: "Media", meta: "Meta", unsorted: "Other" };
 // tag 可以是逗号分隔的多个标签（命中任一即可）；界面上只写第一个和总数。
 function tagLabel(tag) {
   const tags = tag.split(",").filter(Boolean);
-  return tags.length > 1 ? `${tags[0]} 等 ${tags.length} 个标签` : tag;
+  return tags.length > 1 ? `${tagName(tags[0])} 等 ${tags.length} 个标签` : tagName(tag);
 }
 function locationFilters() {
   const query = new URLSearchParams(location.search);
@@ -11,8 +18,7 @@ function locationFilters() {
 }
 const state = {
   ...locationFilters(), works: [], offset: 0, cursor: null, limit: 24, done: false, loading: false,
-  request: null, sources: [], tags: [], viewerRequest: null, viewing: null, images: [], imageIndex: 0,
-  tagRequest: null, tagLoading: false, tagOffset: 0, tagNext: null,
+  request: null, sources: [], tags: [], tagError: "", viewerRequest: null, viewing: null, images: [], imageIndex: 0,
 };
 function node(tag, className, text) {
   const element = document.createElement(tag);
@@ -120,48 +126,75 @@ async function loadFilters() {
     if (state.source && !state.sources.some((s) => s.source === state.source)) $("source").append(new Option(state.source, state.source));
     syncFilters(true);
     updateCount();
-  }), getJson("/api/tags").then((data) => {
+  }), loadTags()]);
+}
+function loadTags() {
+  // The whole tag list (a few hundred rows, cached by the Worker) backs display names and the grouped index.
+  return getJson("/api/tags?limit=1000").then((data) => {
     state.tags = data.tags || [];
-    $("taglist").replaceChildren(...state.tags.map((tag) => new Option(`${tag.name} · ${tag.cnt} 件作品`, tag.name)));
+    state.tagError = "";
+    tagInfo.clear();
+    for (const tag of state.tags) tagInfo.set(tag.name, tag);
+    $("taglist").replaceChildren(...state.tags.map((tag) => new Option(`${tagName(tag.name)} · ${tag.cnt} 件作品`, tag.name)));
     $("popular-tags").replaceChildren(...state.tags.slice(0, 8).map((tag) => tagButton(tag.name)));
     syncFilters(true);
-  })]);
+    if (!$("tag-browser").hidden) renderTagBrowser();
+  }, (error) => {
+    state.tagError = error.message;
+    if (!$("tag-browser").hidden) renderTagBrowser();
+  });
 }
-async function loadTagBrowser(reset = true) {
-  if (!reset && (state.tagLoading || state.tagNext === null)) return;
-  state.tagRequest?.abort();
-  const controller = new AbortController();
-  state.tagRequest = controller;
-  state.tagLoading = true;
-  if (reset) { state.tagOffset = 0; $("all-tags").replaceChildren(); }
-  $("tag-status").textContent = "加载标签…";
-  $("tag-retry").hidden = true;
-  $("tag-more").hidden = true;
-  $("tag-empty").hidden = true;
-  const query = new URLSearchParams({ q: $("tag-search").value.trim(), limit: 100, offset: state.tagOffset, order: "name" });
-  try {
-    const data = await getJson(`/api/tags?${query}`, controller.signal);
-    if (state.tagRequest !== controller) return;
-    $("all-tags").append(...data.tags.map((tag) => {
+// The work a character, skin or setting belongs to, following parents up to a work.
+function tagWork(tag) {
+  for (let info = tagInfo.get(tag.parent), hops = 0; info && hops < 4; info = tagInfo.get(info.parent), hops++) {
+    if (info.kind === "work") return info.name;
+  }
+  return "";
+}
+function renderTagBrowser() {
+  const needle = $("tag-search").value.trim().replace(/^#+/, "").toLowerCase();
+  const groups = new Map(Object.keys(tagKinds).map((kind) => [kind, []]));
+  for (const tag of state.tags) {
+    if (needle && ![tag.name, tag.ja, tag.en].some((name) => name?.toLowerCase().includes(needle))) continue;
+    groups.get(tag.kind in tagKinds ? tag.kind : "unsorted").push(tag);
+  }
+  const chips = (tags) => {
+    const list = node("div", "popular-tags");
+    list.append(...tags.map((tag) => {
       const chip = tagButton(tag.name);
       chip.title = `${tag.cnt} 件作品`;
+      chip.classList.toggle("active", tag.name === state.tag);
       return chip;
     }));
-    state.tagNext = data.next_offset;
-    state.tagOffset += data.tags.length;
-    $("tag-more").hidden = state.tagNext === null;
-    $("tag-empty").hidden = state.tagOffset > 0;
-    $("tag-status").textContent = "";
-  } catch (error) {
-    if (controller.signal.aborted || state.tagRequest !== controller) return;
-    $("tag-status").textContent = `${error.message}。`;
-    $("tag-retry").hidden = false;
-  } finally {
-    if (state.tagRequest === controller) state.tagLoading = false;
-  }
+    return list;
+  };
+  $("all-tags").replaceChildren(...[...groups].filter(([, tags]) => tags.length).map(([kind, tags]) => {
+    const group = node("section", "tag-group");
+    group.append(node("h3", "tag-group-title", tagKinds[kind]));
+    if (kind === "character" || kind === "lore" || kind === "skin") {
+      // Split by work, in the order each work first appears (tags arrive most used first).
+      const byWork = new Map();
+      for (const tag of tags) {
+        const work = tagWork(tag);
+        if (!byWork.has(work)) byWork.set(work, []);
+        byWork.get(work).push(tag);
+      }
+      const noWork = byWork.get("");
+      byWork.delete("");
+      if (noWork) byWork.set("", noWork);
+      for (const [work, list] of byWork) {
+        if (byWork.size > 1) group.append(node("h4", "tag-work-title", work ? tagName(work) : tagKinds.unsorted));
+        group.append(chips(list));
+      }
+    } else group.append(chips(tags));
+    return group;
+  }));
+  $("tag-empty").hidden = !!state.tagError || !state.tags.length || $("all-tags").children.length > 0;
+  $("tag-status").textContent = state.tagError ? `${state.tagError}。` : state.tags.length ? "" : "加载标签…";
+  $("tag-retry").hidden = !state.tagError;
 }
 function tagButton(tag) {
-  const chip = button("tag-chip", `# ${tag}`, async () => {
+  const chip = button("tag-chip", `# ${tagName(tag)}`, async () => {
     const fromDialog = $("lightbox").open;
     if (fromDialog) await dismissLightbox();
     applyFilters({ tag });
@@ -528,18 +561,10 @@ for (const id of ["reset", "empty-reset"]) $(id).addEventListener("click", () =>
 $("browse-tags").addEventListener("click", () => {
   $("tag-browser").hidden = !$("tag-browser").hidden;
   $("browse-tags").setAttribute("aria-expanded", String(!$("tag-browser").hidden));
-  if (!$("tag-browser").hidden) { $("tag-search").focus(); loadTagBrowser(); }
-  else { clearTimeout(tagSearchTimer); state.tagRequest?.abort(); }
+  if (!$("tag-browser").hidden) { $("tag-search").focus(); renderTagBrowser(); }
 });
-let tagSearchTimer;
-$("tag-search").addEventListener("input", () => {
-  clearTimeout(tagSearchTimer);
-  state.tagRequest?.abort();
-  $("tag-more").hidden = true;
-  tagSearchTimer = setTimeout(() => loadTagBrowser(), 200);
-});
-$("tag-more").addEventListener("click", () => loadTagBrowser(false));
-$("tag-retry").addEventListener("click", () => loadTagBrowser(state.tagOffset === 0));
+$("tag-search").addEventListener("input", renderTagBrowser);
+$("tag-retry").addEventListener("click", () => { state.tagError = ""; renderTagBrowser(); loadTags(); });
 $("more").addEventListener("click", () => loadWorks());
 $("retry").addEventListener("click", () => loadWorks(state.offset === 0));
 $("lb-close").addEventListener("click", closeLightbox);
