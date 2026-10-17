@@ -6,7 +6,6 @@ import json
 import pathlib
 import sqlite3
 import sys
-import tempfile
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import tag_curate  # noqa: E402
@@ -74,12 +73,16 @@ def main():
     new_one = next(d for d in applied if d["tag"] == "新角色")
     assert new_one["ja"] is None and "芙宁娜" in new_one["note"], new_one  # "Furina" already spells 芙宁娜
 
-    # The SQL runs; the rehearsal on a dump of the database accepts it.
-    with tempfile.TemporaryDirectory() as tmp:
-        dump, sql = pathlib.Path(tmp) / "backup.sql", pathlib.Path(tmp) / "apply.sql"
-        dump.write_text("\n".join(db.iterdump()))
-        sql.write_text("\n".join(statements))
-        assert tag_curate.rehearse(dump, sql) == 4  # 热门杂项, 新组合, 画师某某 (in review) and 已否决 stay unsorted
+    # The snapshot rebuilds the tag tables from plain reads without double-counting through the triggers,
+    # and the rehearsal on it accepts the SQL.
+    def read(sql):
+        cur = db.execute(sql)
+        names = [c[0] for c in cur.description]
+        return [dict(zip(names, row)) for row in cur]
+    copy = tag_curate.snapshot(read)
+    for table in ("work_tags", "tag_counts", "tag_items", "tag_links", "tag_keys"):
+        assert set(copy.execute(f"SELECT * FROM {table}")) == set(db.execute(f"SELECT * FROM {table}")), table
+    assert tag_curate.rehearse(copy, "\n".join(statements)) == 4  # 热门杂项, 新组合, 画师某某 (in review) and 已否决 stay unsorted
     db.executescript("\n".join(statements))
     tags = lambda work: sorted(t for (t,) in db.execute("SELECT tag FROM work_tags WHERE work_id = ?", (work,)))  # noqa: E731
     assert tags("w1") == ["原神", "芙宁娜"], tags("w1")
