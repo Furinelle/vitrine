@@ -17,6 +17,18 @@
   --brass: light-dark(#9c7f42, #cdb47c);
   --gilt-line: light-dark(rgb(156 127 66 / .45), rgb(205 180 124 / .42));
   --link: light-dark(#0f2e73, #a6dcff);
+  /* Beyond navy and gilt: Fontaine's water and the opera house's curtain, used only for state and kind. */
+  --water: light-dark(#1d87b8, #7fd3f2);
+  --curtain: light-dark(#a3324a, #ee9aac);
+  /* One colour per tag kind, so a tag's kind shows before it is read. */
+  --kind-work: light-dark(#23479c, #93b6ff);
+  --kind-character: var(--water);
+  --kind-cp: var(--curtain);
+  --kind-skin: light-dark(#7458bd, #c5b4f4);
+  --kind-lore: var(--brass);
+  --kind-theme: light-dark(#2c8670, #8ed6c0);
+  --kind-medium: light-dark(#5a6b8e, #b3c2dc);
+  --kind-meta: light-dark(#8a6a3a, #d6bf94);
   --ease: cubic-bezier(.22, 1, .36, 1);
   --sans: -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", "Noto Sans CJK SC", sans-serif;
   /* Gallery type: Cormorant for the wordmark, a serif for headings and work titles, the system UI face for everything else; brush script only beside the wordmark. */

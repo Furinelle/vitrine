@@ -29,6 +29,7 @@ context.dismissLightbox = async () => dialog.close();
 context.applyFilters = ({ tag }) => { assert.equal(tag, 'art'); events.push('filter'); };
 context.state = { viewerRequest: null };
 context.tagName = (tag) => tag;
+context.tagInfo = new Map();
 vm.runInContext(source.slice(source.indexOf('function tagButton('), source.indexOf('const coverObserver =')), context);
 context.tagButton('art');
 await activateTag();
@@ -53,7 +54,7 @@ function filtersFixture() {
   const state = { sources: [], tags: [], works: [], source: '', tag: '', q: '' };
   const filters = vm.createContext({
     state, names: { x: 'X' }, $: element,
-    document: { createElement: () => element(Symbol()), querySelectorAll: () => [] },
+    document: { createElement: () => element(Symbol()), querySelectorAll: () => [], querySelector: () => null },
     Option: class { constructor(text, value) { this.text = text; this.value = value; } },
     applyFilters() {}, tagButton: name => ({ dataset: { tag: name } }), tagInfo: new Map(), tagName: name => name,
     getJson(url) { return new Promise((resolve, reject) => pending.set(url, { resolve, reject })); },
@@ -74,7 +75,7 @@ function filtersFixture() {
   f.state.source = 'x';
   f.pending.get('/api/sources').resolve({ sources: [{ source: 'x', cnt: 12 }] });
   await Promise.resolve();
-  assert.equal(f.element('sources').children.length, 2, 'slow tags must not block source navigation');
+  assert.equal(f.element('sources').children.length, 3, 'slow tags must not block source navigation (two tabs and the sliding rule)');
   assert.equal(f.element('collection-count').textContent, '12 件收藏', 'source counts render before tags settle');
   assert.equal(f.element('source').value, 'x', 'late metadata uses the current filter');
   assert.equal(f.element('popular-tags').children.length, 0);
