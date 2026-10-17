@@ -158,19 +158,38 @@ function renderTagBrowser() {
     if (needle && ![tag.name, tag.ja, tag.en].some((name) => name?.toLowerCase().includes(needle))) continue;
     groups.get(tag.kind in tagKinds ? tag.kind : "unsorted").push(tag);
   }
+  // The most used tags read larger: the top twentieth of the whole list, then the next fifth.
+  const counts = state.tags.map((tag) => tag.cnt).sort((a, b) => b - a);
+  const tier1 = counts[Math.floor(counts.length * .05)] ?? Infinity, tier2 = counts[Math.floor(counts.length * .25)] ?? Infinity;
   const chips = (tags) => {
     const list = node("div", "popular-tags");
     list.append(...tags.map((tag) => {
       const chip = tagButton(tag.name);
-      chip.title = `${tag.cnt} 件作品`;
+      chip.classList.add(tag.cnt >= tier1 ? "tier-1" : tag.cnt >= tier2 ? "tier-2" : "tier-3");
       chip.classList.toggle("active", tag.name === state.tag);
+      const count = node("span", "tag-count", tag.cnt.toLocaleString("zh-CN"));
+      count.setAttribute("aria-label", `${tag.cnt} 件作品`);
+      chip.append(count);
       return chip;
     }));
     return list;
   };
-  $("all-tags").replaceChildren(...[...groups].filter(([, tags]) => tags.length).map(([kind, tags]) => {
+  const shown = [...groups].filter(([, tags]) => tags.length);
+  $("tag-kinds").replaceChildren(...shown.map(([kind, tags]) => {
+    const jump = button("tag-kind", undefined, () => {
+      const box = $("all-tags"), target = box.querySelector(`[data-kind="${kind}"]`);
+      box.scrollTo({ top: target.offsetTop - box.offsetTop, behavior: matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth" });
+    });
+    jump.append(node("span", "", tagKinds[kind]), node("span", "tag-count", String(tags.length)));
+    return jump;
+  }));
+  $("all-tags").replaceChildren(...shown.map(([kind, tags], index) => {
     const group = node("section", "tag-group");
-    group.append(node("h3", "tag-group-title", tagKinds[kind]));
+    group.dataset.kind = kind;
+    group.style.setProperty("--i", String(index));
+    const title = node("h3", "tag-group-title");
+    title.append(node("span", "", tagKinds[kind]), node("span", "tag-count", String(tags.length)));
+    group.append(title);
     if (kind === "character" || kind === "lore" || kind === "skin") {
       // Split by work, in the order each work first appears (tags arrive most used first).
       const byWork = new Map();
@@ -561,7 +580,14 @@ for (const id of ["reset", "empty-reset"]) $(id).addEventListener("click", () =>
 $("browse-tags").addEventListener("click", () => {
   $("tag-browser").hidden = !$("tag-browser").hidden;
   $("browse-tags").setAttribute("aria-expanded", String(!$("tag-browser").hidden));
-  if (!$("tag-browser").hidden) { $("tag-search").focus(); renderTagBrowser(); }
+  if (!$("tag-browser").hidden) {
+    renderTagBrowser();
+    // Groups unfold once, in order, when the index opens; typing a search re-renders without it.
+    $("tag-browser").classList.remove("opening");
+    void $("tag-browser").offsetWidth;
+    $("tag-browser").classList.add("opening");
+    $("tag-search").focus({ preventScroll: true });
+  }
 });
 $("tag-search").addEventListener("input", renderTagBrowser);
 $("tag-retry").addEventListener("click", () => { state.tagError = ""; renderTagBrowser(); loadTags(); });
