@@ -60,7 +60,7 @@ function fixture() {
     Image: class { set src(value) { preloaded.push(value); } },
     window: { devicePixelRatio: 1 }, matchMedia: () => ({ matches: reduced }),
     getComputedStyle: () => ({ opacity: '0.8', transform: 'matrix(1, 0, 0, 1, 0, 0)' }),
-    showWorkInfo() {}, syncFilters() {}, loadHall() {},
+    showWorkInfo() {}, syncFilters() {}, loadHall() {}, artColor: () => '',
     getJson(url, signal) { const done = deferred(); details.push({ ...done, url, signal }); return done.promise; },
   });
   for (const [start, end] of [
