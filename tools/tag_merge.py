@@ -94,6 +94,15 @@ def merge_sql(merges, targets, implies=(), drops=(), items=()):
     from every work and blocked from coming back (migration 0018); items: tag library rows
     (name, kind, parent, ja, en) for migration 0019."""
     lines = []
+    # Blocks first: a name unblocked this run can then receive merged tags.
+    if drops:
+        lines += ["DELETE FROM tag_blocks;", "INSERT INTO tag_blocks (name) VALUES"]
+        lines += [f"  ({sql_text(n)})" + ("," if i < len(drops) - 1 else ";") for i, n in enumerate(sorted(drops))]
+        lines += [
+            "DELETE FROM work_tags WHERE tag IN (SELECT name FROM tag_blocks);",
+            "DELETE FROM tags WHERE name IN (SELECT name FROM tag_blocks);",
+            "DELETE FROM tag_counts WHERE tag IN (SELECT name FROM tag_blocks) AND cnt = 0;",
+        ]
     if merges:
         lines += ["CREATE TABLE tag_merge (name TEXT PRIMARY KEY, tag TEXT NOT NULL);",
                   "INSERT INTO tag_merge (name, tag) VALUES"]
@@ -107,14 +116,6 @@ def merge_sql(merges, targets, implies=(), drops=(), items=()):
             "DELETE FROM tag_counts WHERE tag IN (SELECT name FROM tag_merge) AND cnt = 0;",
             "UPDATE tags SET use_count = (SELECT COUNT(*) FROM work_tags WHERE tag = tags.name) WHERE name IN (SELECT tag FROM tag_merge);",
             "DROP TABLE tag_merge;",
-        ]
-    if drops:
-        lines += ["DELETE FROM tag_blocks;", "INSERT INTO tag_blocks (name) VALUES"]
-        lines += [f"  ({sql_text(n)})" + ("," if i < len(drops) - 1 else ";") for i, n in enumerate(sorted(drops))]
-        lines += [
-            "DELETE FROM work_tags WHERE tag IN (SELECT name FROM tag_blocks);",
-            "DELETE FROM tags WHERE name IN (SELECT name FROM tag_blocks);",
-            "DELETE FROM tag_counts WHERE tag IN (SELECT name FROM tag_blocks) AND cnt = 0;",
         ]
     if items:
         lines += ["DELETE FROM tag_items;", "INSERT INTO tag_items (name, kind, parent, ja, en) VALUES"]
