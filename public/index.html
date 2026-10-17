@@ -13,9 +13,9 @@
   <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
   <link rel="stylesheet" href="/fonts/noto-serif-sc-5.3.1/font.css" />
   <link rel="stylesheet" href="/theme.css?v=20261017-colour" />
-  <link rel="stylesheet" href="/gallery.css?v=20261017-chapters" />
+  <link rel="stylesheet" href="/gallery.css?v=20261017-viewer" />
   <script src="/theme.js?v=20261014-vitrine" defer></script>
-  <script src="/app.js?v=20261017-chapters" defer></script>
+  <script src="/app.js?v=20261017-viewer" defer></script>
 </head>
 <body id="top">
   <div class="backdrop" aria-hidden="true"><span class="on"></span><span></span></div>
@@ -65,10 +65,10 @@
   <dialog id="lightbox" aria-labelledby="lb-title">
     <button id="lb-close" class="icon-button close" aria-label="关闭作品详情" autofocus><svg aria-hidden="true" viewBox="0 0 24 24"><path d="M6.5 6.5l11 11M17.5 6.5l-11 11"/></svg></button>
     <div class="viewer">
-      <div class="viewer-toolbar"><span id="lb-counter" aria-live="polite">1 / 1</span><a id="lb-original" target="_blank" rel="noopener noreferrer">查看原图 ↗</a></div>
+      <div class="viewer-toolbar"><span id="lb-counter" aria-live="polite">1 / 1</span><a id="lb-original" class="viewer-original" target="_blank" rel="noopener noreferrer">查看原图 ↗</a></div>
       <div class="image-stage" id="lb-stage">
         <button id="lb-prev" class="icon-button image-nav prev" aria-label="上一张图片"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="m14.5 5.5-6.5 6.5 6.5 6.5"/></svg></button>
-        <img id="lb-preview" alt="" aria-hidden="true" hidden /><img id="lb-img" alt="" decoding="async" fetchpriority="high" /><span id="lb-image-loading" role="status" hidden>加载预览…</span>
+        <div id="lb-frame" class="image-frame"><img id="lb-preview" alt="" aria-hidden="true" hidden /><img id="lb-img" alt="" decoding="async" fetchpriority="high" /></div><span id="lb-image-loading" role="status" hidden>加载预览…</span>
         <p id="lb-image-error" hidden>清晰预览暂时无法加载。<button id="lb-image-retry" class="text-button">重试图片</button></p>
         <button id="lb-next" class="icon-button image-nav next" aria-label="下一张图片"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="m9.5 5.5 6.5 6.5-6.5 6.5"/></svg></button>
       </div>

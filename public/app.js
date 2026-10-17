@@ -519,7 +519,26 @@ function showImage(index, updateUrl = true, retry = false) {
     state.imageRequest = ticket;
     const full = $("lb-img");
     const preview = $("lb-preview");
+    // A turn moves the whole frame, preview and picture together, so the two never drift apart:
+    // a copy of the old frame leaves to one side as the new one comes in from the other.
+    const frame = $("lb-frame");
+    if (direction && full.classList.contains("ready") && frame?.animate && !matchMedia("(prefers-reduced-motion: reduce)").matches) {
+      const ghost = frame.cloneNode(true);
+      ghost.removeAttribute("id");
+      for (const copy of ghost.querySelectorAll("[id]")) copy.removeAttribute("id");
+      ghost.classList.add("ghost");
+      ghost.setAttribute("aria-hidden", "true");
+      frame.before(ghost);
+      const ease = "cubic-bezier(.22, 1, .36, 1)";
+      ghost.animate([{ opacity: 1, transform: "none" }, { opacity: 0, transform: `translateX(${-direction * 56}px) scale(.98)` }],
+        { duration: 360, easing: ease, fill: "forwards" }).finished.then(() => ghost.remove(), () => ghost.remove());
+      frame.animate([{ opacity: 0, transform: `translateX(${direction * 56}px) scale(.98)` }, { opacity: 1, transform: "none" }],
+        { duration: 460, easing: ease });
+    }
+    full.style.transition = "none";
     full.classList.remove("ready");
+    void full.offsetWidth;
+    full.style.transition = "";
     full.removeAttribute("src");
     preview.hidden = true;
     preview.onload = () => { if (state.imageRequest === ticket) preview.hidden = false; };
@@ -540,10 +559,9 @@ function showImage(index, updateUrl = true, retry = false) {
       if (state.imageRequest !== ticket) return;
       full.classList.add("ready");
       $("lb-image-loading").hidden = true;
-      // The new picture enters from the side the reader is moving toward.
-      if (direction && !matchMedia("(prefers-reduced-motion: reduce)").matches) full.animate([
-        { opacity: 0, transform: `translateX(${direction * 32}px)` }, { opacity: 1, transform: "none" },
-      ], { duration: 420, easing: "cubic-bezier(.22, 1, .36, 1)" });
+      // The viewer takes the picture's colour, as the gallery wall does.
+      const color = artColor(full);
+      if (color) $("lightbox").style.setProperty("--viewer-art", color);
     };
     full.onerror = () => {
       if (state.imageRequest !== ticket) return;
@@ -631,6 +649,8 @@ async function openLightbox(work, cardEl, { push = true, page = 0 } = {}) {
   state.images = work.cover_url ? [{ cover_url: work.cover_url }] : [];
   state.imageIndex = 0;
   state.lastCard = cardEl || null;
+  const art = cardEl?.style?.getPropertyValue("--art");
+  if (art) $("lightbox").style.setProperty("--viewer-art", art);
   $("lb-thumbs").replaceChildren();
   $("lb-status").textContent = "正在加载完整作品…";
   $("lb-retry").hidden = true;
