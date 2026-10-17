@@ -63,7 +63,8 @@ async fn handle_request(req: Request, env: Env) -> Result<Response> {
         && (path == "/api/works"
             || path.starts_with("/api/works/")
             || path == "/api/tags"
-            || path == "/api/sources")
+            || path == "/api/sources"
+            || path == "/api/months")
     {
         Some("PUBLIC_RATE_LIMITER")
     } else {
@@ -324,6 +325,10 @@ async fn handle_request(req: Request, env: Env) -> Result<Response> {
 
     if path == "/api/sources" && method == Method::Get {
         return Ok(with_cors(handle_list_sources(&url, &env).await?));
+    }
+
+    if path == "/api/months" && method == Method::Get {
+        return Ok(with_cors(handle_list_months(&url, &env).await?));
     }
 
     if let Some(key) = path.strip_prefix("/media/") {
@@ -694,24 +699,60 @@ async fn resolve_tags(env: &Env, tags: Vec<String>) -> Result<Vec<String>> {
     Ok(out)
 }
 
-async fn handle_list_works(url: &Url, env: &Env) -> Result<Response> {
+/// Collection months are counted in Beijing time (UTC+8): `YYYY-MM` maps to the half-open
+/// created_at range from 16:00 UTC on the last day of the month before.
+fn month_range(month: &str) -> Option<(String, String)> {
+    let (year, month_number) = month.split_once('-')?;
+    if month.len() != 7 || year.len() != 4 {
+        return None;
+    }
+    let (year, month_number): (i32, u32) = (year.parse().ok()?, month_number.parse().ok()?);
+    if !(1..=12).contains(&month_number) || !(2000..=2999).contains(&year) {
+        return None;
+    }
+    let days = |y: i32, m: u32| match m {
+        2 if (y % 4 == 0 && y % 100 != 0) || y % 400 == 0 => 29,
+        2 => 28,
+        4 | 6 | 9 | 11 => 30,
+        _ => 31,
+    };
+    let start = |y: i32, m: u32| {
+        let (py, pm) = if m == 1 { (y - 1, 12) } else { (y, m - 1) };
+        format!("{py:04}-{pm:02}-{:02}T16:00:00.000Z", days(py, pm))
+    };
+    let (ny, nm) = if month_number == 12 { (year + 1, 1) } else { (year, month_number + 1) };
+    Some((start(year, month_number), start(ny, nm)))
+}
+
+/// The visible-works filter shared by the works list and the month counts: source, tags (any of
+/// them), text search and collection month.
+struct WorkFilter {
+    from_sql: String,
+    where_sql: String,
+    /// Multi-tag placeholders sit in the FROM clause, ahead of the WHERE binds.
+    values: Vec<JsValue>,
+}
+
+async fn work_filter(url: &Url, env: &Env, extra: &[(&str, &[String])]) -> Result<std::result::Result<WorkFilter, Response>> {
     let tag = query_param(url, "tag");
     let tags = tag_filter(&tag);
     let source = query_param(url, "source").to_lowercase();
     let q = query_param(url, "q");
-    let (limit, offset) = parse_limit_offset(url);
+    let month = query_param(url, "month");
     if q.len() > 512 || tag.len() > 4096 || tags.len() > MAX_FILTER_TAGS || source.len() > 64 {
-        return json_response(&json!({"ok": false, "error": "query too long"}), 400);
+        return Ok(Err(json_response(&json!({"ok": false, "error": "query too long"}), 400)?));
     }
-    let Ok(cursor) = work_cursor(&query_param(url, "cursor")) else {
-        return json_response(&json!({"ok": false, "error": "invalid cursor"}), 400);
+    let range = if month.is_empty() {
+        None
+    } else if let Some(range) = month_range(&month) {
+        Some(range)
+    } else {
+        return Ok(Err(json_response(&json!({"ok": false, "error": "invalid month"}), 400)?));
     };
-    let offset = if cursor.is_some() { 0 } else { offset };
     let tags = resolve_tags(env, tags).await?;
 
     let mut where_parts: Vec<&str> = Vec::new();
     let mut binds: Vec<String> = Vec::new();
-
     if !source.is_empty() {
         where_parts.push("w.source = ?");
         binds.push(source);
@@ -727,17 +768,42 @@ async fn handle_list_works(url: &Url, env: &Env) -> Result<Response> {
         binds.push(like.clone());
         binds.push(like);
     }
-
     // Hide soft-deleted works when deleted_at is present (migration 0002).
     where_parts.push("(w.deleted_at IS NULL)");
-    if let Some((created_at, id)) = cursor {
-        where_parts.push("(w.created_at, w.id) < (?, ?)");
-        binds.extend([created_at, id]);
+    if let Some((from, until)) = range {
+        where_parts.push("w.created_at >= ? AND w.created_at < ?");
+        binds.extend([from, until]);
     }
+    for (part, values) in extra {
+        where_parts.push(part);
+        binds.extend(values.iter().cloned());
+    }
+    let from_binds: &[String] = if tags.len() > 1 { &tags } else { &[] };
+    Ok(Ok(WorkFilter {
+        from_sql: works_from_clause(tags.len()),
+        where_sql: format!("WHERE {}", where_parts.join(" AND ")),
+        values: from_binds.iter().chain(binds.iter()).map(|s| JsValue::from_str(s)).collect(),
+    }))
+}
 
-    let where_sql = format!("WHERE {}", where_parts.join(" AND "));
-    let work_select = WORK_SELECT.replace("FROM works w", &works_from_clause(tags.len()));
-
+async fn handle_list_works(url: &Url, env: &Env) -> Result<Response> {
+    let (limit, offset) = parse_limit_offset(url);
+    let Ok(cursor) = work_cursor(&query_param(url, "cursor")) else {
+        return json_response(&json!({"ok": false, "error": "invalid cursor"}), 400);
+    };
+    let offset = if cursor.is_some() { 0 } else { offset };
+    let cursor_binds: Vec<String> = cursor.map(|(created_at, id)| vec![created_at, id]).unwrap_or_default();
+    let extra: Vec<(&str, &[String])> = if cursor_binds.is_empty() {
+        Vec::new()
+    } else {
+        vec![("(w.created_at, w.id) < (?, ?)", &cursor_binds)]
+    };
+    let filter = match work_filter(url, env, &extra).await? {
+        Ok(filter) => filter,
+        Err(response) => return Ok(response),
+    };
+    let work_select = WORK_SELECT.replace("FROM works w", &filter.from_sql);
+    let where_sql = filter.where_sql;
     let sql = format!(
         r#"
         {work_select}
@@ -746,14 +812,7 @@ async fn handle_list_works(url: &Url, env: &Env) -> Result<Response> {
         LIMIT ? OFFSET ?
         "#
     );
-
-    // The multi-tag placeholders sit in the FROM clause, ahead of the WHERE binds.
-    let from_binds: &[String] = if tags.len() > 1 { &tags } else { &[] };
-    let mut values: Vec<JsValue> = from_binds
-        .iter()
-        .chain(binds.iter())
-        .map(|s| JsValue::from_str(s))
-        .collect();
+    let mut values = filter.values;
     values.push(JsValue::from_f64(f64::from(limit)));
     values.push(JsValue::from_f64(f64::from(offset)));
 
@@ -2318,6 +2377,7 @@ async fn cached_filter_rows<T: serde::de::DeserializeOwned + Serialize>(
     env: &Env,
     kind: &str,
     sql: &str,
+    values: &[JsValue],
 ) -> Result<Option<(Vec<T>, &'static str)>> {
     let db = env.d1("DB")?;
     let generation = similar::current_generation(&db).await?;
@@ -2333,7 +2393,7 @@ async fn cached_filter_rows<T: serde::de::DeserializeOwned + Serialize>(
     let (rows, source) = if let Some(cached) = cached.filter(|c| c.generation == generation) {
         (cached.rows, "HIT")
     } else {
-        (db.prepare(sql).all().await?.results::<T>()?, "MISS")
+        (db.prepare(sql).bind(values)?.all().await?.results::<T>()?, "MISS")
     };
     if similar::current_generation(&db).await? != generation {
         return Ok(None);
@@ -2390,7 +2450,7 @@ async fn handle_list_tags(url: &Url, env: &Env) -> Result<Response> {
         .clamp(1, 1000);
     let (_, offset) = parse_limit_offset(url);
     let Some((tags, source)) =
-        cached_filter_rows::<TagRow>(url, env, "tags", tags_list_sql()).await?
+        cached_filter_rows::<TagRow>(url, env, "tags", tags_list_sql(), &[]).await?
     else {
         return json_response(
             &json!({"ok": false, "error": "catalog changed; retry"}),
@@ -2409,6 +2469,37 @@ async fn handle_list_tags(url: &Url, env: &Env) -> Result<Response> {
     Ok(response)
 }
 
+#[derive(Debug, serde::Deserialize, Serialize)]
+struct MonthRow {
+    month: String,
+    cnt: i64,
+}
+
+/// Works per collection month (Beijing time), newest first, for the paged hall; same filters as
+/// /api/works. Cached per filter and catalog generation like the tag and source lists.
+async fn handle_list_months(url: &Url, env: &Env) -> Result<Response> {
+    let filter = match work_filter(url, env, &[]).await? {
+        Ok(filter) => filter,
+        Err(response) => return Ok(response),
+    };
+    let sql = format!(
+        "SELECT strftime('%Y-%m', w.created_at, '+8 hours') AS month, COUNT(*) AS cnt {} {} GROUP BY month ORDER BY month DESC",
+        filter.from_sql, filter.where_sql
+    );
+    let kind = format!(
+        "months/{}/{}/{}",
+        urlencoding::encode(&query_param(url, "source").to_lowercase()),
+        urlencoding::encode(&query_param(url, "tag")),
+        urlencoding::encode(&query_param(url, "q"))
+    );
+    let Some((months, source)) = cached_filter_rows::<MonthRow>(url, env, &kind, &sql, &filter.values).await? else {
+        return json_response(&json!({"ok": false, "error": "catalog changed; retry"}), 409);
+    };
+    let mut response = json_response(&json!({"ok": true, "months": months}), 200)?;
+    response.headers_mut().set("X-Catalog-Stats-Cache", source)?;
+    Ok(response)
+}
+
 async fn handle_list_sources(url: &Url, env: &Env) -> Result<Response> {
     let Some((sources, source)) = cached_filter_rows::<SourceRow>(
         url,
@@ -2418,6 +2509,7 @@ async fn handle_list_sources(url: &Url, env: &Env) -> Result<Response> {
         SELECT source, COUNT(*) AS cnt FROM works WHERE deleted_at IS NULL
         GROUP BY source ORDER BY cnt DESC, source ASC
     "#,
+        &[],
     )
     .await?
     else {
@@ -2668,6 +2760,20 @@ fn media_width(value: Option<&str>) -> std::result::Result<Option<usize>, ()> {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn month_range_counts_months_in_beijing_time() {
+        assert_eq!(
+            month_range("2026-10"),
+            Some(("2026-09-30T16:00:00.000Z".into(), "2026-10-31T16:00:00.000Z".into()))
+        );
+        assert_eq!(month_range("2026-01").unwrap().0, "2025-12-31T16:00:00.000Z");
+        assert_eq!(month_range("2024-03").unwrap().0, "2024-02-29T16:00:00.000Z");
+        assert_eq!(month_range("2026-12").unwrap().1, "2026-12-31T16:00:00.000Z");
+        for bad in ["2026-13", "2026-1", "26-10", "2026-00", "abcd-ef", "2026-10-01", "+026-10"] {
+            assert!(month_range(bad).is_none(), "{bad}");
+        }
+    }
 
     #[test]
     fn d1_daily_limits_are_specific_and_reset_at_utc_midnight() {
