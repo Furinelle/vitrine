@@ -923,7 +923,24 @@ function paintStage(color) {
   previous.style.zIndex = "0";
   next.classList.add("on");
   next.addEventListener("transitionend", () => { if (layers[stage.front] === next) previous.classList.remove("on"); }, { once: true });
+  tintChrome();
 }
+// Safari colours the strip under the status bar from theme-color and the root's own background, not
+// from the fixed backdrop; both follow the backdrop's tint at the top of the screen.
+let tintProbe;
+function tintChrome() {
+  if (!tintProbe) document.body.append(tintProbe = Object.assign(document.createElement("i"), { hidden: true }));
+  // Before any artwork has given a colour, the backdrop shows its default water tint.
+  tintProbe.style.color = `color-mix(in srgb, ${stage.color || "var(--water)"} 30%, var(--bg))`;
+  let tint = getComputedStyle(tintProbe).color;
+  // color-mix() computes to color(srgb r g b), which theme-color does not take; write it as rgb().
+  const channels = tint.match(/^color\(srgb ([\d.]+) ([\d.]+) ([\d.]+)/);
+  if (channels) tint = `rgb(${channels.slice(1).map((c) => Math.round(c * 255)).join(", ")})`;
+  document.documentElement.style.backgroundColor = tint;
+  document.querySelector('meta[name="theme-color"]')?.setAttribute("content", tint);
+}
+// The theme switch resets theme-color for its own palette; tint it again once the new colours apply.
+$("theme-toggle")?.addEventListener("click", () => requestAnimationFrame(tintChrome));
 function stageColor() {
   let color = "";
   if (stage.banner && !$("featured").hidden) color = $("featured-stage").children[featured.index]?.dataset.color;
@@ -939,6 +956,7 @@ const middleObserver = typeof IntersectionObserver === "function" ? new Intersec
   stageColor();
 }, { rootMargin: "-40% 0px -40% 0px" }) : null;
 middleObserver?.observe($("featured"));
+tintChrome();
 function rotateFeatured(run) {
   clearInterval(featured.timer);
   if (run && featured.works.length > 1 && !matchMedia("(prefers-reduced-motion: reduce)").matches) {
