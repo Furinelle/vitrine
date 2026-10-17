@@ -14,10 +14,14 @@ function tagLabel(tag) {
 }
 function locationFilters() {
   const query = new URLSearchParams(location.search);
-  return { source: query.get("source") || "", tag: query.get("tag") || "", q: query.get("q") || "" };
+  return { source: query.get("source") || "", tag: query.get("tag") || "", q: query.get("q") || "",
+    month: /^\d{4}-\d{2}$/.test(query.get("month") || "") ? query.get("month") : "", p: Math.max(1, parseInt(query.get("p"), 10) || 1) };
 }
+// The collection is shown as a hall of pages: one collection month at a time (Beijing time), fifteen
+// works to a page set as one large, four medium and ten small pictures.
+const PAGE_SIZE = 15;
 const state = {
-  ...locationFilters(), works: [], offset: 0, cursor: null, limit: 24, done: false, loading: false,
+  ...locationFilters(), works: [], months: [], loading: false,
   request: null, sources: [], tags: [], tagError: "", viewerRequest: null, viewing: null, images: [], imageIndex: 0,
 };
 function node(tag, className, text) {
@@ -66,7 +70,8 @@ async function getJson(url, signal) {
 }
 function galleryUrl(workId = "", page = 0) {
   const query = new URLSearchParams();
-  for (const field of ["source", "tag", "q"]) if (state[field]) query.set(field, state[field]);
+  for (const field of ["source", "tag", "q", "month"]) if (state[field]) query.set(field, state[field]);
+  if (state.p > 1) query.set("p", String(state.p));
   if (workId) query.set("work", workId);
   if (workId && page > 0) query.set("page", String(page + 1));
   return "/" + (query.size ? `?${query}` : "");
@@ -103,18 +108,21 @@ function placeTabRule() {
   rule.style.translate = `${active.offsetLeft}px 0`;
 }
 function updateCount() {
-  const total = state.source ? state.sources.find((s) => s.source === state.source)?.cnt : state.sources.length ? state.sources.reduce((sum, s) => sum + s.cnt, 0) : null;
-  $("collection-count").textContent = !state.tag && !state.q && total != null ? `${total.toLocaleString("zh-CN")} 件收藏` : `已载入 ${state.works.length.toLocaleString("zh-CN")} 件作品`;
+  // The month counts cover any filter; before they arrive, the source totals cover the unfiltered collection.
+  const sources = state.source ? state.sources.find((s) => s.source === state.source)?.cnt : state.sources.length ? state.sources.reduce((sum, s) => sum + s.cnt, 0) : null;
+  const total = state.months.length ? state.months.reduce((sum, month) => sum + month.cnt, 0) : !state.tag && !state.q ? sources : null;
+  $("collection-count").textContent = total != null ? `${total.toLocaleString("zh-CN")} 件收藏` : "";
 }
 function applyFilters(changes) {
-  Object.assign(state, changes);
+  // New filters start from their newest month.
+  Object.assign(state, { month: "", p: 1 }, changes);
   if ($("lightbox").open) {
     state.viewerRequest?.abort(); state.viewerRequest = null;
     dismissLightbox();
   }
   history.pushState(null, "", galleryUrl());
   syncFilters();
-  loadWorks(true);
+  loadHall();
   window.scrollTo({ top: 0, behavior: "instant" });
 }
 async function loadFilters() {
@@ -232,18 +240,11 @@ function tagButton(tag) {
   return chip;
 }
 // Native lazy-loading can fetch several screens ahead; keep gallery traffic near the viewport.
-const coverObserver = typeof IntersectionObserver === "function" ? new IntersectionObserver((entries) => {
-  for (const { target: image, isIntersecting } of entries) {
-    if (!isIntersecting || !image.isConnected || !image.dataset.src) continue;
-    image.src = image.dataset.src;
-    delete image.dataset.src;
-    coverObserver.unobserve(image);
-  }
-}, { rootMargin: "360px 0px" }) : null;
-// Extreme strips and panoramas are cropped so one cover never dominates a column.
 function coverRatio(width, height) {
   return width > 0 && height > 0 ? Math.min(1.8, Math.max(.5, width / height)) : 0;
 }
+// The artwork's own colour, read from an 8×8 copy: colourful pixels outweigh white paper and line art,
+// and the result is lifted to a saturation and lightness that still shows as a glow on either theme.
 // The artwork's own colour, read from an 8×8 copy: colourful pixels outweigh white paper and line art,
 // and the result is lifted to a saturation and lightness that still shows as a glow on either theme.
 let swatchContext;
@@ -272,138 +273,213 @@ function artColor(image) {
     return "";
   }
 }
-function renderLoadingCards() {
-  coverObserver?.disconnect();
-  $("grid").replaceChildren(...Array.from({ length: 8 }, () => {
-    const card = node("div", "card-skeleton");
-    card.setAttribute("aria-hidden", "true");
-    card.append(node("div", "skeleton-art"), node("div", "skeleton-line"), node("div", "skeleton-line short"));
-    return card;
-  }));
+const monthName = new Intl.DateTimeFormat(zh ? "zh-CN" : "en", { year: "numeric", month: "long", timeZone: "UTC" });
+const monthLabel = (month) => monthName.format(new Date(`${month}-01T00:00:00Z`));
+const pagesIn = (month) => Math.max(1, Math.ceil((state.months.find((m) => m.month === month)?.cnt || 0) / PAGE_SIZE));
+function filterQuery(extra = {}) {
+  const query = new URLSearchParams(extra);
+  for (const field of ["source", "tag", "q"]) if (state[field]) query.set(field, state[field]);
+  return query;
 }
-function renderCards(works, append) {
-  if (!append) {
-    for (const card of $("grid").children) middleObserver?.unobserve(card);
-    stage.cards.clear();
-    $("grid").replaceChildren();
-  }
-  const fragment = document.createDocumentFragment();
-  for (const [i, work] of works.entries()) {
-    const title = work.title || work.source_id;
-    const card = node("article", "card");
-    card.dataset.workId = work.id;
-    middleObserver?.observe(card);
-    card.style.animationDelay = `${(i % 12) * 40}ms`;
-    const art = node("a", "art-button");
-    const ratio = coverRatio(work.cover_width, work.cover_height);
-    art.style.aspectRatio = String(ratio || .75);
-    art.href = galleryUrl(work.id);
-    art.setAttribute("aria-label", `查看 ${title}，${work.page_count} 张图片`);
-    const image = node("img");
-    image.alt = title;
-    image.loading = !append && i < 4 ? "eager" : "lazy";
-    image.decoding = "async";
-    if (!append && i < 2) image.fetchPriority = "high";
-    const original = coverUrl(work.cover_url);
-    image.onload = () => {
-      if (!ratio) art.style.aspectRatio = String(coverRatio(image.naturalWidth, image.naturalHeight) || .75);
-      art.classList.add("image-loaded");
-      const color = artColor(image);
-      if (color) {
-        card.style.setProperty("--art", color);
-        if (stage.cards.has(card)) stageColor();
-      }
-    };
-    image.onerror = () => art.classList.add("image-broken");
-    if (original) {
-      if (image.loading === "eager" || !coverObserver) image.src = thumbUrl(original);
-      else { image.dataset.src = thumbUrl(original); coverObserver.observe(image); }
-    } else art.classList.add("image-broken");
-    art.append(image, node("span", "image-fallback", "预览暂不可用 · 查看详情"));
-    if (work.page_count > 1) art.append(node("span", "image-badge", `${work.page_count} 张`));
-    const body = node("div", "card-body");
-    const heading = node("h2", "card-title");
-    const titleLink = node("a", "", title);
-    titleLink.href = art.href;
-    titleLink.title = title;
-    heading.append(titleLink);
-    for (const link of [art, titleLink]) link.addEventListener("click", (event) => {
-      if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
-      event.preventDefault();
-      openLightbox(work, card);
-    });
-    const meta = node("div", "card-meta");
-    meta.append(node("span", "card-author", work.author_name || "未署名"), node("span", "card-source", names[work.source] || work.source));
-    body.append(heading, meta);
-    card.append(art, body);
-    fragment.append(card);
-  }
-  $("grid").append(fragment);
+function hallItem(work, i) {
+  const size = i === 0 ? "lead" : i < 5 ? "medium" : "small";
+  const title = work.title || work.source_id;
+  const card = node("article", `hall-item ${size}`);
+  card.dataset.workId = work.id;
+  card.style.setProperty("--i", String(i));
+  middleObserver?.observe(card);
+  const art = node("a", "art-button");
+  art.href = galleryUrl(work.id);
+  art.setAttribute("aria-label", `查看 ${title}，${work.page_count} 张图片`);
+  const image = node("img");
+  image.alt = "";
+  image.decoding = "async";
+  image.loading = i < 5 ? "eager" : "lazy";
+  if (i === 0) image.fetchPriority = "high";
+  image.onload = () => {
+    art.classList.add("image-loaded");
+    const color = artColor(image);
+    if (color) {
+      card.style.setProperty("--art", color);
+      if (stage.cards.has(card)) stageColor();
+    }
+  };
+  image.onerror = () => art.classList.add("image-broken");
+  const original = coverUrl(work.cover_url);
+  if (original) image.src = thumbUrl(original, size === "lead" ? 1280 : 640);
+  else art.classList.add("image-broken");
+  art.append(image, node("span", "image-fallback", "预览暂不可用 · 查看详情"));
+  if (work.page_count > 1) art.append(node("span", "image-badge", `${work.page_count} 张`));
+  const caption = node("div", "hall-caption");
+  const meta = node("p", "card-meta");
+  meta.append(node("span", "card-author", work.author_name || "未署名"), node("span", "card-source", names[work.source] || work.source));
+  caption.append(node("h2", "hall-title", title), meta);
+  art.append(caption);
+  art.addEventListener("click", (event) => {
+    if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+    event.preventDefault();
+    openLightbox(work, card);
+  });
+  card.append(art);
+  return card;
 }
-const moreObserver = typeof IntersectionObserver === "function" ? new IntersectionObserver((entries) => {
-  if (entries.some((entry) => entry.isIntersecting) && !$("more").hidden) return loadWorks();
-}, { rootMargin: "0px 0px 400px 0px" }) : null;
-async function loadWorks(reset = false) {
-  if (!reset && (state.loading || state.done)) return;
-  moreObserver?.unobserve($("more"));
-  if (reset) {
-    state.request?.abort();
-    state.offset = 0;
-    state.cursor = null;
-    state.done = false;
-    state.works = [];
-    renderLoadingCards();
-    updateCount();
-    renderFeatured();
+function renderLoadingHall() {
+  for (const card of $("grid").children[0]?.children || []) middleObserver?.unobserve(card);
+  stage.cards.clear();
+  const spread = node("div", "spread loading");
+  spread.setAttribute("aria-hidden", "true");
+  for (let i = 0; i < PAGE_SIZE; i++) spread.append(node("div", `hall-item ${i === 0 ? "lead" : i < 5 ? "medium" : "small"} skeleton`));
+  $("grid").replaceChildren(spread);
+}
+// The outgoing page slides away in the turning direction before the next one is set in.
+async function renderHall(works, direction) {
+  const old = $("grid").children[0];
+  if (old && direction && !calm.matches && old.animate) {
+    await old.animate([{ opacity: 1, translate: "0 0" }, { opacity: 0, translate: `${-direction * 48}px 0` }],
+      { duration: 240, easing: "cubic-bezier(.4, 0, 1, 1)", fill: "forwards" }).finished.catch(() => {});
   }
-  const controller = new AbortController();
-  state.request = controller;
+  for (const card of old?.children || []) middleObserver?.unobserve(card);
+  stage.cards.clear();
+  const spread = node("div", "spread");
+  spread.style.setProperty("--from", `${direction * 48}px`);
+  works.forEach((work, i) => spread.append(hallItem(work, i)));
+  $("grid").replaceChildren(spread);
+}
+const pageCache = new Map();
+function fetchPage(month, p) {
+  const query = filterQuery({ month, limit: PAGE_SIZE, offset: (p - 1) * PAGE_SIZE });
+  const key = query.toString();
+  if (!pageCache.has(key)) pageCache.set(key, getJson(`/api/works?${query}`).catch((error) => { pageCache.delete(key); throw error; }));
+  return pageCache.get(key);
+}
+// The page one step away, crossing into the neighbouring month at either end; null past the ends.
+function neighbour(step) {
+  const index = state.months.findIndex((m) => m.month === state.month);
+  const p = state.p + step;
+  if (p >= 1 && p <= pagesIn(state.month)) return { month: state.month, p };
+  const month = state.months[index + step]?.month;
+  return month ? { month, p: step > 0 ? 1 : pagesIn(month) } : null;
+}
+let hallTicket = 0;
+async function showPage(direction = 0) {
+  const ticket = ++hallTicket;
   state.loading = true;
   $("grid").setAttribute("aria-busy", "true");
-  $("status").textContent = reset ? "正在加载作品…" : "";
+  $("status").textContent = "";
   $("status").classList.remove("error");
   $("retry").hidden = true;
-  $("empty").hidden = true;
-  $("end-note").hidden = true;
-  $("more").disabled = true;
-  $("more").textContent = "正在加载…";
-  const query = new URLSearchParams({ limit: state.limit });
-  if (state.cursor) query.set("cursor", state.cursor);
-  else query.set("offset", state.offset);
-  for (const field of ["source", "tag", "q"]) if (state[field]) query.set(field, state[field]);
+  syncPager();
   try {
-    const data = await getJson(`/api/works?${query}`, controller.signal);
-    if (state.request !== controller) return;
-    const works = data.works || [];
-    const existing = new Set(state.works.map((work) => work.id));
-    const fresh = works.filter((work) => !existing.has(work.id));
-    state.works.push(...fresh);
-    renderCards(fresh, !reset);
-    state.offset += works.length;
-    state.cursor = data.next_cursor ?? null;
-    state.done = "next_cursor" in data ? !state.cursor : works.length < state.limit;
-    $("status").textContent = "";
+    const data = await fetchPage(state.month, state.p);
+    if (ticket !== hallTicket) return;
+    state.works = data.works || [];
+    await renderHall(state.works, direction);
+    if (ticket !== hallTicket) return;
     $("empty").hidden = state.works.length > 0;
-    $("end-note").hidden = !state.done || !state.works.length;
-    $("more").hidden = state.done;
+    renderFeatured();
+    // Ready the next and previous pages so a turn shows at once; the next page's large and medium covers too.
+    for (const step of [1, -1]) {
+      const next = neighbour(step);
+      if (next) fetchPage(next.month, next.p).then((page) => {
+        if (step > 0) page.works?.slice(0, 5).forEach((work, i) => { if (coverUrl(work.cover_url)) new Image().src = thumbUrl(coverUrl(work.cover_url), i ? 640 : 1280); });
+      }, () => {});
+    }
+  } catch (error) {
+    if (ticket !== hallTicket) return;
+    $("status").textContent = `${error.message}。`;
+    $("status").classList.add("error");
+    $("grid").replaceChildren();
+    $("retry").hidden = false;
+  } finally {
+    if (ticket === hallTicket) {
+      state.loading = false;
+      $("grid").setAttribute("aria-busy", "false");
+    }
+  }
+}
+// Months for the current filters, then the page the address asks for (newest month by default).
+async function loadHall() {
+  state.request?.abort();
+  const controller = new AbortController();
+  state.request = controller;
+  hallTicket++;
+  pageCache.clear();
+  renderLoadingHall();
+  $("empty").hidden = true;
+  $("retry").hidden = true;
+  $("status").textContent = "正在加载作品…";
+  $("status").classList.remove("error");
+  try {
+    const data = await getJson(`/api/months?${filterQuery()}`, controller.signal);
+    if (state.request !== controller) return;
+    state.months = data.months || [];
     updateCount();
-    if (reset) renderFeatured();
+    renderMonths();
+    if (!state.months.length) {
+      $("grid").replaceChildren();
+      $("status").textContent = "";
+      $("empty").hidden = false;
+      syncPager();
+      return;
+    }
+    if (!state.months.some((m) => m.month === state.month)) Object.assign(state, { month: state.months[0].month, p: 1 });
+    state.p = Math.min(state.p, pagesIn(state.month));
+    history.replaceState(history.state, "", galleryUrl(new URLSearchParams(location.search).get("work") || "", Math.max(0, (parseInt(new URLSearchParams(location.search).get("page"), 10) || 1) - 1)));
+    $("status").textContent = "";
+    await showPage(0);
   } catch (error) {
     if (controller.signal.aborted || state.request !== controller) return;
     $("status").textContent = `${error.message}。`;
     $("status").classList.add("error");
-    if (!state.works.length) $("grid").replaceChildren();
+    $("grid").replaceChildren();
     $("retry").hidden = false;
-    $("more").hidden = true;
-  } finally {
-    if (state.request === controller) {
-      state.loading = false;
-      $("grid").setAttribute("aria-busy", "false");
-      $("more").disabled = false;
-      $("more").textContent = "继续浏览";
-      if (!$("more").hidden) moreObserver?.observe($("more"));
-    }
   }
+}
+function goToPage(month, p, direction) {
+  if (month === state.month && p === state.p) return;
+  Object.assign(state, { month, p });
+  history.pushState(null, "", galleryUrl());
+  renderMonths();
+  showPage(direction);
+  const top = $("months").getBoundingClientRect().top;
+  if (top < 0) $("months").scrollIntoView({ behavior: calm.matches ? "auto" : "smooth", block: "start" });
+}
+function turn(step) {
+  const next = neighbour(step);
+  if (next && !state.loading) goToPage(next.month, next.p, step);
+}
+function renderMonths() {
+  $("months").replaceChildren(...state.months.map((m) => {
+    const tab = button(`month-tab${m.month === state.month ? " active" : ""}`, undefined, () => goToPage(m.month, 1, m.month < state.month ? 1 : -1));
+    if (m.month === state.month) tab.setAttribute("aria-current", "page");
+    tab.append(node("span", "", monthLabel(m.month)), node("span", "tag-count", m.cnt.toLocaleString("zh-CN")));
+    return tab;
+  }));
+}
+// Page numbers: the first, the last and two either side of the current one, with gaps marked.
+function syncPager() {
+  const pages = pagesIn(state.month), shown = new Set([1, pages]);
+  for (let p = state.p - 2; p <= state.p + 2; p++) if (p >= 1 && p <= pages) shown.add(p);
+  const list = [];
+  let last = 0;
+  for (const p of [...shown].sort((a, b) => a - b)) {
+    if (p - last > 1) list.push(node("li", "page-gap", "…"));
+    const item = node("li");
+    const jump = button(`page-number${p === state.p ? " active" : ""}`, String(p), () => goToPage(state.month, p, p > state.p ? 1 : -1));
+    if (p === state.p) jump.setAttribute("aria-current", "page");
+    jump.setAttribute("aria-label", `第 ${p} 页`);
+    item.append(jump);
+    list.push(item);
+    last = p;
+  }
+  $("page-list").replaceChildren(...list);
+  const before = neighbour(-1), after = neighbour(1);
+  $("prev-page").disabled = !before;
+  $("next-page").disabled = !after;
+  // Crossing into another month names it, so the turn is not a surprise.
+  $("prev-page").lastChild.textContent = before && before.month !== state.month ? monthLabel(before.month) : "上一页";
+  $("next-page").firstChild.textContent = after && after.month !== state.month ? monthLabel(after.month) : "下一页";
+  $("pager").hidden = !state.months.length;
 }
 function showImage(index, updateUrl = true, retry = false) {
   if (!state.images.length) return;
@@ -608,8 +684,11 @@ function syncRoute() {
   state.closing = false;
   const filters = locationFilters();
   const changed = ["source", "tag", "q"].some((key) => filters[key] !== state[key]);
+  const turned = filters.month !== state.month || filters.p !== state.p;
+  const direction = filters.month === state.month ? Math.sign(filters.p - state.p) : filters.month < state.month ? 1 : -1;
   Object.assign(state, filters);
-  if (changed) { syncFilters(); loadWorks(true); }
+  if (changed) { syncFilters(); loadHall(); }
+  else if (turned && state.months.length) { renderMonths(); showPage(direction); }
   const query = new URLSearchParams(location.search);
   const id = query.get("work");
   if (id) {
@@ -638,8 +717,24 @@ $("browse-tags").addEventListener("click", () => {
 });
 $("tag-search").addEventListener("input", renderTagBrowser);
 $("tag-retry").addEventListener("click", () => { state.tagError = ""; renderTagBrowser(); loadTags(); });
-$("more").addEventListener("click", () => loadWorks());
-$("retry").addEventListener("click", () => loadWorks(state.offset === 0));
+$("retry").addEventListener("click", () => (state.months.length ? showPage(0) : loadHall()));
+$("prev-page").addEventListener("click", () => turn(-1));
+$("next-page").addEventListener("click", () => turn(1));
+// Arrow keys turn pages when nothing else wants them; a horizontal swipe on the hall does the same.
+document.addEventListener("keydown", (event) => {
+  if ($("lightbox").open || event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
+  if (event.target.closest?.("input, textarea, select, [contenteditable]")) return;
+  if (event.key === "ArrowLeft") turn(-1);
+  else if (event.key === "ArrowRight") turn(1);
+});
+let hallSwipe = null;
+$("grid").addEventListener("touchstart", (event) => { hallSwipe = event.touches.length === 1 ? [event.touches[0].clientX, event.touches[0].clientY] : null; }, { passive: true });
+$("grid").addEventListener("touchend", (event) => {
+  if (!hallSwipe) return;
+  const dx = event.changedTouches[0].clientX - hallSwipe[0], dy = event.changedTouches[0].clientY - hallSwipe[1];
+  hallSwipe = null;
+  if (Math.abs(dx) > 70 && Math.abs(dx) > Math.abs(dy) * 1.6) turn(dx < 0 ? 1 : -1);
+});
 $("lb-close").addEventListener("click", closeLightbox);
 $("lightbox").addEventListener("cancel", (event) => { event.preventDefault(); closeLightbox(); });
 $("lightbox").addEventListener("close", () => {
@@ -694,7 +789,7 @@ $("about-close").addEventListener("click", () => $("about").close());
 // Touch feedback: a ring spreads like water from where a tag, tab or thumbnail is pressed, in the tag kind's colour.
 const calm = matchMedia("(prefers-reduced-motion: reduce)");
 document.addEventListener("pointerdown", (event) => {
-  const target = event.target.closest?.(".tag-chip, .source-link, #browse-tags, .tag-kind, .featured-pick");
+  const target = event.target.closest?.(".tag-chip, .source-link, #browse-tags, .tag-kind, .featured-pick, .month-tab, .page-number, .pager-turn:not(:disabled)");
   if (!target || calm.matches) return;
   const box = target.getBoundingClientRect(), size = Math.max(box.width, box.height) * 2.4;
   const ripple = node("span", "ripple");
@@ -831,43 +926,6 @@ function renderFeatured() {
 for (const [type, run] of [["pointerenter", false], ["pointerleave", true], ["focusin", false], ["focusout", true]]) {
   $("featured").addEventListener(type, () => rotateFeatured(run && !$("featured").hidden));
 }
-// Masonry: cards keep DOM (and keyboard) order; each is translated into the shortest column.
-if (typeof ResizeObserver === "function") {
-  const grid = $("grid");
-  let frame = 0;
-  const layout = () => {
-    frame = 0;
-    const items = [...grid.children];
-    const style = getComputedStyle(grid);
-    const columns = Math.max(1, parseInt(style.getPropertyValue("--columns"), 10) || 2);
-    const gapX = parseFloat(style.columnGap) || 0, gapY = parseFloat(style.rowGap) || 0;
-    const width = (grid.clientWidth - gapX * (columns - 1)) / columns;
-    grid.style.setProperty("--card-width", `${width}px`);
-    const heights = items.map((item) => item.offsetHeight);
-    const bottoms = Array(columns).fill(0);
-    const fresh = [];
-    items.forEach((item, i) => {
-      const column = bottoms.indexOf(Math.min(...bottoms));
-      item.style.translate = `${column * (width + gapX)}px ${bottoms[column]}px`;
-      bottoms[column] += heights[i] + gapY;
-      if (!item.classList.contains("placed")) fresh.push(item);
-    });
-    grid.style.height = items.length ? `${Math.max(...bottoms) - gapY}px` : "";
-    // Commit first positions before enabling the slide used for later reflows.
-    if (fresh.length) { void grid.offsetWidth; for (const item of fresh) item.classList.add("placed"); }
-  };
-  const schedule = () => { frame ||= requestAnimationFrame(layout); };
-  const sizes = new ResizeObserver(schedule);
-  new MutationObserver((records) => {
-    for (const record of records) {
-      for (const item of record.addedNodes) if (item.nodeType === 1) sizes.observe(item);
-      for (const item of record.removedNodes) if (item.nodeType === 1) sizes.unobserve(item);
-    }
-    schedule();
-  }).observe(grid, { childList: true });
-  sizes.observe(grid);
-  grid.classList.add("masonry");
-}
 // The brush-script title is drawn on, left to right, whenever the collection changes.
 let drawnTitle = "";
 new MutationObserver(() => {
@@ -879,6 +937,6 @@ new MutationObserver(() => {
 }).observe($("collection-title"), { childList: true, characterData: true, subtree: true });
 window.addEventListener("popstate", syncRoute);
 syncFilters();
-loadWorks(true);
+loadHall();
 loadFilters();
 syncRoute();

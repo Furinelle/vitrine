@@ -30,6 +30,20 @@ def main():
     assert len(set(seen)) == len(seen)
     local.request('/api/works?cursor=not-json', expected=400, auth=False)
 
+    # Month pages count collection months in Beijing time: 16:00 UTC on 30 September is already October.
+    tagged = sorted(set(work_ids) - {first['works'][0]['id']})
+    local.local_d1(f"UPDATE works SET created_at='2026-09-30T16:00:00.000Z' WHERE id='{tagged[0]}'; "
+                   f"UPDATE works SET created_at='2026-09-30T15:59:59.999Z' WHERE id='{tagged[1]}'")
+    month_filter = {'tag': prefix + '-low-volume'}
+    months = local.request('/api/months?' + urllib.parse.urlencode(month_filter), auth=False)['months']
+    assert months == [{'month': '2026-10', 'cnt': 4}, {'month': '2026-09', 'cnt': 1}], months
+    page = local.request('/api/works?' + urllib.parse.urlencode({**month_filter, 'month': '2026-10', 'limit': 3, 'offset': 3}), auth=False)['works']
+    assert [w['id'] for w in page] == [tagged[0]], page
+    september = local.request('/api/works?' + urllib.parse.urlencode({**month_filter, 'month': '2026-09'}), auth=False)['works']
+    assert [w['id'] for w in september] == [tagged[1]], september
+    local.request('/api/works?month=2026-13', expected=400, auth=False)
+    local.request('/api/months?month=26-1', expected=400, auth=False)
+
     # Tag search/pagination sees tags beyond the old hard-coded first 200 entries.
     survivor = work_ids[0]
     tags = [f'{prefix}-tag-{i:03}' for i in range(205)]
@@ -64,7 +78,7 @@ def main():
     local.request('/api/catalog/retract', {'work_id': survivor, 'decision_id': uuid.uuid4().hex})
     assert not cached('/api/tags?' + urllib.parse.urlencode({'q': new_tag}), 'MISS')['tags']
     cached('/api/sources', 'MISS')
-    print('PASS: deterministic cursor and literal search; shared full-tag/source caches; direct tag changes and hidden works invalidate counts')
+    print('PASS: deterministic cursor and literal search; month counts and month pages in Beijing time; shared full-tag/source caches; direct tag changes and hidden works invalidate counts')
 
 
 if __name__ == '__main__':

@@ -30,7 +30,7 @@ context.applyFilters = ({ tag }) => { assert.equal(tag, 'art'); events.push('fil
 context.state = { viewerRequest: null };
 context.tagName = (tag) => tag;
 context.tagInfo = new Map();
-vm.runInContext(source.slice(source.indexOf('function tagButton('), source.indexOf('const coverObserver =')), context);
+vm.runInContext(source.slice(source.indexOf('function tagButton('), source.indexOf('function coverRatio(')), context);
 context.tagButton('art');
 await activateTag();
 assert.deepEqual(events, ['close', 'filter', 'focus']);
@@ -51,7 +51,7 @@ function filtersFixture() {
     });
     return elements.get(id);
   }
-  const state = { sources: [], tags: [], works: [], source: '', tag: '', q: '' };
+  const state = { sources: [], tags: [], works: [], months: [], source: '', tag: '', q: '' };
   const filters = vm.createContext({
     state, names: { x: 'X' }, $: element,
     document: { createElement: () => element(Symbol()), querySelectorAll: () => [], querySelector: () => null },
@@ -147,176 +147,62 @@ for (const language of ['zh-CN', 'en-US']) {
 }
 console.log('PASS: tag index groups by kind and work, follows the browser language, searches every display name');
 
-// Exercise actual card rendering and viewport loading without fetching images.
-function cardsFixture(withObserver = true) {
-  const observed = new Set();
-  let intersect, observerOptions, disconnected = 0, unobserved = 0;
-  function element(tag) {
-    const classes = new Set();
-    return {
-      tagName: tag, children: [], dataset: {}, attributes: {}, style: {}, assignments: [], isConnected: true,
-      classList: { add(name) { classes.add(name); }, contains(name) { return classes.has(name); } },
-      setAttribute(name, value) { this.attributes[name] = value; },
-      addEventListener() {},
-      append(...items) { for (const item of items) this.children.push(...(item.tagName === 'fragment' ? item.children : [item])); },
-      replaceChildren(...items) { this.children = []; this.append(...items); },
-      get src() { return this.assignments.at(-1) || ''; },
-      set src(value) { this.assignments.push(value); },
-    };
-  }
-  const grid = element('section');
-  const cards = vm.createContext({
-    URL, URLSearchParams, location: { origin: 'https://gallery.example' },
-    names: { x: 'X' }, $: () => grid, galleryUrl: id => `/?work=${id}`,
-    applyFilters() {}, openLightbox() {},
-    // The backdrop's middle-of-screen observer lives outside this slice.
-    middleObserver: null, stage: { cards: new Set() },
-    document: { createElement: element, createDocumentFragment: () => element('fragment') },
-    IntersectionObserver: withObserver ? class {
-      constructor(callback, options) { intersect = callback; observerOptions = options; }
-      observe(image) { observed.add(image); }
-      unobserve(image) { observed.delete(image); unobserved++; }
-      disconnect() { observed.clear(); disconnected++; }
-    } : undefined,
+// The hall: pages of fifteen per collection month, turning across month ends, numbered with gaps.
+{
+  const element = (id) => {
+    const el = { id, children: [], dataset: {}, style: { setProperty(k, val) { this[k] = val; } }, attributes: {}, disabled: false, hidden: false,
+      textContent: '', classList: { add() {}, toggle() {} }, setAttribute(k, val) { this.attributes[k] = val; }, addEventListener() {},
+      append(...items) { this.children.push(...items); }, replaceChildren(...items) { this.children = items; } };
+    return el;
+  };
+  const els = new Map();
+  const $ = (id) => { if (!els.has(id)) els.set(id, element(id)); return els.get(id); };
+  $('prev-page').children = [{}, { textContent: '' }];
+  $('next-page').children = [{ textContent: '' }, {}];
+  Object.defineProperty($('prev-page'), 'lastChild', { get() { return this.children[1]; } });
+  Object.defineProperty($('next-page'), 'firstChild', { get() { return this.children[0]; } });
+  const hall = vm.createContext({
+    $, Intl, URLSearchParams, zh: true, names: {}, location: { origin: 'https://gallery.example' },
+    state: { source: '', tag: '原神', q: '', month: '2026-09', p: 1, months: [{ month: '2026-10', cnt: 31 }, { month: '2026-09', cnt: 15 }, { month: '2026-08', cnt: 1 }] },
+    document: { createElement: (tag) => Object.assign(element(), { tagName: tag }) },
+    middleObserver: null, stage: { cards: new Set() }, galleryUrl: (id) => `/?work=${id}`,
   });
-  for (const [start, end] of [
-    ['function node(', 'function safeLink('],
-    ['function safeLink(', 'async function getJson('],
-    ['const coverObserver =', 'const moreObserver ='],
-  ]) vm.runInContext(source.slice(source.indexOf(start), source.indexOf(end)), cards);
-  const works = Array.from({ length: 6 }, (_, i) => ({
-    id: `x:${i}`, title: `Work ${i}`, source: 'x', page_count: 1, cover_url: `/media/x/${i}/0.jpg`,
-    ...(i === 0 ? { cover_width: 600, cover_height: 900 } : i === 1 ? { cover_width: 100, cover_height: 1000 } : {}),
-  }));
-  return { cards, grid, works, observed, get intersect() { return intersect; },
-    get observerOptions() { return observerOptions; }, get disconnected() { return disconnected; },
-    get unobserved() { return unobserved; }, images: () => grid.children.map(card => card.children[0].children[0]) };
+  vm.runInContext(source.slice(source.indexOf('function node('), source.indexOf('function safeLink(')), hall);
+  vm.runInContext('const PAGE_SIZE = 15;' + source.slice(source.indexOf('const monthName ='), source.indexOf('function renderLoadingHall(')), hall);
+  vm.runInContext(source.slice(source.indexOf('// The page one step away'), source.indexOf('let hallTicket')), hall);
+  vm.runInContext(source.slice(source.indexOf('// Page numbers:'), source.indexOf('\n', source.indexOf('$("pager").hidden')) + 2), hall);
+  assert.equal(vm.runInContext("monthLabel('2026-09')", hall), '2026年9月');
+  assert.equal(vm.runInContext("pagesIn('2026-10')", hall), 3, '31 works make three pages of fifteen');
+  assert.equal(vm.runInContext("filterQuery({ month: '2026-09' }).toString()", hall), 'month=2026-09&tag=%E5%8E%9F%E7%A5%9E');
+  // A one-page month: both turns cross into the neighbouring months, named on the buttons.
+  assert.deepEqual(JSON.parse(vm.runInContext('JSON.stringify([neighbour(-1), neighbour(1)])', hall)), [{ month: '2026-10', p: 3 }, { month: '2026-08', p: 1 }]);
+  vm.runInContext('syncPager()', hall);
+  assert.equal($('prev-page').children[1].textContent, '2026年10月');
+  assert.equal($('next-page').children[0].textContent, '2026年8月');
+  // Inside a long month the turns stay in it; the oldest page has nowhere further to go.
+  vm.runInContext("Object.assign(state, { month: '2026-10', p: 2 }); syncPager()", hall);
+  assert.equal($('prev-page').children[1].textContent, '上一页');
+  assert.equal($('next-page').children[0].textContent, '下一页');
+  vm.runInContext("Object.assign(state, { month: '2026-08', p: 1 }); syncPager()", hall);
+  assert.equal($('next-page').disabled, true);
+  // Page numbers keep the ends and two either side, with gaps marked.
+  vm.runInContext("state.months = [{ month: '2026-10', cnt: 15 * 20 }]; Object.assign(state, { month: '2026-10', p: 10 }); syncPager()", hall);
+  const labels = $('page-list').children.map((li) => li.className === 'page-gap' ? '…' : li.children[0].textContent);
+  assert.deepEqual(labels, ['1', '…', '8', '9', '10', '11', '12', '…', '20']);
+  // Spread sizes: one large, four medium, ten small; the large cover asks for the bigger thumbnail.
+  vm.runInContext('var artColor = () => "", openLightbox = () => {}, thumbUrl = (u, w) => u + "?width=" + w, coverUrl = (u) => u;', hall);
+  vm.runInContext(source.slice(source.indexOf('function hallItem('), source.indexOf('function renderLoadingHall(')), hall);
+  const items = Array.from({ length: 15 }, (_, i) => hall.hallItem({ id: `x:${i}`, source: 'x', page_count: 1, cover_url: `/media/x/${i}.jpg` }, i));
+  assert.deepEqual([...new Set(items.map((item) => item.className))], ['hall-item lead', 'hall-item medium', 'hall-item small']);
+  assert.deepEqual(items.map((item) => item.className.split(' ')[1]).filter((c) => c === 'medium').length, 4);
+  const img = (item) => item.children[0].children[0];
+  assert.match(img(items[0]).src, /width=1280/);
+  assert.match(img(items[1]).src, /width=640/);
+  assert.equal(img(items[0]).fetchPriority, 'high');
+  assert.equal(img(items[4]).loading, 'eager');
+  assert.equal(img(items[5]).loading, 'lazy');
 }
-{
-  const f = cardsFixture();
-  f.cards.renderCards(f.works, false);
-  const images = f.images();
-  assert.equal(f.observerOptions.rootMargin, '360px 0px');
-  for (const image of images.slice(0, 4)) {
-    assert.equal(image.loading, 'eager');
-    assert.equal(new URL(image.src).searchParams.get('width'), '640');
-  }
-  assert.equal(images[0].fetchPriority, 'high');
-  assert.equal(images[1].fetchPriority, 'high');
-  assert.equal(images[2].fetchPriority, undefined);
-  for (const image of images.slice(4)) {
-    assert.equal(image.loading, 'lazy');
-    assert.equal(image.src, '', 'distant covers must not initiate a request');
-    assert.ok(f.observed.has(image));
-  }
-  const arts = f.grid.children.map(card => card.children[0]);
-  assert.equal(arts[0].style.aspectRatio, String(600 / 900), 'known covers reserve their real shape');
-  assert.equal(arts[1].style.aspectRatio, '0.5', 'very tall covers are cropped to a bounded shape');
-  assert.equal(arts[2].style.aspectRatio, '0.75', 'unknown covers start from a portrait placeholder');
-  Object.assign(images[2], { naturalWidth: 1600, naturalHeight: 900 });
-  images[2].onload();
-  assert.equal(arts[2].style.aspectRatio, String(1600 / 900), 'loaded covers correct an unknown shape');
-  Object.assign(images[0], { naturalWidth: 100, naturalHeight: 100 });
-  images[0].onload();
-  assert.equal(arts[0].style.aspectRatio, String(600 / 900), 'catalog dimensions win over the thumbnail');
-  const image = images[4], thumbnail = image.dataset.src;
-  f.intersect([{ target: image, isIntersecting: false }]);
-  assert.equal(image.assignments.length, 0);
-  f.intersect([{ target: image, isIntersecting: true }]);
-  f.intersect([{ target: image, isIntersecting: true }]);
-  assert.deepEqual(image.assignments, [thumbnail], 'intersection loads a bounded thumbnail exactly once');
-  assert.equal(image.dataset.src, undefined);
-  assert.equal(f.unobserved, 1);
-  image.onerror();
-  assert.deepEqual(image.assignments, [thumbnail], 'thumbnail failure must not download the original');
-  assert.equal(f.grid.children[4].children[0].classList.contains('image-broken'), true);
-  f.cards.renderLoadingCards();
-  assert.equal(f.disconnected, 1);
-  assert.equal(f.observed.size, 0, 'reset must release old card observers');
-  const staleImage = images[5];
-  staleImage.isConnected = false;
-  f.intersect([{ target: staleImage, isIntersecting: true }]);
-  assert.equal(staleImage.assignments.length, 0, 'queued callbacks after a filter reset must not request detached covers');
-  assert.equal(f.grid.children.length, 8);
-  for (const placeholder of f.grid.children) {
-    assert.equal(placeholder.className, 'card-skeleton');
-    assert.equal(placeholder.attributes['aria-hidden'], 'true');
-  }
-}
-{
-  const f = cardsFixture(false);
-  f.cards.renderCards(f.works, false);
-  assert.equal(f.images()[4].loading, 'lazy');
-  for (const image of f.images()) assert.equal(new URL(image.src).searchParams.get('width'), '640');
-  f.cards.renderLoadingCards();
-  assert.equal(f.grid.children.length, 8, 'loading placeholders also work without IntersectionObserver');
-}
-console.log('PASS: eager first covers, bounded viewport requests, no original fallback, native lazy fallback and accessible placeholders');
-
-// Auto-pagination must re-arm after success, serialize requests, and stop on error/end.
-const elements = Object.fromEntries(['grid', 'status', 'retry', 'empty', 'end-note', 'more'].map(id =>
-  [id, { hidden: true, children: [], classList: { add() {}, remove() {} }, setAttribute() {}, replaceChildren(...children) { this.children = children; } }]));
-const paging = { works: [], offset: 0, limit: 2, loading: false, done: false };
-let intersect, watched = false, completePage;
-const requests = [];
-const pagination = vm.createContext({
-  state: paging, URLSearchParams, AbortController, $: id => elements[id],
-  renderLoadingCards() { elements.grid.replaceChildren('skeleton'); },
-  renderFeatured() {},
-  renderCards(works, append) {
-    if (!append) elements.grid.replaceChildren();
-    elements.grid.children.push(...works);
-  },
-  updateCount() {},
-  getJson(url) { requests.push(url); return new Promise((resolve, reject) => { completePage = { resolve, reject }; }); },
-  IntersectionObserver: class {
-    constructor(callback) { intersect = callback; }
-    observe() { watched = true; }
-    unobserve() { watched = false; }
-  },
-});
-vm.runInContext(source.slice(source.indexOf('const moreObserver ='), source.indexOf('function showImage(')), pagination);
-let loading = pagination.loadWorks(true);
-completePage.resolve({ works: [{ id: 1 }, { id: 2 }] });
-await loading;
-assert.equal(watched, true);
-await intersect([{ isIntersecting: false }]);
-assert.equal(requests.length, 1);
-loading = intersect([{ isIntersecting: true }]);
-await intersect([{ isIntersecting: true }]);
-assert.equal(requests.length, 2);
-assert.match(requests[1], /offset=2/);
-assert.equal(watched, false);
-completePage.reject(new Error('offline'));
-await loading;
-await intersect([{ isIntersecting: true }]);
-assert.equal(requests.length, 2);
-assert.equal(elements.retry.hidden, false);
-assert.equal(watched, false);
-loading = pagination.loadWorks();
-assert.match(requests[2], /offset=2/);
-completePage.resolve({ works: [{ id: 3 }, { id: 4 }] });
-await loading;
-assert.equal(watched, true);
-loading = intersect([{ isIntersecting: true }]);
-assert.match(requests[3], /offset=4/);
-completePage.resolve({ works: [{ id: 5 }] });
-await loading;
-assert.equal(paging.works.length, 5);
-assert.equal(paging.done, true);
-assert.equal(elements.more.hidden, true);
-assert.equal(watched, false);
-await intersect([{ isIntersecting: true }]);
-assert.equal(requests.length, 4);
-console.log('PASS: automatic paging, concurrent trigger guard, error pause/retry, re-arm and end-of-results');
-loading = pagination.loadWorks(true);
-assert.deepEqual(elements.grid.children, ['skeleton']);
-completePage.reject(new Error('offline'));
-await loading;
-assert.deepEqual(elements.grid.children, [], 'failed initial loading must remove skeleton cards');
-assert.equal(elements.retry.hidden, false);
-assert.equal(paging.loading, false);
-console.log('PASS: initial load failure clears placeholders and allows retry');
+console.log('PASS: hall pages of fifteen per month, turns across month ends, numbered pager with gaps, lead/medium/small spread');
 
 
 const adminSource = readFileSync(new URL('../public/admin.js', import.meta.url), 'utf8');
@@ -397,18 +283,28 @@ assert.equal(context.thumbUrl('/media/a.png', 9000), '');
 assert.equal(context.safeLink('https://user:password@example.com'), '');
 console.log('PASS: share URL round-trip and bounded thumbnail presets');
 
-// Filtering during an in-flight page must not append the stale response.
-const pendingPages = [];
-pagination.getJson = url => new Promise(resolve => pendingPages.push({ url, resolve }));
-const oldPage = pagination.loadWorks(true);
-const newPage = pagination.loadWorks(true);
-pendingPages[1].resolve({ works: [{ id: 'new' }] });
-await newPage;
-pendingPages[0].resolve({ works: [{ id: 'old' }] });
-await oldPage;
-assert.equal(paging.works.map(work => work.id).join(','), 'new');
-assert.equal(paging.loading, false);
-console.log('PASS: stale pages cannot overwrite a newer filter');
+// A page turn that resolves late must not overwrite a newer one.
+{
+  const pending = [], drawn = [];
+  const el = () => ({ hidden: false, textContent: '', classList: { add() {}, remove() {} }, setAttribute() {}, replaceChildren() {} });
+  const els = new Map();
+  const turns = vm.createContext({
+    state: { works: [], loading: false }, $: (id) => { if (!els.has(id)) els.set(id, el()); return els.get(id); },
+    syncPager() {}, renderFeatured() {}, neighbour: () => null,
+    fetchPage: () => new Promise((resolve) => pending.push(resolve)),
+    renderHall: async (works) => { drawn.push(works.map((w) => w.id).join()); },
+  });
+  vm.runInContext(source.slice(source.indexOf('let hallTicket = 0;'), source.indexOf('// Months for the current filters')), turns);
+  const first = turns.showPage(1), second = turns.showPage(1);
+  pending[1]({ works: [{ id: 'new' }] });
+  await second;
+  pending[0]({ works: [{ id: 'old' }] });
+  await first;
+  assert.deepEqual(drawn, ['new']);
+  assert.equal(turns.state.works[0].id, 'new');
+  assert.equal(turns.state.loading, false);
+}
+console.log('PASS: a late page cannot overwrite a newer turn');
 
 // dialog.close() queues its close event. A detail response may resolve first,
 // so filtering must cancel it synchronously and never rewrite the new URL.
@@ -425,7 +321,7 @@ function viewerElement(id) {
   });
   return viewerElements.get(id);
 }
-const viewerState = { source: '', tag: '', q: '', viewerRequest: null };
+const viewerState = { source: '', tag: '', q: '', month: '', p: 1, months: [], viewerRequest: null };
 const viewerRoutes = [];
 const viewerHistory = {
   state: null,
@@ -439,7 +335,7 @@ const viewer = vm.createContext({
   state: viewerState, $: viewerElement, window: { scrollTo() {} },
   animateLightbox() {}, dismissLightbox() { viewerElement('lightbox').close(); },
   getJson() { return new Promise(resolve => { completeDetail = resolve; }); },
-  showWorkInfo() {}, syncFilters() {}, loadWorks() {},
+  showWorkInfo() {}, syncFilters() {}, loadHall() {},
 });
 for (const [start, end] of [
   ['function mediaUrl(', 'async function getJson('],
@@ -460,19 +356,6 @@ assert.deepEqual(viewerRoutes, ['/?work=pixiv%3A123', '/?tag=new-tag']);
 assert.equal(viewerRoutes.at(-1).includes('work='), false);
 console.log('PASS: closing during a detail request cannot rewrite the new filter URL');
 
-// The server cursor, not a moving row offset, carries the next browse request.
-const cursorPages = [];
-pagination.getJson = url => new Promise(resolve => cursorPages.push({url, resolve}));
-const cursorFirst = pagination.loadWorks(true);
-cursorPages[0].resolve({works:[{id:'cursor-a'},{id:'cursor-b'}],next_cursor:'["date","cursor-b"]'});
-await cursorFirst;
-const cursorNext = pagination.loadWorks();
-assert.equal(new URL(cursorPages[1].url,'https://gallery.example').searchParams.get('cursor'),'["date","cursor-b"]');
-assert.equal(new URL(cursorPages[1].url,'https://gallery.example').searchParams.has('offset'),false);
-cursorPages[1].resolve({works:[{id:'cursor-c'}],next_cursor:null});
-await cursorNext;
-assert.equal(paging.done,true);
-console.log('PASS: server cursor drives pagination and terminal state');
 
 // Shared theme boots before either page script, without their $ helper.
 const themeSource = readFileSync(new URL('../public/theme.js', import.meta.url), 'utf8');

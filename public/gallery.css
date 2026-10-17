@@ -134,22 +134,44 @@ h1 span { color: var(--brass); }
 .featured-pick.active { translate: 0 -4px; }
 .featured-pick img { display: block; width: 100%; height: 100%; object-fit: cover; }
 
-/* Without app.js layout this stays a plain grid; .masonry positions cards by their real shape. */
-.gallery { --columns: 5; display: grid; grid-template-columns: repeat(var(--columns), minmax(0, 1fr)); gap: 30px 18px; align-items: start; }
-.gallery:empty[aria-busy="true"] { min-height: 75vh; }
-.gallery.masonry { display: block; position: relative; }
-.masonry > * { position: absolute; top: 0; left: 0; width: var(--card-width, 25%); }
-.masonry > .placed { transition: translate .6s var(--ease); }
-.card-skeleton { min-width: 0; padding-bottom: 28px; }
-.skeleton-art { aspect-ratio: 3 / 4; background: var(--inset); border-radius: 12px; }
-.card-skeleton:nth-child(3n + 2) .skeleton-art { aspect-ratio: 4 / 5; }
-.card-skeleton:nth-child(4n + 3) .skeleton-art { aspect-ratio: 2 / 3; }
-.skeleton-line { height: 10px; width: 72%; margin-top: 16px; border-radius: 3px; background: var(--inset); }
-.skeleton-line.short { width: 38%; margin-top: 12px; }
-.card { min-width: 0; animation: card-in .6s var(--ease) both; }
-@keyframes card-in { from { opacity: 0; transform: translateY(18px); } }
+/* The hall: one page of a collection month, set like a programme spread. A twenty-column grid holds
+   one large picture over two rows, four medium ones beside it and two rows of five small ones below. */
+.months { display: flex; flex-wrap: wrap; gap: 2px 24px; margin: 4px 0 18px; scroll-margin-top: 16px; }
+.month-tab { position: relative; display: inline-flex; align-items: baseline; gap: 8px; min-height: 42px; font: 500 16px/42px var(--serif); letter-spacing: .06em; color: var(--muted); transition: color .2s, scale .15s; }
+.month-tab:hover { color: var(--text); }
+.month-tab.active { color: var(--text); }
+.month-tab.active::after { content: ""; position: absolute; left: 0; right: 0; bottom: 4px; height: 2px; border-radius: 2px; background: linear-gradient(90deg, var(--water), var(--brass)); }
+.hall { min-height: 40vh; }
+.spread { display: grid; grid-template-columns: repeat(20, minmax(0, 1fr)); gap: 16px; }
+.hall-item { --art: transparent; min-width: 0; animation: item-in .7s var(--ease) both; animation-delay: calc(var(--i, 0) * 32ms); }
+@keyframes item-in { from { opacity: 0; translate: var(--from, 0px) 16px; } }
+.hall-item.lead { grid-column: span 10; grid-row: span 2; }
+.hall-item.medium { grid-column: span 5; }
+.hall-item.small { grid-column: span 4; }
+.hall-item .art-button { aspect-ratio: 3 / 4; }
+.hall-item.medium .art-button, .hall-item.medium.skeleton { aspect-ratio: 4 / 5; }
+.hall-item.lead .art-button { height: 100%; aspect-ratio: auto; }
+.hall-item.small.skeleton { aspect-ratio: 3 / 4; }
+.hall-item.skeleton { border-radius: 12px; background: var(--inset); animation: none; }
+.hall-item .art-button img { object-position: 50% 28%; }
+/* Captions sit on the picture: always on the large one, on hover or focus for the rest. */
+.hall-caption { position: absolute; z-index: 2; left: 0; right: 0; bottom: 0; padding: 48px 16px 14px; color: #fff; text-align: left; background: linear-gradient(transparent, rgb(5 15 44 / .66)); opacity: 0; translate: 0 8px; transition: opacity .35s ease, translate .45s var(--ease); pointer-events: none; }
+.hall-item.lead .hall-caption, .art-button:hover .hall-caption, .art-button:focus-visible .hall-caption { opacity: 1; translate: 0 0; }
+.hall-title { margin: 0 0 4px; overflow: hidden; font: 500 var(--fs-md)/1.5 var(--serif); white-space: nowrap; text-overflow: ellipsis; text-shadow: 0 1px 10px rgb(0 0 0 / .3); }
+.hall-item.lead .hall-title { display: -webkit-box; font-size: clamp(18px, 1.7vw, 24px); white-space: normal; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+.hall-item.lead .hall-caption { padding: 90px 22px 20px; }
+.hall-caption .card-meta { color: rgb(255 255 255 / .82); }
+.pager { display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 12px 16px; margin: 36px 0 48px; font-family: var(--serif); }
+.pager-turn { display: inline-flex; align-items: center; gap: 8px; min-height: 44px; padding: 0 20px; border: 1px solid var(--line); border-radius: 999px; background: var(--panel); color: var(--text); letter-spacing: .04em; transition: border-color .25s, color .2s, scale .15s; }
+.pager-turn:hover:not(:disabled) { border-color: var(--gilt-line); color: var(--link); }
+.pager-turn svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+.page-list { display: flex; align-items: center; gap: 4px; margin: 0; padding: 0; list-style: none; }
+.page-number { min-width: 40px; height: 40px; padding: 0 6px; border-radius: 999px; font: italic 400 16px/40px var(--figures); color: var(--muted); transition: color .2s, background .25s, scale .15s; }
+.page-number:hover { color: var(--text); background: var(--inset); }
+.page-number.active { color: var(--bg); background: var(--text); font-style: normal; }
+.page-gap { padding: 0 2px; color: var(--muted); }
+.pagination:has(.status:empty):has(#retry[hidden]) { display: none; }
 /* The image is the card: rounded, borderless, with a faint edge so white artwork still reads as a shape. */
-.card { --art: transparent; }
 .art-button { width: 100%; aspect-ratio: 3 / 4; display: grid; place-items: center; position: relative; overflow: hidden; background: var(--inset); border-radius: 12px; box-shadow: 0 18px 34px -22px var(--art); transform: perspective(900px) rotateX(var(--tilt-x, 0deg)) rotateY(var(--tilt-y, 0deg)); transition: box-shadow .5s var(--ease), translate .5s var(--ease), transform .6s var(--ease); }
 .art-button:hover { transition: box-shadow .5s var(--ease), translate .5s var(--ease), transform .15s linear; }
 /* The hover shade fades in place; growing the gradient instead swept its dark edge down the image. */
@@ -164,15 +186,11 @@ h1 span { color: var(--brass); }
 .image-broken .image-fallback { display: block; }
 .image-broken img { display: none; }
 .image-badge { position: absolute; z-index: 2; top: 10px; right: 10px; border-radius: 999px; padding: 2px 9px; background: rgb(5 15 44 / .62); color: #fff; font-size: var(--fs-xs); font-variant-numeric: tabular-nums; }
-.card-body { padding: 10px 2px 0; }
-.card-title { font-family: var(--serif); margin: 0 0 5px; font-size: var(--fs-md); font-weight: 500; line-height: 1.55; }
-.card-title a { display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.card-title a:hover { text-decoration: underline; text-underline-offset: 4px; }
 .card-meta { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: var(--fs-xs); color: var(--muted); }
 .card-author { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .card-source { display: inline-flex; align-items: center; gap: 6px; flex-shrink: 0; }
 .card-source::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: var(--art); transition: background .6s; }
-@media (hover: hover) and (pointer: fine) { .art-button:hover { translate: 0 -4px; box-shadow: 0 26px 44px -22px var(--art); } .art-button:hover::after { --shade: 1; } .art-button:hover img { transform: scale(1.04); } .card:focus-within .card-title, .card:hover .card-title { color: var(--link); } }
+@media (hover: hover) and (pointer: fine) { .art-button:hover { translate: 0 -4px; box-shadow: 0 26px 44px -22px var(--art); } .art-button:hover::after { --shade: 1; } .art-button:hover img { transform: scale(1.04); } }
 .empty-state { text-align: center; padding: 60px 20px; }
 .empty-state > svg { width: 44px; height: 44px; fill: none; stroke: var(--muted); stroke-width: 1.5; stroke-linecap: round; }
 .empty-state h2 { font-family: var(--serif); font-size: 20px; font-weight: 500; }
@@ -238,10 +256,8 @@ dialog[open] { animation: enter .22s var(--ease); }
 #about h2 { font: 500 26px var(--serif); }
 #about > p:not(.eyebrow) { color: var(--muted); font-size: var(--fs-md); line-height: 1.9; }
 
-@media (min-width: 1700px) { .gallery { --columns: 6; } }
 @media (max-width: 1300px) { .topbar .search { width: min(340px, 36%); } }
-@media (max-width: 1100px) { .gallery { --columns: 4; gap: 26px 14px; } }
-@media (max-width: 900px) { .gallery { --columns: 3; } }
+@media (max-width: 1100px) { .spread { gap: 12px; } }
 @media (max-width: 760px) {
   html { scroll-padding-top: 16px; }
   main { padding: 24px 16px 0; }
@@ -260,15 +276,24 @@ dialog[open] { animation: enter .22s var(--ease); }
   .tag-filter > span:first-child { display: none; }
   .tag-strip { gap: 8px; margin-bottom: 16px; }
   .tag-strip .tag-chip { padding: 4px 12px; }
-  .gallery { --columns: 2; gap: 20px 10px; }
+  .months { gap: 0 18px; margin-bottom: 12px; }
+  .month-tab { font-size: 15px; }
+  .spread { grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 10px; }
+  .hall-item.lead { grid-column: span 6; grid-row: auto; }
+  .hall-item.lead .art-button, .hall-item.lead.skeleton { height: auto; aspect-ratio: 4 / 5; }
+  .hall-item.medium, .hall-item.small { grid-column: span 3; }
+  .hall-caption { display: none; }
+  .hall-item.lead .hall-caption { display: block; padding: 70px 16px 14px; }
+  .pager { gap: 10px; margin-top: 26px; }
+  .page-list { order: -1; width: 100%; justify-content: center; }
+  .page-number { min-width: 34px; height: 34px; line-height: 34px; font-size: 15px; }
   .featured { height: 58vw; min-height: 210px; margin-bottom: 24px; border-radius: 14px; }
   .featured-caption { max-width: 72%; }
   .featured-title { font-size: 19px; }
   .featured-author { margin-top: 6px; font-size: var(--fs-sm); }
   .featured-picker { top: 12px; right: 12px; bottom: auto; gap: 6px; }
   .featured-pick { width: 34px; height: 34px; border-radius: 8px; }
-  .art-button, .skeleton-art { border-radius: 10px; }
-  .card-body { padding-top: 10px; }
+  .art-button, .hall-item.skeleton { border-radius: 10px; }
   .page-footer { align-items: start; flex-direction: column; gap: 16px; }
   #lightbox { width: 100%; max-width: none; max-height: 100dvh; height: 100dvh; margin: 0; border: 0; border-radius: 0; }
   #lightbox[open] { display: block; }
@@ -285,8 +310,8 @@ dialog[open] { animation: enter .22s var(--ease); }
 @media (max-width: 370px) { .sort-label { display: none; } .sources { gap: 16px; } .source-select select { width: 88px; } }
 
 /* Pressed controls give a little and leave a ring of water in their kind's colour. */
-.tag-chip, .source-link, #browse-tags, .tag-kind { position: relative; overflow: hidden; }
-.tag-chip:active, .source-link:active, #browse-tags:active, .tag-kind:active, .featured-pick:active { scale: .95; }
+.tag-chip, .source-link, #browse-tags, .tag-kind, .month-tab, .page-number, .pager-turn { position: relative; overflow: hidden; }
+.tag-chip:active, .source-link:active, #browse-tags:active, .tag-kind:active, .featured-pick:active, .month-tab:active, .page-number:active, .pager-turn:active:not(:disabled) { scale: .95; }
 .tag-chip, .source-link, #browse-tags, .tag-kind, .featured-pick { transition-property: color, background, box-shadow, border-color, translate, scale, opacity; }
 .ripple { position: absolute; border-radius: 50%; pointer-events: none; scale: .1; opacity: .9;
   background: radial-gradient(closest-side, transparent 58%, color-mix(in srgb, var(--kind, var(--water)) 55%, transparent) 72%, transparent);

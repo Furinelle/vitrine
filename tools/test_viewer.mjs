@@ -45,7 +45,7 @@ function fixture() {
     elements.set(id, item);
     return item;
   }
-  const state = { source: '', tag: '', q: '', works: [], images: [
+  const state = { source: '', tag: '', q: '', month: '', p: 1, months: [], works: [], images: [
     { r2_key: 'x/one/0.jpg' }, { r2_key: 'x/one/1.jpg' },
   ], viewing: { id: 'x:one', title: 'Sample' }, imageIndex: 0 };
   const location = { origin: 'https://gallery.example', search: '' };
@@ -60,7 +60,7 @@ function fixture() {
     Image: class { set src(value) { preloaded.push(value); } },
     window: { devicePixelRatio: 1 }, matchMedia: () => ({ matches: reduced }),
     getComputedStyle: () => ({ opacity: '0.8', transform: 'matrix(1, 0, 0, 1, 0, 0)' }),
-    showWorkInfo() {}, syncFilters() {}, loadWorks() {},
+    showWorkInfo() {}, syncFilters() {}, loadHall() {},
     getJson(url, signal) { const done = deferred(); details.push({ ...done, url, signal }); return done.promise; },
   });
   for (const [start, end] of [
