@@ -111,7 +111,6 @@
     "Fleurdelys": ["フルールドリス"]
   },
   "keep": ["少偶", "沃黛", "黛沃", "沃黛沃", "vodette", "sandbina", "SandBinaWeek2026", "コロサン", "castlaea", "columdrone", "odenitsa", "双芙", "爱祥", "睦祥", "素祥", "arlefuri", "evermarch", "kafhime", "织窃", "窃织", "织窃织", "浮波柚叶爱丽丝", "海刻", "阮塔", "凝光夜兰"],
-  "implies": {"AI生成": ["NAI5", "NovelAI", "PixAI", "PixAITsubakiV3", "PixAIRecipe"]},
   "drop": [
     "绘画", "插画", "同人", "女の子", "稿件展示", "二次元", "原神创作者激励计划", "画画",
     "游戏破壁计划", "崩坏星穹铁道创作者激励计划", "二创", "插画分享", "原神牛逼", "100日チャレンジ", "原神1000users入り", "抖音同人图鉴",

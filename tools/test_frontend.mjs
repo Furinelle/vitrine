@@ -327,8 +327,10 @@ console.log('PASS: admin tag parse and work id encoding');
 const elementMap = {
   'nav-works': { classList: { toggle(c, f) { if (f) this[c] = true; else delete this[c]; } }, setAttribute(k, v) { this[k] = v; } },
   'nav-similar': { classList: { toggle(c, f) { if (f) this[c] = true; else delete this[c]; } }, setAttribute(k, v) { this[k] = v; } },
+  'nav-tags': { classList: { toggle(c, f) { if (f) this[c] = true; else delete this[c]; } }, setAttribute(k, v) { this[k] = v; } },
   'view-works-section': { hidden: false },
   'similar': { hidden: true },
+  'tags-view': { hidden: true },
   'sidebar-sources-section': { hidden: false },
   'search-form': { style: {} },
 };
@@ -339,9 +341,10 @@ const routingContext = vm.createContext({
   state: { view: 'works', works: [], similar: [], loading: false },
   loadSimilar() {},
   loadWorks() {},
+  loadTagsAdmin() { routingContext.tagsLoaded = true; },
 });
 vm.runInContext(
-  adminSource.slice(adminSource.indexOf('function setView('), adminSource.indexOf('/* =====================================================================\n   相似图审批相关渲染与操作')),
+  adminSource.slice(adminSource.indexOf('const VIEWS = {'), adminSource.indexOf('/* =====================================================================\n   相似图审批相关渲染与操作')),
   routingContext,
 );
 
@@ -363,7 +366,16 @@ assert.equal(elementMap['similar'].hidden, true);
 assert.equal(elementMap['nav-works'].classList.active, true);
 assert.equal(elementMap['sidebar-sources-section'].hidden, false);
 assert.equal(elementMap['search-form'].hidden, false);
-console.log('PASS: admin SPA routing /admin and /admin/similar');
+
+routingContext.window.location.pathname = '/admin/tags';
+routingContext.syncRoute();
+assert.equal(routingContext.state.view, 'tags');
+assert.equal(routingContext.document.title, 'Vitrine · 标签管理');
+assert.deepEqual([elementMap['view-works-section'].hidden, elementMap['similar'].hidden, elementMap['tags-view'].hidden], [true, true, false]);
+assert.equal(elementMap['nav-tags'].classList.active, true);
+assert.equal(elementMap['search-form'].hidden, true);
+assert.equal(routingContext.tagsLoaded, true);
+console.log('PASS: admin SPA routing /admin, /admin/similar and /admin/tags');
 
 // Shared links preserve filters and image position, and never concatenate raw metadata.
 const urls = vm.createContext({ URLSearchParams, state: { source: 'x', tag: 'a & b', q: '<title>' } });

@@ -8,7 +8,7 @@
   <meta name="description" content="Vitrine 图库管理" />
   <title>Vitrine · 管理后台</title>
   <link rel="stylesheet" href="/theme.css?v=20261015-system" />
-  <link rel="stylesheet" href="/styles.css?v=20261015-finish" />
+  <link rel="stylesheet" href="/styles.css?v=20261017-tags" />
 </head>
 <body class="admin-app">
   <a class="skip-link" href="#admin-main">跳到内容</a>
@@ -20,6 +20,7 @@
     <nav class="admin-nav" aria-label="管理导航">
       <a href="/admin" id="nav-works" class="source-link active" aria-current="page">作品管理 <span id="nav-works-count" class="source-count"></span></a>
       <a href="/admin/similar" id="nav-similar" class="source-link">相似图审批 <span id="nav-similar-count" class="source-count"></span></a>
+      <a href="/admin/tags" id="nav-tags" class="source-link">标签管理</a>
     </nav>
     <form id="search-form" class="search" role="search">
       <label class="sr-only" for="q">搜索标题、作者或作品 ID</label>
@@ -163,6 +164,66 @@
           <p class="similar-selection-help">建议项需确认后处理。相似组请保留需要的图片；勾选为删除，未勾选为保留，每组至少保留一张。</p>
           <div id="similar-groups" class="similar-groups-container"></div>
         </section>
+
+        <!-- 视图 3：标签管理 (/admin/tags) -->
+        <section id="tags-view" class="admin-view" hidden aria-label="标签管理">
+          <div class="collection-heading">
+            <h1>标签管理</h1>
+            <p id="tags-status" class="collection-count status" role="status" aria-live="polite"></p>
+          </div>
+          <div class="admin-filterbar tags-filterbar">
+            <label class="admin-status-filter"><span>类型</span><select id="tags-kind"><option value="">全部类型</option><option value="work">作品</option><option value="character">角色</option><option value="cp">CP</option><option value="skin">皮肤</option><option value="lore">设定</option><option value="theme">题材</option><option value="medium">媒介</option><option value="meta">其他</option><option value="unsorted">未分类</option></select></label>
+            <label class="admin-status-filter"><span>查找</span><input id="tags-q" type="search" placeholder="中文、日文或英文名" maxlength="64" autocomplete="off" /></label>
+          </div>
+          <form id="tags-batch-form" class="tags-batch" hidden>
+            <span>已选 <strong id="tags-selected">0</strong> 个</span>
+            <label>类型<select id="tags-batch-kind"><option value="">不改</option><option value="work">作品</option><option value="character">角色</option><option value="cp">CP</option><option value="skin">皮肤</option><option value="lore">设定</option><option value="theme">题材</option><option value="medium">媒介</option><option value="meta">其他</option><option value="unsorted">未分类</option></select></label>
+            <label>所属<input id="tags-batch-parent" list="tags-names" maxlength="64" placeholder="不改" /></label>
+            <button type="submit" class="primary-button">应用到所选</button>
+            <button id="tags-batch-clear" type="button" class="text-button">取消选择</button>
+          </form>
+          <div class="admin-split-layout">
+            <div class="admin-list-pane tags-table-wrap">
+              <table class="tags-table">
+                <thead><tr><th><input id="tags-all" type="checkbox" aria-label="选择全部列出的标签" /></th><th>标签</th><th>类型</th><th>所属 / 成员</th><th>日文名</th><th>英文名</th><th>作品</th></tr></thead>
+                <tbody id="tags-rows"></tbody>
+              </table>
+            </div>
+            <aside class="admin-editor" aria-labelledby="tag-editor-title">
+              <div id="tag-editor-empty" class="admin-editor-empty">
+                <h3>未选定标签</h3>
+                <p>点击标签名，即可修改类型、所属和名称，或合并、屏蔽。</p>
+              </div>
+              <div id="tag-editor-content" hidden>
+                <div class="admin-editor-head">
+                  <div>
+                    <p id="tag-editor-count" class="work-state"></p>
+                    <h2 id="tag-editor-title"></h2>
+                  </div>
+                  <button id="tag-editor-close" type="button" class="icon-button admin-close-btn" aria-label="关闭面板" title="关闭面板"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="M6.5 6.5l11 11M17.5 6.5l-11 11"/></svg></button>
+                </div>
+                <form id="tag-form" class="admin-edit-form">
+                  <label class="admin-field"><span>类型</span><select id="tag-kind"><option value="work">作品</option><option value="character">角色</option><option value="cp">CP</option><option value="skin">皮肤</option><option value="lore">设定</option><option value="theme">题材</option><option value="medium">媒介</option><option value="meta">其他</option><option value="unsorted">未分类</option></select></label>
+                  <label class="admin-field"><span>所属（作品或角色）</span><input id="tag-parent" list="tags-names" maxlength="64" placeholder="例如 原神" /></label>
+                  <label id="tag-members-field" class="admin-field"><span>CP 成员（逗号分隔）</span><input id="tag-members" maxlength="512" placeholder="例如 哥伦比娅, 桑多涅" /></label>
+                  <label class="admin-field"><span>日文名</span><input id="tag-ja" maxlength="64" /></label>
+                  <label class="admin-field"><span>英文名</span><input id="tag-en" maxlength="64" /></label>
+                  <p class="admin-visibility-note">带这个标签的作品会自动带上它的所属和 CP 成员。</p>
+                  <div class="admin-edit-actions"><button type="submit" class="primary-button">保存</button></div>
+                </form>
+                <div class="tag-merge">
+                  <label class="admin-field"><span>合并到或改名为</span><input id="tag-merge-into" list="tags-names" maxlength="64" placeholder="已有标签名，或新名字" /></label>
+                  <div class="admin-edit-actions">
+                    <button id="tag-merge" type="button" class="primary-button">合并 / 改名</button>
+                    <button id="tag-block" type="button" class="danger-button">屏蔽标签</button>
+                  </div>
+                </div>
+                <p id="tag-edit-status" class="status" role="status" aria-live="polite"></p>
+              </div>
+            </aside>
+          </div>
+          <datalist id="tags-names"></datalist>
+        </section>
       </main>
     </div>
   </div>
@@ -170,6 +231,6 @@
   <button id="back-to-top" class="icon-button back-to-top" type="button" aria-label="回到顶部" title="回到顶部" hidden><svg aria-hidden="true" viewBox="0 0 24 24"><path d="M5 10l7-7 7 7M12 3v18"/></svg></button>
 
   <script src="/theme.js?v=20261014-vitrine" defer></script>
-  <script src="/admin.js?v=20261015-refresh" defer></script>
+  <script src="/admin.js?v=20261017-tags" defer></script>
 </body>
 </html>

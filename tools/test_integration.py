@@ -65,7 +65,7 @@ def main():
                     raise RuntimeError('Local Worker did not become ready')
                 for test in ('test_public_security.py', 'test_public_browsing.py', 'test_admin_lifecycle.py',
                              'test_admin_security.py', 'test_image_review.py', 'test_catalog_cost.py',
-                             'test_ingest_stream.py', 'test_tag_keys.py'):
+                             'test_ingest_stream.py', 'test_tag_keys.py', 'test_tag_admin.py'):
                     print(f'Running {test}', flush=True)
                     subprocess.run([sys.executable, str(ROOT / 'tools' / test)], cwd=ROOT, env=env, check=True)
             except BaseException:

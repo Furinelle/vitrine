@@ -215,3 +215,23 @@ h1 { font: 500 28px/1.4 var(--serif); letter-spacing: .04em; margin-bottom: 0; }
 .admin-app:has(#console[hidden]) #back-to-top { display: none; }
 /* The sticky editor fills the bottom-right corner on wide screens. */
 @media (min-width: 981px) { .admin-app:has(#editor-content:not([hidden])) #back-to-top { display: none; } }
+
+/* Tag management: a dense table beside the shared editor panel. */
+.tags-filterbar .admin-status-filter { margin-left: 0; }
+.tags-filterbar input { border: 0; background: transparent; color: var(--text); min-height: 34px; font-size: 13px; outline: none; }
+.tags-batch { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 16px; margin: 0 0 16px; padding: 10px 16px; border: 1px solid var(--gilt-line); border-radius: 14px; font-size: 13px; color: var(--muted); }
+.tags-batch[hidden] { display: none; }
+.tags-batch label { display: flex; align-items: center; gap: 8px; }
+.tags-batch select, .tags-batch input { min-height: 34px; padding: 4px 10px; border: 1px solid var(--line); border-radius: 10px; background: var(--bg); color: var(--text); font-size: 13px; }
+.tags-table-wrap { overflow-x: auto; }
+.tags-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.tags-table th { position: sticky; top: 0; background: var(--bg); color: var(--muted); font-weight: 500; text-align: left; }
+.tags-table th, .tags-table td { padding: 8px 10px; border-bottom: 1px solid var(--line); vertical-align: middle; overflow-wrap: anywhere; }
+.tags-table td:last-child, .tags-table th:last-child { text-align: right; font-variant-numeric: tabular-nums; }
+.tags-table tr.active td { background: var(--inset); }
+.tags-name { color: var(--text); text-align: left; text-decoration: underline transparent; text-underline-offset: 4px; }
+.tags-name:hover { text-decoration-color: var(--brass); }
+.tag-merge { margin-top: 24px; padding-top: 20px; border-top: 1px solid var(--line); display: grid; gap: 14px; }
+.admin-split-layout:has(#tag-editor-content[hidden]) { grid-template-columns: minmax(0, 1fr); }
+.admin-editor:has(#tag-editor-content[hidden]) { display: none; }
+@media (max-width: 900px) { .tags-table th:nth-child(5), .tags-table td:nth-child(5) { display: none; } }

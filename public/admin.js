@@ -568,67 +568,47 @@ async function restoreImage(image) {
 /* =====================================================================
    SPA ROUTING: /admin 与 /admin/similar
    ===================================================================== */
+const VIEWS = {
+  works: { path: "/admin", title: "作品管理", section: "view-works-section", nav: "nav-works" },
+  similar: { path: "/admin/similar", title: "相似图审批", section: "similar", nav: "nav-similar" },
+  tags: { path: "/admin/tags", title: "标签管理", section: "tags-view", nav: "nav-tags" },
+};
+
 function setView(view, updateHistory = true) {
   if (updateHistory) {
-    const targetPath = view === "similar" ? "/admin/similar" : "/admin";
-    navigate(targetPath);
+    navigate(VIEWS[view].path);
     return;
   }
 
   state.view = view;
-  const isSimilar = view === "similar";
-
-  // 导航项高亮与状态
-  const navWorks = $("nav-works");
-  if (navWorks) {
-    navWorks.classList.toggle("active", !isSimilar);
-    navWorks.setAttribute("aria-current", !isSimilar ? "page" : "false");
-  }
-  const navSimilar = $("nav-similar");
-  if (navSimilar) {
-    navSimilar.classList.toggle("active", isSimilar);
-    navSimilar.setAttribute("aria-current", isSimilar ? "page" : "false");
-  }
-
-  const mobWorks = $("mobile-nav-works");
-  if (mobWorks) mobWorks.classList.toggle("active", !isSimilar);
-  const mobSimilar = $("mobile-nav-similar");
-  if (mobSimilar) mobSimilar.classList.toggle("active", isSimilar);
-
-  // 页面标题与面包屑
-  document.title = isSimilar ? "Vitrine · 相似图审批" : "Vitrine · 作品管理";
-  const crumb = $("current-view-title");
-  if (crumb) {
-    crumb.textContent = isSimilar ? "相似图审批" : "作品管理";
-  }
-
-  // 视图显隐
-  const worksSec = $("view-works-section");
-  if (worksSec) worksSec.hidden = isSimilar;
-  const simSec = $("similar");
-  if (simSec) simSec.hidden = !isSimilar;
-
-  // 侧边栏来源筛选（仅在作品管理显示）
-  const sourcesSec = $("sidebar-sources-section");
-  if (sourcesSec) sourcesSec.hidden = isSimilar;
-
-  // 顶栏搜索栏显隐
-  const searchForm = $("search-form");
-  if (searchForm) searchForm.hidden = isSimilar;
-
-  if (isSimilar) {
-    loadSimilar();
-  } else {
-    if (state.works.length === 0 && !state.loading) {
-      loadWorks(true);
+  for (const [name, info] of Object.entries(VIEWS)) {
+    const active = name === view;
+    const nav = $(info.nav);
+    if (nav) {
+      nav.classList.toggle("active", active);
+      nav.setAttribute("aria-current", active ? "page" : "false");
     }
+    $("mobile-" + info.nav)?.classList.toggle("active", active);
+    $(info.section).hidden = !active;
   }
+  document.title = `Vitrine · ${VIEWS[view].title}`;
+  const crumb = $("current-view-title");
+  if (crumb) crumb.textContent = VIEWS[view].title;
+
+  // 来源筛选和顶栏作品搜索只属于作品管理
+  const sourcesSec = $("sidebar-sources-section");
+  if (sourcesSec) sourcesSec.hidden = view !== "works";
+  const searchForm = $("search-form");
+  if (searchForm) searchForm.hidden = view !== "works";
+
+  if (view === "similar") loadSimilar();
+  else if (view === "tags") loadTagsAdmin();
+  else if (state.works.length === 0 && !state.loading) loadWorks(true);
 }
 
 function syncRoute() {
   const path = window.location.pathname;
-  const isSimilar = path === "/admin/similar" || path.startsWith("/admin/similar");
-  setView(isSimilar ? "similar" : "works", false);
+  setView(path.startsWith("/admin/similar") ? "similar" : path.startsWith("/admin/tags") ? "tags" : "works", false);
 }
 
 function navigate(path, replace = false) {
@@ -963,6 +943,10 @@ $("nav-similar")?.addEventListener("click", (e) => {
   e.preventDefault();
   setView("similar");
 });
+$("nav-tags")?.addEventListener("click", (e) => {
+  e.preventDefault();
+  setView("tags");
+});
 $("mobile-nav-works")?.addEventListener("click", (e) => {
   e.preventDefault();
   setView("works");
@@ -1106,6 +1090,182 @@ async function changeWorkVisibility(restore) {
 
 $("hide-work")?.addEventListener("click", () => changeWorkVisibility(false));
 $("restore-work")?.addEventListener("click", () => changeWorkVisibility(true));
+
+/* =====================================================================
+   标签管理 (/admin/tags)
+   ===================================================================== */
+const TAG_KINDS = { work: "作品", character: "角色", cp: "CP", skin: "皮肤", lore: "设定", theme: "题材", medium: "媒介", meta: "其他", unsorted: "未分类" };
+const tagAdmin = { tags: [], editing: null, selected: new Set(), busy: false };
+
+function splitNames(value) {
+  return value.split(/[,，、]/).map((part) => part.trim()).filter(Boolean);
+}
+
+function tagMatches(tag, kind, needle) {
+  if (kind && tag.kind !== kind) return false;
+  return !needle || [tag.name, tag.ja, tag.en].some((name) => name?.toLowerCase().includes(needle));
+}
+
+async function loadTagsAdmin(keepEditing = false) {
+  $("tags-status").textContent = "正在加载标签…";
+  try {
+    const data = await api("/api/admin/tags");
+    tagAdmin.tags = data.tags;
+    const names = new Set(data.tags.map((tag) => tag.name));
+    for (const name of tagAdmin.selected) if (!names.has(name)) tagAdmin.selected.delete(name);
+    $("tags-names").replaceChildren(...data.tags.map((tag) => new Option(TAG_KINDS[tag.kind], tag.name)));
+    const editing = keepEditing && tagAdmin.editing && data.tags.find((tag) => tag.name === tagAdmin.editing.name);
+    if (editing) openTagEditor(editing);
+    else closeTagEditor();
+    renderTagRows();
+  } catch (error) {
+    if (error.status !== 401) $("tags-status").textContent = error.message;
+  }
+}
+
+function renderTagRows() {
+  const kind = $("tags-kind").value;
+  const needle = $("tags-q").value.trim().replace(/^#+/, "").toLowerCase();
+  const shown = tagAdmin.tags.filter((tag) => tagMatches(tag, kind, needle));
+  $("tags-rows").replaceChildren(...shown.map((tag) => {
+    const row = node("tr", tag.name === tagAdmin.editing?.name ? "active" : "");
+    const pick = node("input");
+    pick.type = "checkbox";
+    pick.checked = tagAdmin.selected.has(tag.name);
+    pick.setAttribute("aria-label", `选择 ${tag.name}`);
+    pick.addEventListener("change", () => {
+      if (pick.checked) tagAdmin.selected.add(tag.name);
+      else tagAdmin.selected.delete(tag.name);
+      syncTagBatch();
+    });
+    const open = node("button", "tags-name", tag.name);
+    open.type = "button";
+    open.addEventListener("click", () => openTagEditor(tag));
+    const cells = [pick, open, TAG_KINDS[tag.kind], tag.kind === "cp" ? tag.members.join("、") : tag.parent || "", tag.ja || "", tag.en || "", String(tag.cnt)];
+    row.append(...cells.map((cell) => {
+      const td = node("td", "", typeof cell === "string" ? cell : undefined);
+      if (typeof cell !== "string") td.append(cell);
+      return td;
+    }));
+    return row;
+  }));
+  $("tags-status").textContent = `${shown.length} / ${tagAdmin.tags.length} 个标签`;
+  syncTagBatch();
+}
+
+function syncTagBatch() {
+  $("tags-batch-form").hidden = tagAdmin.selected.size === 0;
+  $("tags-selected").textContent = String(tagAdmin.selected.size);
+}
+
+function openTagEditor(tag) {
+  tagAdmin.editing = tag;
+  $("tag-editor-empty").hidden = true;
+  $("tag-editor-content").hidden = false;
+  $("tag-editor-title").textContent = tag.name;
+  $("tag-editor-count").textContent = `${tag.cnt} 件作品`;
+  $("tag-kind").value = tag.kind;
+  $("tag-parent").value = tag.parent || "";
+  $("tag-ja").value = tag.ja || "";
+  $("tag-en").value = tag.en || "";
+  $("tag-members").value = tag.members.join(", ");
+  $("tag-merge-into").value = "";
+  $("tag-edit-status").textContent = "";
+  syncTagKindFields();
+  document.querySelectorAll("#tags-rows tr").forEach((row) => row.classList.toggle("active", row.querySelector(".tags-name")?.textContent === tag.name));
+}
+
+function closeTagEditor() {
+  tagAdmin.editing = null;
+  $("tag-editor-empty").hidden = false;
+  $("tag-editor-content").hidden = true;
+}
+
+function syncTagKindFields() {
+  $("tag-members-field").hidden = $("tag-kind").value !== "cp";
+}
+
+async function tagAction(url, payload, success, keepEditing = true) {
+  if (tagAdmin.busy) return;
+  tagAdmin.busy = true;
+  $("tag-edit-status").textContent = "正在保存…";
+  try {
+    const data = await api(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
+    await loadTagsAdmin(keepEditing);
+    $("tag-edit-status").textContent = success(data);
+  } catch (error) {
+    if (error.status !== 401) $("tag-edit-status").textContent = error.message;
+  } finally {
+    tagAdmin.busy = false;
+  }
+}
+
+$("tags-kind").addEventListener("change", renderTagRows);
+$("tags-q").addEventListener("input", renderTagRows);
+$("tags-all").addEventListener("change", () => {
+  const kind = $("tags-kind").value;
+  const needle = $("tags-q").value.trim().replace(/^#+/, "").toLowerCase();
+  for (const tag of tagAdmin.tags) {
+    if (!tagMatches(tag, kind, needle)) continue;
+    if ($("tags-all").checked) tagAdmin.selected.add(tag.name);
+    else tagAdmin.selected.delete(tag.name);
+  }
+  renderTagRows();
+});
+$("tags-batch-clear").addEventListener("click", () => { tagAdmin.selected.clear(); $("tags-all").checked = false; renderTagRows(); });
+$("tags-batch-form").addEventListener("submit", (event) => {
+  event.preventDefault();
+  const kind = $("tags-batch-kind").value;
+  const parent = $("tags-batch-parent").value.trim();
+  // Fields the batch does not set keep their current values.
+  const items = tagAdmin.tags.filter((tag) => tagAdmin.selected.has(tag.name)).map((tag) => ({
+    name: tag.name, kind: kind || tag.kind, parent: parent || tag.parent, ja: tag.ja, en: tag.en,
+    members: (kind || tag.kind) === "cp" ? tag.members : [],
+  }));
+  if (!items.length || (!kind && !parent)) return;
+  tagAction("/api/admin/tags/items", { items }, (data) => {
+    tagAdmin.selected.clear();
+    $("tags-all").checked = false;
+    renderTagRows();
+    $("tags-status").textContent = `已更新 ${data.saved} 个标签`;
+    return "";
+  }, false);
+});
+$("tag-kind").addEventListener("change", syncTagKindFields);
+$("tag-editor-close").addEventListener("click", () => { closeTagEditor(); renderTagRows(); });
+$("tag-form").addEventListener("submit", (event) => {
+  event.preventDefault();
+  const tag = tagAdmin.editing;
+  if (!tag) return;
+  const kind = $("tag-kind").value;
+  tagAction("/api/admin/tags/items", { items: [{
+    name: tag.name, kind, parent: $("tag-parent").value.trim() || null, ja: $("tag-ja").value.trim() || null,
+    en: $("tag-en").value.trim() || null, members: kind === "cp" ? splitNames($("tag-members").value) : [],
+  }] }, () => "已保存");
+});
+$("tag-merge").addEventListener("click", () => {
+  const tag = tagAdmin.editing;
+  const into = $("tag-merge-into").value.trim();
+  if (!tag || !into) return;
+  const exists = tagAdmin.tags.some((other) => other.name === into);
+  const message = exists
+    ? `把 ${tag.cnt} 件作品的「${tag.name}」并入「${into}」？「${tag.name}」会被删除，以后导入的「${tag.name}」也会存成「${into}」。`
+    : `把「${tag.name}」改名为「${into}」？${tag.cnt} 件作品会随之改名，标签库信息一起保留。`;
+  if (!confirm(message)) return;
+  tagAction("/api/admin/tags/merge", { from: tag.name, into }, (data) => {
+    const target = tagAdmin.tags.find((other) => other.name === data.into);
+    if (target) openTagEditor(target);
+    return `已把 ${data.moved} 件作品的「${data.from}」并入「${data.into}」`;
+  }, false);
+});
+$("tag-block").addEventListener("click", () => {
+  const tag = tagAdmin.editing;
+  if (!tag || !confirm(`从 ${tag.cnt} 件作品上移除「${tag.name}」并屏蔽？以后导入时也会跳过它。`)) return;
+  tagAction("/api/admin/tags/block", { name: tag.name }, (data) => {
+    $("tags-status").textContent = `已屏蔽「${data.name}」，移除了 ${data.removed} 处`;
+    return "";
+  }, false);
+});
 
 /* =====================================================================
    初始化
