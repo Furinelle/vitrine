@@ -195,6 +195,8 @@ def plan(decisions, counts, library, blocked, keys, taken):
                 refuse(d, f"「{target}」的写法已属于标签「{holder}」")
                 continue
             statements += merge_sql(tag, target, keys[tag][0], keys[target][0])
+            # Later decisions in the batch see the merged spelling as the target's (an item may take it as its English name).
+            taken[keys[tag][0]] = taken[keys[target][0]] = target
             applied.append(d)
             continue
         if action != "item":
@@ -230,6 +232,7 @@ def plan(decisions, counts, library, blocked, keys, taken):
                     en = None
         if name != tag:
             statements += merge_sql(tag, name, keys[tag][0], keys[name][0])
+            taken[keys[tag][0]] = taken[keys[name][0]] = name
         items += item_sql(name, kind, parent, ja, en, members)
         for value in (ja, en):
             if value:
