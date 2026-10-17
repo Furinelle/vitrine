@@ -28,6 +28,7 @@ context.button = (_className, _text, action) => { activateTag = action; return {
 context.dismissLightbox = async () => dialog.close();
 context.applyFilters = ({ tag }) => { assert.equal(tag, 'art'); events.push('filter'); };
 context.state = { viewerRequest: null };
+context.tagName = (tag) => tag;
 vm.runInContext(source.slice(source.indexOf('function tagButton('), source.indexOf('const coverObserver =')), context);
 context.tagButton('art');
 await activateTag();
@@ -54,21 +55,22 @@ function filtersFixture() {
     state, names: { x: 'X' }, $: element,
     document: { createElement: () => element(Symbol()), querySelectorAll: () => [] },
     Option: class { constructor(text, value) { this.text = text; this.value = value; } },
-    applyFilters() {}, tagButton: name => ({ dataset: { tag: name } }),
+    applyFilters() {}, tagButton: name => ({ dataset: { tag: name } }), tagInfo: new Map(), tagName: name => name,
     getJson(url) { return new Promise((resolve, reject) => pending.set(url, { resolve, reject })); },
   });
   for (const [start, end] of [
     ['function node(', 'function safeLink('],
     ['function syncFilters(', 'function applyFilters('],
-    ['async function loadFilters(', 'async function loadTagBrowser('],
+    ['async function loadFilters(', 'function tagWork('],
   ]) vm.runInContext(source.slice(source.indexOf(start), source.indexOf(end)), filters);
   element('q').value = '未提交搜索';
   element('tag').value = '未提交标签';
+  element('tag-browser').hidden = true;
   return { filters, state, element, pending };
 }
 {
   const f = filtersFixture(), loading = f.filters.loadFilters();
-  assert.deepEqual([...f.pending.keys()], ['/api/sources', '/api/tags'], 'both metadata requests start together');
+  assert.deepEqual([...f.pending.keys()], ['/api/sources', '/api/tags?limit=1000'], 'both metadata requests start together');
   f.state.source = 'x';
   f.pending.get('/api/sources').resolve({ sources: [{ source: 'x', cnt: 12 }] });
   await Promise.resolve();
@@ -78,7 +80,7 @@ function filtersFixture() {
   assert.equal(f.element('popular-tags').children.length, 0);
   assert.equal(f.element('q').value, '未提交搜索');
   assert.equal(f.element('tag').value, '未提交标签');
-  f.pending.get('/api/tags').resolve({ tags: [{ name: 'art', cnt: 4 }] });
+  f.pending.get('/api/tags?limit=1000').resolve({ tags: [{ name: 'art', cnt: 4 }] });
   await loading;
   assert.equal(f.element('popular-tags').children[0].dataset.tag, 'art');
   assert.equal(f.element('q').value, '未提交搜索', 'tag completion also preserves the search draft');
@@ -87,7 +89,7 @@ function filtersFixture() {
 {
   const f = filtersFixture(), loading = f.filters.loadFilters();
   f.pending.get('/api/sources').reject(new Error('source service unavailable'));
-  f.pending.get('/api/tags').resolve({ tags: [{ name: 'still-available', cnt: 2 }] });
+  f.pending.get('/api/tags?limit=1000').resolve({ tags: [{ name: 'still-available', cnt: 2 }] });
   await loading;
   assert.equal(f.element('taglist').children[0].value, 'still-available');
   assert.equal(f.element('popular-tags').children[0].dataset.tag, 'still-available');
@@ -95,6 +97,49 @@ function filtersFixture() {
   assert.equal(f.element('tag').value, '未提交标签');
 }
 console.log('PASS: independent metadata rendering, failure isolation, current filters and preserved drafts');
+
+// The tag index groups by kind, splits characters by their work, and shows English names outside Chinese browsers.
+for (const language of ['zh-CN', 'en-US']) {
+  const elements = new Map();
+  const element = (id) => {
+    if (!elements.has(id)) elements.set(id, {
+      children: [], className: '', textContent: '', value: '', hidden: false, dataset: {},
+      classList: { toggle() {} }, append(...items) { this.children.push(...items); },
+      replaceChildren(...items) { this.children = items; },
+    });
+    return elements.get(id);
+  };
+  const tags = [
+    { name: '原神', cnt: 9, kind: 'work', en: 'GenshinImpact' },
+    { name: '芙宁娜', cnt: 5, kind: 'character', parent: '原神', en: 'Furina' },
+    { name: '芙卡洛斯', cnt: 4, kind: 'character', parent: '芙宁娜' },
+    { name: '初音未来', cnt: 3, kind: 'character', parent: 'VOCALOID', ja: '初音ミク', en: 'Miku' },
+    { name: '百合', cnt: 2, kind: 'theme' },
+    { name: 'mystery', cnt: 1 },
+  ];
+  const ctx = vm.createContext({
+    navigator: { languages: [language] }, $: element, state: { tags, tagError: '', tag: '芙宁娜' },
+    document: { createElement: (tag) => Object.assign(element(Symbol()), { tagName: tag }) },
+    tagButton: (name) => ({ name, dataset: { tag: name }, classList: { toggle(_c, on) { this.active = on; } } }),
+  });
+  vm.runInContext(source.slice(source.indexOf('// 中文浏览器'), source.indexOf('function locationFilters(')) + 'for (const t of state.tags) tagInfo.set(t.name, t);', ctx);
+  vm.runInContext(source.slice(source.indexOf('function node('), source.indexOf('function button(')), ctx);
+  vm.runInContext(source.slice(source.indexOf('function tagWork('), source.indexOf('function tagButton(')), ctx);
+  ctx.renderTagBrowser();
+  const groups = element('all-tags').children;
+  const titles = groups.map((g) => g.children[0].textContent);
+  assert.deepEqual(titles, language === 'zh-CN' ? ['作品', '角色', '题材', '未分类'] : ['Works', 'Characters', 'Themes', 'Other']);
+  const characters = groups[1].children.map((c) => c.textContent || c.children.map((chip) => chip.name).join());
+  // 芙卡洛斯 reaches 原神 through 芙宁娜; 初音未来's parent is not a loaded work, so it lands last.
+  assert.deepEqual(characters, [titles[1], language === 'zh-CN' ? '原神' : 'GenshinImpact', '芙宁娜,芙卡洛斯', titles[3], '初音未来']);
+  assert.equal(groups[1].children[2].children[0].classList.active, true, 'the current tag is marked');
+  assert.equal(ctx.tagLabel('芙宁娜,百合'), language === 'zh-CN' ? '芙宁娜 等 2 个标签' : 'Furina 等 2 个标签');
+  assert.equal(vm.runInContext("tagName('芙卡洛斯')", ctx), '芙卡洛斯', 'no English name falls back to the stored name');
+  element('tag-search').value = 'miku';
+  ctx.renderTagBrowser();
+  assert.deepEqual(element('all-tags').children.map((g) => g.children[1].children[0].name), ['初音未来'], 'search matches display names');
+}
+console.log('PASS: tag index groups by kind and work, follows the browser language, searches every display name');
 
 // Exercise actual card rendering and viewport loading without fetching images.
 function cardsFixture(withObserver = true) {

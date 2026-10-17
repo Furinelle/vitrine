@@ -63,7 +63,10 @@ h1 span { color: var(--brass); }
 .tag-browser { border: 1px solid var(--line); background: var(--panel); padding: 22px; border-radius: 8px; margin: 0 0 20px; box-shadow: inset 0 0 0 3px var(--panel), inset 0 0 0 4px var(--gilt-line); }
 .tag-search { display: flex; gap: 16px; align-items: center; margin-bottom: 14px; color: var(--muted); font-size: var(--fs-sm); }
 .tag-search input { padding: 8px 2px; border-bottom: 1px solid var(--line); border-radius: 0; }
-#all-tags { max-height: 280px; overflow: auto; }
+#all-tags { max-height: min(60vh, 520px); overflow: auto; }
+.tag-group + .tag-group { margin-top: 18px; }
+.tag-group-title { margin: 0 0 8px; font-size: var(--fs-sm); font-weight: 600; color: var(--text); }
+.tag-work-title { margin: 10px 0 6px; font-size: var(--fs-xs); font-weight: 400; color: var(--muted); }
 .active-filters { display: flex; flex-wrap: wrap; gap: 8px; }
 .active-filter { border: 1px solid var(--gilt-line); border-radius: 6px; padding: 6px 12px; margin-bottom: 16px; min-height: 38px; font-size: var(--fs-sm); overflow-wrap: anywhere; }
 .status { color: var(--muted); margin: 0 0 16px; }
