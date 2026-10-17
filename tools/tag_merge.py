@@ -9,11 +9,15 @@ members and its Japanese / English display names. Every display name and listed
 spelling folds into the stored name; `tag_items` keeps the display names, and
 `tag_links` makes a work carry what its tags imply (character -> work, CP ->
 characters, AI tools -> AI生成). tools/tag_fixes.json adds misspelling fixes,
-`implies`, a `drop` list (removed and blocked) and a `keep` list (CP names and
-the like) that must never be merged or renamed; the run stops if any would be.
-The output SQL also records every key in `tag_keys`, which ingest and admin
-edits use to keep new variants under the same name.
+a `drop` list (removed and blocked) and a `keep` list (CP names and the like)
+that must never be merged or renamed; the run stops if any would be. The output
+SQL also records every key in `tag_keys`, which ingest and admin edits use to
+keep new variants under the same name.
 
+Day-to-day edits happen on the admin tag page (/admin/tags), so the database is
+the newer copy: pull it into the JSON files first, or this run would undo them.
+
+    python3 tools/tag_merge.py --export library.json   # wrangler output of EXPORT_SQL
     python3 tools/tag_merge.py rows.json plan.md merge.sql
 
 rows.json is the `wrangler d1 execute --json` output of ROWS_SQL. Review
@@ -28,6 +32,10 @@ import subprocess
 import sys
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
+EXPORT_SQL = (
+    "SELECT 'item' AS t, name, kind, parent, ja, en, members FROM tag_items "
+    "UNION ALL SELECT 'block', name, NULL, NULL, NULL, NULL, NULL FROM tag_blocks"
+)
 ROWS_SQL = (
     "SELECT t.name, COALESCE((SELECT cnt FROM tag_counts WHERE tag=t.name),0) AS visible, "
     "(SELECT COUNT(*) FROM work_tags WHERE tag=t.name) AS total FROM tags t"
@@ -89,10 +97,21 @@ def plan(rows, keys, aliases=None):
     return merges, targets, [(t, sorted(m, key=lambda r: (-r["visible"], r["name"]))) for t, m in merged.items()]
 
 
-def merge_sql(merges, targets, implies=(), drops=(), items=()):
-    """implies: (name, implied name) pairs, already closed over chains; drops: names removed
-    from every work and blocked from coming back (migration 0018); items: tag library rows
-    (name, kind, parent, ja, en) for migration 0019."""
+# Refreshes tag_links from the library (migration 0021's tag_closure) and gives existing works the
+# implied tags; new writes go through the 0017 trigger. The admin tag page runs the same statements.
+LINKS_SQL = [
+    "DELETE FROM tag_links WHERE NOT EXISTS (SELECT 1 FROM tag_closure c WHERE c.tag = tag_links.tag AND c.also = tag_links.also);",
+    "INSERT OR IGNORE INTO tag_links (tag, also) SELECT tag, also FROM tag_closure;",
+    "INSERT OR IGNORE INTO tags (name, use_count) SELECT also, 0 FROM tag_links;",
+    "INSERT OR IGNORE INTO work_tags (work_id, tag) SELECT wt.work_id, l.also FROM work_tags wt JOIN tag_links l ON l.tag = wt.tag;",
+    "UPDATE tags SET use_count = (SELECT COUNT(*) FROM work_tags WHERE tag = tags.name) WHERE name IN (SELECT also FROM tag_links);",
+]
+
+
+def merge_sql(merges, targets, drops=(), items=()):
+    """drops: names removed from every work and blocked from coming back (migration 0018);
+    items: tag library rows (name, kind, parent, ja, en, members JSON) for migrations 0019/0021,
+    from which the implied tags follow."""
     lines = []
     # Blocks first: a name unblocked this run can then receive merged tags.
     if drops:
@@ -118,22 +137,11 @@ def merge_sql(merges, targets, implies=(), drops=(), items=()):
             "DROP TABLE tag_merge;",
         ]
     if items:
-        lines += ["DELETE FROM tag_items;", "INSERT INTO tag_items (name, kind, parent, ja, en) VALUES"]
+        lines += ["DELETE FROM tag_items;", "INSERT INTO tag_items (name, kind, parent, ja, en, members) VALUES"]
         cell = lambda v: "NULL" if v is None else sql_text(v)
         lines += [f"  ({', '.join(cell(v) for v in row)})" + ("," if i < len(items) - 1 else ";")
                   for i, row in enumerate(sorted(items))]
-    lines.append("DELETE FROM tag_links;")
-    if implies:
-        pairs = sorted(set(implies))
-        lines += ["INSERT INTO tag_links (tag, also) VALUES"]
-        lines += [f"  ({sql_text(a)}, {sql_text(b)})" + ("," if i < len(pairs) - 1 else ";")
-                  for i, (a, b) in enumerate(pairs)]
-        lines += [
-            "INSERT OR IGNORE INTO tags (name, use_count) SELECT tag, 0 FROM tag_links UNION SELECT also, 0 FROM tag_links;",
-            # Existing works get the implied tags; new writes go through the 0017 trigger.
-            "INSERT OR IGNORE INTO work_tags (work_id, tag) SELECT wt.work_id, l.also FROM work_tags wt JOIN tag_links l ON l.tag = wt.tag;",
-            "UPDATE tags SET use_count = (SELECT COUNT(*) FROM work_tags WHERE tag = tags.name) WHERE name IN (SELECT tag FROM tag_links UNION SELECT also FROM tag_links);",
-        ]
+    lines += LINKS_SQL
     items = sorted(targets.items())
     for start in range(0, len(items), 200):
         chunk = items[start:start + 200]
@@ -149,19 +157,20 @@ def show(name):
 
 
 def load_library(path=ROOT / "tools/tag_aliases.json"):
-    """Returns ({stored name: [spellings]}, [(name, kind, parent, ja, en)], [(name, implied name)]).
+    """Returns ({stored name: [spellings]}, [(name, kind, parent, ja, en, members JSON)], [(name, implied name)]).
 
     Each entry is one tag, stored under its Chinese name. `ja` (Japanese works and
     characters) and `en` (only a common, instantly recognisable English name) are
     display names: they and every listed spelling fold into the stored name.
     `parent` (the work a character or setting belongs to) and CP `members` are
-    implied: a work tagged with the entry also gets them.
+    implied: a work tagged with the entry also gets them (an AI tool's parent is AI生成).
     """
     names, items, edges = {}, [], []
     for zh, entry in json.loads(pathlib.Path(path).read_text()).items():
         names[zh] = [*entry.get("zh_aliases", []),
                      *[n for side in ("ja", "en") if entry.get(side) for n in (entry[side], *entry.get(side + "_aliases", []))]]
-        items.append((zh, entry["kind"], entry.get("parent"), entry.get("ja"), entry.get("en")))
+        members = json.dumps(entry["members"], ensure_ascii=False) if entry.get("members") else None
+        items.append((zh, entry["kind"], entry.get("parent"), entry.get("ja"), entry.get("en"), members))
         edges += [(zh, entry["parent"])] if entry.get("parent") else []
         edges += [(zh, m) for m in entry.get("members", [])]
     return names, items, edges
@@ -186,16 +195,40 @@ def closure(edges):
 
 
 def load_fixes(path=ROOT / "tools/tag_fixes.json"):
-    """Returns (fixes {correct name: [misspellings]}, keep [never merged or renamed],
-    drop [removed and blocked], implies {name: [tags whose works also get it]})."""
+    """Returns (fixes {correct name: [misspellings]}, keep [never merged or renamed], drop [removed and blocked])."""
     data = json.loads(pathlib.Path(path).read_text())
-    return data["fixes"], data["keep"], data.get("drop", []), data.get("implies", {})
+    return data["fixes"], data["keep"], data.get("drop", [])
+
+
+def export(rows, library, fixes):
+    """Overlay the database's library and blocks (EXPORT_SQL rows) on the JSON files' contents.
+
+    Entries keep their listed spellings; tags the admin page merged, blocked or unsorted leave
+    the library, and the drop list becomes exactly what is blocked."""
+    items = {r["name"]: r for r in rows if r["t"] == "item"}
+    out = {}
+    for name, r in items.items():
+        entry = {k: v for k, v in library.get(name, {}).items() if k not in ("kind", "parent", "ja", "en", "members")}
+        out[name] = {"kind": r["kind"], **{k: r[k] for k in ("parent", "ja", "en") if r[k]},
+                     **({"members": json.loads(r["members"])} if r["members"] else {}), **entry}
+    fixes = {**fixes, "drop": sorted(r["name"] for r in rows if r["t"] == "block")}
+    return out, fixes
+
+
+def dump_json(path, data, inline):
+    """One line per entry (inline=True) or default indentation, matching the checked-in files."""
+    if inline:
+        text = "{\n" + ",\n".join(f"  {json.dumps(k, ensure_ascii=False)}: {json.dumps(v, ensure_ascii=False)}"
+                                     for k, v in data.items()) + "\n}\n"
+    else:
+        text = json.dumps(data, ensure_ascii=False, indent=2) + "\n"
+    pathlib.Path(path).write_text(text)
 
 
 def main(rows_path, plan_path, sql_path):
     rows = json.loads(pathlib.Path(rows_path).read_text())[0]["results"]
     aliases, items, edges = load_library()
-    fixes, keep, drops, implied_by = load_fixes()
+    fixes, keep, drops = load_fixes()
     # A fix target may be a library tag or one of its display names (Vodyanitsa); the misspellings
     # then fold into the library tag's stored name as well.
     owner = {s: name for name, more in aliases.items() for s in more}
@@ -207,8 +240,6 @@ def main(rows_path, plan_path, sql_path):
     merges, targets, report = plan(rows, keys, aliases)
     library = {i[0] for i in items}
     assert not set(drops) & (set(keep) | library), "a dropped tag is protected or in the library"
-    # A source that is merged away or dropped has no works left to imply anything for.
-    edges += [(src, name) for name, sources in implied_by.items() for src in sources if src not in merges and src not in drops]
     implies = closure(edges)
     assert all(b not in merges and b not in drops for _, b in implies), "an implied tag is merged away or dropped"
     # CP and other protected tags stay exactly as they are.
@@ -228,14 +259,22 @@ def main(rows_path, plan_path, sql_path):
     kinds = collections.Counter(i[1] for i in items)
     out += ["", "## 标签库", "", "、".join(f"{k} {v} 个" for k, v in kinds.most_common()), ""]
     out += [f"- {label(n)} · {k}" + (f" · 属于 {p}" if p else "") + "".join(f" · {s} {v}" for s, v in (("日文", ja), ("英文", en)) if v)
-            for n, k, p, ja, en in items]
+            for n, k, p, ja, en, _ in items]
     out += ["", f"## 删除并屏蔽（{len(drops)} 个）", "", "、".join(label(n) for n in sorted(drops, key=lambda n: -by_name.get(n, {}).get("visible", 0)))]
     out += ["", f"## 自动补标（{len(implies)} 条）", ""] + [f"- 带 {a} 的作品同时带上 {b}" for a, b in implies]
     pathlib.Path(plan_path).write_text("\n".join(out) + "\n")
-    pathlib.Path(sql_path).write_text(merge_sql(merges, targets, implies, drops, items))
+    pathlib.Path(sql_path).write_text(merge_sql(merges, targets, drops, items))
     print(f"{len(rows)} tags, {len(report)} groups, {len(merges)} names merged, {len(items)} library tags, "
           f"{len(implies)} implications; plan -> {plan_path}, sql -> {sql_path}")
 
 
 if __name__ == "__main__":
-    main(*sys.argv[1:4])
+    if sys.argv[1] == "--export":
+        library_path, fixes_path = ROOT / "tools/tag_aliases.json", ROOT / "tools/tag_fixes.json"
+        library, fixes = export(json.loads(pathlib.Path(sys.argv[2]).read_text())[0]["results"],
+                                json.loads(library_path.read_text()), json.loads(fixes_path.read_text()))
+        dump_json(library_path, library, inline=True)
+        dump_json(fixes_path, fixes, inline=False)
+        print(f"{len(library)} library tags, {len(fixes['drop'])} blocked -> {library_path.name}, {fixes_path.name}")
+    else:
+        main(*sys.argv[1:4])

@@ -3,6 +3,7 @@ mod image_review;
 mod ingest;
 mod presign;
 pub mod similar;
+mod tag_admin;
 mod tag_fold;
 
 use serde::{Deserialize, Serialize};
@@ -152,6 +153,18 @@ async fn handle_request(req: Request, env: Env) -> Result<Response> {
     }
     if path == "/api/admin/works" && method == Method::Get {
         return admin::handle_list(req, env).await;
+    }
+    if path == "/api/admin/tags" && method == Method::Get {
+        return tag_admin::handle_list(req, env).await;
+    }
+    if path == "/api/admin/tags/items" && method == Method::Post {
+        return tag_admin::handle_items(req, env).await;
+    }
+    if path == "/api/admin/tags/merge" && method == Method::Post {
+        return tag_admin::handle_merge(req, env).await;
+    }
+    if path == "/api/admin/tags/block" && method == Method::Post {
+        return tag_admin::handle_block(req, env).await;
     }
     if path == "/api/admin/fingerprints/status" && method == Method::Get {
         if let Some(response) = admin::require_admin_cookie(&req, &env)? {
