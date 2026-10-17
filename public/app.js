@@ -81,6 +81,7 @@ function syncFilters(preserveDraft = false) {
     else item.removeAttribute("aria-current");
   });
   document.querySelectorAll("#popular-tags .tag-chip").forEach((item) => item.classList.toggle("active", item.dataset.tag === state.tag));
+  placeTabRule();
   const title = state.tag ? `# ${tagLabel(state.tag)}` : state.q ? "搜索结果" : state.source ? names[state.source] || state.source : "全部作品";
   $("collection-title").textContent = title;
   if (!$("lightbox").open) document.title = `${state.source || state.tag || state.q ? title + " · " : ""}Vitrine · 图库`;
@@ -93,6 +94,13 @@ function syncFilters(preserveDraft = false) {
     chip.setAttribute("aria-label", `移除${field === "tag" ? "标签" : "搜索"}筛选：${value}`);
     $("active-filters").append(chip);
   }
+}
+// One rule under the source tabs slides to the chosen tab instead of each tab drawing its own.
+function placeTabRule() {
+  const rule = document.querySelector(".tab-rule"), active = document.querySelector("#sources .source-link.active");
+  if (!rule || !active) return;
+  rule.style.width = `${active.offsetWidth}px`;
+  rule.style.translate = `${active.offsetLeft}px 0`;
 }
 function updateCount() {
   const total = state.source ? state.sources.find((s) => s.source === state.source)?.cnt : state.sources.length ? state.sources.reduce((sum, s) => sum + s.cnt, 0) : null;
@@ -123,6 +131,7 @@ async function loadFilters() {
       $("sources").append(item);
       if (source.source) $("source").append(new Option(label, source.source));
     }
+    $("sources").append(node("span", "tab-rule"));
     if (state.source && !state.sources.some((s) => s.source === state.source)) $("source").append(new Option(state.source, state.source));
     syncFilters(true);
     updateCount();
@@ -176,7 +185,7 @@ function renderTagBrowser() {
   };
   const shown = [...groups].filter(([, tags]) => tags.length);
   $("tag-kinds").replaceChildren(...shown.map(([kind, tags]) => {
-    const jump = button("tag-kind", undefined, () => {
+    const jump = button(`tag-kind kind-${kind}`, undefined, () => {
       const box = $("all-tags"), target = box.querySelector(`[data-kind="${kind}"]`);
       box.scrollTo({ top: target.offsetTop - box.offsetTop, behavior: matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth" });
     });
@@ -184,7 +193,7 @@ function renderTagBrowser() {
     return jump;
   }));
   $("all-tags").replaceChildren(...shown.map(([kind, tags], index) => {
-    const group = node("section", "tag-group");
+    const group = node("section", `tag-group kind-${kind}`);
     group.dataset.kind = kind;
     group.style.setProperty("--i", String(index));
     const title = node("h3", "tag-group-title");
@@ -213,7 +222,7 @@ function renderTagBrowser() {
   $("tag-retry").hidden = !state.tagError;
 }
 function tagButton(tag) {
-  const chip = button("tag-chip", `# ${tagName(tag)}`, async () => {
+  const chip = button(`tag-chip kind-${tagInfo.get(tag)?.kind || "unsorted"}`, tagName(tag), async () => {
     const fromDialog = $("lightbox").open;
     if (fromDialog) await dismissLightbox();
     applyFilters({ tag });
@@ -234,6 +243,34 @@ const coverObserver = typeof IntersectionObserver === "function" ? new Intersect
 // Extreme strips and panoramas are cropped so one cover never dominates a column.
 function coverRatio(width, height) {
   return width > 0 && height > 0 ? Math.min(1.8, Math.max(.5, width / height)) : 0;
+}
+// The artwork's own colour, read from an 8×8 copy: colourful pixels outweigh white paper and line art,
+// and the result is lifted to a saturation and lightness that still shows as a glow on either theme.
+let swatchContext;
+function artColor(image) {
+  try {
+    if (!swatchContext) {
+      const swatch = document.createElement("canvas");
+      swatch.width = swatch.height = 8;
+      swatchContext = swatch.getContext("2d", { willReadFrequently: true });
+    }
+    swatchContext.clearRect(0, 0, 8, 8);
+    swatchContext.drawImage(image, 0, 0, 8, 8);
+    const data = swatchContext.getImageData(0, 0, 8, 8).data;
+    let r = 0, g = 0, b = 0, total = 0;
+    for (let i = 0; i < data.length; i += 4) {
+      const weight = 1 + (Math.max(data[i], data[i + 1], data[i + 2]) - Math.min(data[i], data[i + 1], data[i + 2])) / 24;
+      r += data[i] * weight; g += data[i + 1] * weight; b += data[i + 2] * weight; total += weight;
+    }
+    [r, g, b] = [r / total / 255, g / total / 255, b / total / 255];
+    const max = Math.max(r, g, b), min = Math.min(r, g, b), d = max - min;
+    let hue = 0;
+    if (d) hue = max === r ? ((g - b) / d) % 6 : max === g ? (b - r) / d + 2 : (r - g) / d + 4;
+    const light = (max + min) / 2, sat = d ? d / (1 - Math.abs(2 * light - 1)) : 0;
+    return `hsl(${Math.round(hue * 60 + 360) % 360} ${Math.round(Math.min(Math.max(sat, .45), .8) * 100)}% ${Math.round(Math.min(Math.max(light, .45), .62) * 100)}%)`;
+  } catch {
+    return "";
+  }
 }
 function renderLoadingCards() {
   coverObserver?.disconnect();
@@ -266,6 +303,8 @@ function renderCards(works, append) {
     image.onload = () => {
       if (!ratio) art.style.aspectRatio = String(coverRatio(image.naturalWidth, image.naturalHeight) || .75);
       art.classList.add("image-loaded");
+      const color = artColor(image);
+      if (color) { card.style.setProperty("--art", color); scheduleStage(); }
     };
     image.onerror = () => art.classList.add("image-broken");
     if (original) {
@@ -644,6 +683,34 @@ $("lb-img").addEventListener("touchend", (event) => {
 $("lb-img").addEventListener("touchcancel", () => { touchStart = null; });
 $("about-open").addEventListener("click", () => $("about").showModal());
 $("about-close").addEventListener("click", () => $("about").close());
+// Touch feedback: a ring spreads like water from where a tag, tab or thumbnail is pressed, in the tag kind's colour.
+const calm = matchMedia("(prefers-reduced-motion: reduce)");
+document.addEventListener("pointerdown", (event) => {
+  const target = event.target.closest?.(".tag-chip, .source-link, #browse-tags, .tag-kind, .featured-pick");
+  if (!target || calm.matches) return;
+  const box = target.getBoundingClientRect(), size = Math.max(box.width, box.height) * 2.4;
+  const ripple = node("span", "ripple");
+  ripple.style.cssText = `width:${size}px;height:${size}px;left:${event.clientX - box.left - size / 2}px;top:${event.clientY - box.top - size / 2}px`;
+  ripple.addEventListener("animationend", () => ripple.remove());
+  target.append(ripple);
+});
+// Cards lean toward the pointer with a sheen that follows it, like a print turned under a lamp.
+if (matchMedia("(hover: hover) and (pointer: fine)").matches) {
+  $("grid").addEventListener("pointermove", (event) => {
+    const art = event.target.closest(".art-button");
+    if (!art || calm.matches) return;
+    const box = art.getBoundingClientRect(), x = (event.clientX - box.left) / box.width, y = (event.clientY - box.top) / box.height;
+    art.style.setProperty("--tilt-x", `${((.5 - y) * 7).toFixed(2)}deg`);
+    art.style.setProperty("--tilt-y", `${((x - .5) * 7).toFixed(2)}deg`);
+    art.style.setProperty("--glare", `${(x * 100).toFixed(1)}% ${(y * 100).toFixed(1)}%`);
+  });
+  $("grid").addEventListener("pointerout", (event) => {
+    const art = event.target.closest(".art-button");
+    if (!art || art.contains(event.relatedTarget)) return;
+    for (const name of ["--tilt-x", "--tilt-y", "--glare"]) art.style.removeProperty(name);
+  });
+}
+addEventListener("resize", placeTabRule);
 // Featured banner: five recent works, shown only on the unfiltered collection.
 const featured = { works: [], index: 0, timer: 0 };
 function showFeatured(index) {
@@ -657,7 +724,32 @@ function showFeatured(index) {
     pick.classList.toggle("active", i === featured.index);
     pick.setAttribute("aria-pressed", String(i === featured.index));
   });
+  stageColor();
 }
+// The page takes the colour of the artwork in view: the banner's slide while it fills the top of the
+// screen, otherwise the card nearest the middle of the screen. --stage crossfades in CSS.
+function stageColor() {
+  let color = "";
+  const banner = $("featured").hidden ? null : $("featured").getBoundingClientRect();
+  if (banner && banner.bottom > innerHeight * .35) color = $("featured-stage").children[featured.index]?.dataset.color;
+  else {
+    let best = Infinity;
+    for (const card of document.querySelectorAll("#grid .card")) {
+      const box = card.getBoundingClientRect();
+      if (box.bottom < 0 || box.top > innerHeight) continue;
+      const distance = Math.abs(box.top + box.height / 2 - innerHeight / 2) + Math.abs(box.left + box.width / 2 - innerWidth / 2) / 2;
+      const art = card.style.getPropertyValue("--art");
+      if (art && distance < best) { best = distance; color = art; }
+    }
+  }
+  if (color) document.documentElement.style.setProperty("--stage", color);
+}
+let stageFrame = 0;
+function scheduleStage() {
+  cancelAnimationFrame(stageFrame);
+  stageFrame = requestAnimationFrame(stageColor);
+}
+addEventListener("scroll", scheduleStage, { passive: true });
 function rotateFeatured(run) {
   clearInterval(featured.timer);
   if (run && featured.works.length > 1 && !matchMedia("(prefers-reduced-motion: reduce)").matches) {
@@ -681,6 +773,10 @@ function renderFeatured() {
       image.src = thumbUrl(work.cover_url, 1280);
       image.alt = "";
       image.decoding = "async";
+      image.onload = () => {
+        slide.dataset.color = artColor(image);
+        if (slide.classList.contains("active")) stageColor();
+      };
       const caption = node("div", "featured-caption");
       caption.append(node("p", "featured-source", names[work.source] || work.source),
         node("h2", "featured-title", title), node("p", "featured-author", work.author_name || "未署名"));
@@ -704,6 +800,7 @@ function renderFeatured() {
     showFeatured(0);
   }
   $("featured").hidden = !visible || !featured.works.length;
+  stageColor();
   rotateFeatured(!$("featured").hidden);
 }
 for (const [type, run] of [["pointerenter", false], ["pointerleave", true], ["focusin", false], ["focusout", true]]) {
