@@ -136,11 +136,18 @@ h1 span { color: var(--brass); }
 
 /* The hall: one page of a collection month, set like a programme spread. A twenty-column grid holds
    one large picture over two rows, four medium ones beside it and two rows of five small ones below. */
-.months { display: flex; flex-wrap: wrap; gap: 2px 24px; margin: 4px 0 18px; scroll-margin-top: 16px; }
-.month-tab { position: relative; display: inline-flex; align-items: baseline; gap: 8px; min-height: 42px; font: 500 16px/42px var(--serif); letter-spacing: .06em; color: var(--muted); transition: color .2s, scale .15s; }
-.month-tab:hover { color: var(--text); }
-.month-tab.active { color: var(--text); }
-.month-tab.active::after { content: ""; position: absolute; left: 0; right: 0; bottom: 4px; height: 2px; border-radius: 2px; background: linear-gradient(90deg, var(--water), var(--brass)); }
+/* Chapters: the games as tabs with their counts; a chosen game opens a quieter row of its characters. */
+.chapters { display: flex; flex-wrap: wrap; align-items: center; gap: 2px 22px; margin: 4px 0 6px; scroll-margin-top: 16px; }
+.collection-heading #browse-tags { flex-shrink: 0; margin-left: 12px; }
+.chapter { position: relative; display: inline-flex; align-items: baseline; gap: 7px; min-height: 42px; font: 500 16px/42px var(--serif); letter-spacing: .06em; color: var(--muted); transition: color .2s, scale .15s; }
+.chapter:hover { color: var(--text); }
+.chapter.active { color: var(--text); }
+.chapter.active::after { content: ""; position: absolute; left: 0; right: 0; bottom: 4px; height: 2px; border-radius: 2px; background: linear-gradient(90deg, var(--water), var(--brass)); }
+.chapter.more { color: var(--link); font-size: var(--fs-sm); }
+.cast { gap: 2px 18px; margin: 0 0 6px; padding-left: 14px; border-left: 2px solid color-mix(in srgb, var(--kind-character) 45%, transparent); }
+.cast .chapter { min-height: 36px; font-size: 14px; line-height: 36px; }
+.cast .chapter.active::after { bottom: 2px; background: var(--kind-character); }
+.chapters + .hall, .cast + .hall { margin-top: 14px; }
 .hall { min-height: 40vh; touch-action: pan-y; }
 .spread { display: grid; grid-template-columns: repeat(20, minmax(0, 1fr)); gap: 16px; }
 .hall-item { --art: transparent; min-width: 0; animation: item-in .7s var(--ease) both; animation-delay: calc(var(--i, 0) * 32ms); }
@@ -264,6 +271,7 @@ dialog[open] { animation: enter .22s var(--ease); }
   .collection-heading { gap: 10px; margin-bottom: 12px; }
   .collection-heading h1 { font-size: 26px; }
   .sort-note { display: none; }
+  .collection-heading #browse-tags { margin-left: auto; }
   .topbar { flex-wrap: wrap; }
   .topbar .sources { order: 3; width: 100%; margin: 4px 0 0; }
   .sources { gap: 20px; }
@@ -276,8 +284,11 @@ dialog[open] { animation: enter .22s var(--ease); }
   .tag-filter > span:first-child { display: none; }
   .tag-strip { gap: 8px; margin-bottom: 16px; }
   .tag-strip .tag-chip { padding: 4px 12px; }
-  .months { gap: 0 18px; margin-bottom: 12px; }
-  .month-tab { font-size: 15px; }
+  .chapters { flex-wrap: nowrap; gap: 0 16px; overflow-x: auto; scrollbar-width: none; }
+  .chapter { flex-shrink: 0; }
+  .collection-heading .text-button { white-space: nowrap; }
+  .chapter { font-size: 15px; }
+  .cast .chapter { font-size: 13px; }
   .spread { grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 10px; }
   .hall-item.lead { grid-column: span 6; grid-row: auto; }
   .hall-item.lead .art-button, .hall-item.lead.skeleton { height: auto; aspect-ratio: 4 / 5; }
@@ -310,8 +321,8 @@ dialog[open] { animation: enter .22s var(--ease); }
 @media (max-width: 370px) { .sort-label { display: none; } .sources { gap: 16px; } .source-select select { width: 88px; } }
 
 /* Pressed controls give a little and leave a ring of water in their kind's colour. */
-.tag-chip, .source-link, #browse-tags, .tag-kind, .month-tab, .page-number, .pager-turn { position: relative; overflow: hidden; }
-.tag-chip:active, .source-link:active, #browse-tags:active, .tag-kind:active, .featured-pick:active, .month-tab:active, .page-number:active, .pager-turn:active:not(:disabled) { scale: .95; }
+.tag-chip, .source-link, #browse-tags, .tag-kind, .chapter, .page-number, .pager-turn { position: relative; overflow: hidden; }
+.tag-chip:active, .source-link:active, #browse-tags:active, .tag-kind:active, .featured-pick:active, .chapter:active, .page-number:active, .pager-turn:active:not(:disabled) { scale: .95; }
 .tag-chip, .source-link, #browse-tags, .tag-kind, .featured-pick { transition-property: color, background, box-shadow, border-color, translate, scale, opacity; }
 .ripple { position: absolute; border-radius: 50%; pointer-events: none; scale: .1; opacity: .9;
   background: radial-gradient(closest-side, transparent 58%, color-mix(in srgb, var(--kind, var(--water)) 55%, transparent) 72%, transparent);

@@ -185,7 +185,7 @@ Cookie。只软删除作品并保留图片。已下线返回 `replayed: true`。
 
 ### `GET /api/works?source=&tag=&q=&month=&limit=&offset=&cursor=`
 
-按 `created_at DESC, id DESC` 稳定排序。`month=YYYY-MM` 只返回该收藏月份（北京时间）的作品，网页展厅按它和 `offset` 分页。`tag` 可用逗号分隔多个标签（最多 64 个），返回带有其中任一标签的作品，每件作品只出现一次；单个标签的行为不变。新网页使用 `next_cursor` 继续浏览，避免新入库/下线移动 offset 导致漏项；旧 offset 客户端保持兼容。搜索中的 `%` / `_` 按普通文字处理。
+按 `created_at DESC, id DESC` 稳定排序。`month=YYYY-MM` 只返回该收藏月份（北京时间）的作品。`tag` 可用逗号分隔多个标签（最多 64 个），返回带有其中任一标签的作品，每件作品只出现一次；单个标签的行为不变。新网页使用 `next_cursor` 继续浏览，避免新入库/下线移动 offset 导致漏项；旧 offset 客户端保持兼容。搜索中的 `%` / `_` 按普通文字处理。
 
 ### `GET /api/works/<URL 编码的 work_id>`
 
@@ -199,7 +199,7 @@ Cookie。只软删除作品并保留图片。已下线返回 `replayed: true`。
 
 ### `GET /api/tags` · `GET /api/sources` · `GET /api/months`
 
-标签支持 `q`、`limit`（最多 1000）、`offset` 和 `order=name`，通过 `next_offset` 遍历全部在线标签；网页一次取全部标签，在前端分组和搜索。`/api/months` 接受与 `/api/works` 相同的 `source`、`tag`、`q`，返回按北京时间划分的各收藏月份作品数（新到旧），按筛选条件和目录版本缓存。网页以它为目录：每页 15 件，按一大、四中、十小排成展厅，翻页可跨月。
+标签支持 `q`、`limit`（最多 1000）、`offset` 和 `order=name`，通过 `next_offset` 遍历全部在线标签；网页一次取全部标签，在前端分组和搜索。`/api/months` 接受与 `/api/works` 相同的 `source`、`tag`、`q`，返回按北京时间划分的各收藏月份作品数（新到旧），按筛选条件和目录版本缓存。网页用它的合计算出页数：每页 15 件，按一大、四中、十小排成展厅；展厅上方按作品（游戏）分章，选中作品或角色后出现该作品的角色行，章节就是标签筛选。
 
 ### `GET /media/<r2_key>`
 

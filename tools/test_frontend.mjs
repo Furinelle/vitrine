@@ -147,54 +147,67 @@ for (const language of ['zh-CN', 'en-US']) {
 }
 console.log('PASS: tag index groups by kind and work, follows the browser language, searches every display name');
 
-// The hall: pages of fifteen per collection month, turning across month ends, numbered with gaps.
+// The hall: pages of fifteen for the current filter, a numbered pager with gaps, and chapters by game.
 {
-  const element = (id) => {
-    const el = { id, children: [], dataset: {}, style: { setProperty(k, val) { this[k] = val; } }, attributes: {}, disabled: false, hidden: false,
-      textContent: '', classList: { add() {}, toggle() {} }, setAttribute(k, val) { this.attributes[k] = val; }, addEventListener() {},
-      append(...items) { this.children.push(...items); }, replaceChildren(...items) { this.children = items; } };
-    return el;
-  };
+  const element = (id) => ({ id, children: [], dataset: {}, style: { setProperty(k, val) { this[k] = val; } }, attributes: {}, disabled: false, hidden: false,
+    textContent: '', className: '', classList: { add() {}, toggle() {} }, setAttribute(k, val) { this.attributes[k] = val; }, addEventListener() {},
+    append(...items) { this.children.push(...items); }, replaceChildren(...items) { this.children = items; } });
   const els = new Map();
   const $ = (id) => { if (!els.has(id)) els.set(id, element(id)); return els.get(id); };
-  $('prev-page').children = [{}, { textContent: '' }];
-  $('next-page').children = [{ textContent: '' }, {}];
-  Object.defineProperty($('prev-page'), 'lastChild', { get() { return this.children[1]; } });
-  Object.defineProperty($('next-page'), 'firstChild', { get() { return this.children[0]; } });
+  const filtered = [];
   const hall = vm.createContext({
-    $, Intl, URLSearchParams, zh: true, names: {}, location: { origin: 'https://gallery.example' },
-    state: { source: '', tag: '原神', q: '', month: '2026-09', p: 1, months: [{ month: '2026-10', cnt: 31 }, { month: '2026-09', cnt: 15 }, { month: '2026-08', cnt: 1 }] },
+    $, URLSearchParams, zh: true, names: {}, location: { origin: 'https://gallery.example' },
+    state: { source: '', tag: '原神', q: '', p: 1, total: 31, tags: [] },
     document: { createElement: (tag) => Object.assign(element(), { tagName: tag }) },
     middleObserver: null, stage: { cards: new Set() }, galleryUrl: (id) => `/?work=${id}`,
+    applyFilters: (changes) => filtered.push(changes), tagName: (name) => name, tagInfo: new Map(),
   });
   vm.runInContext(source.slice(source.indexOf('function node('), source.indexOf('function safeLink(')), hall);
-  vm.runInContext('const PAGE_SIZE = 15;' + source.slice(source.indexOf('const monthName ='), source.indexOf('function renderLoadingHall(')), hall);
+  vm.runInContext('const PAGE_SIZE = 15;' + source.slice(source.indexOf('const pageCount ='), source.indexOf('function renderLoadingHall(')), hall);
   vm.runInContext(source.slice(source.indexOf('// The page one step away'), source.indexOf('let hallTicket')), hall);
-  vm.runInContext(source.slice(source.indexOf('// Page numbers:'), source.indexOf('\n', source.indexOf('$("pager").hidden')) + 2), hall);
-  assert.equal(vm.runInContext("monthLabel('2026-09')", hall), '2026年9月');
-  assert.equal(vm.runInContext("pagesIn('2026-10')", hall), 3, '31 works make three pages of fifteen');
-  assert.equal(vm.runInContext("filterQuery({ month: '2026-09' }).toString()", hall), 'month=2026-09&tag=%E5%8E%9F%E7%A5%9E');
-  // A one-page month: both turns cross into the neighbouring months, named on the buttons.
-  assert.deepEqual(JSON.parse(vm.runInContext('JSON.stringify([neighbour(-1), neighbour(1)])', hall)), [{ month: '2026-10', p: 3 }, { month: '2026-08', p: 1 }]);
-  vm.runInContext('syncPager()', hall);
-  assert.equal($('prev-page').children[1].textContent, '2026年10月');
-  assert.equal($('next-page').children[0].textContent, '2026年8月');
-  // Inside a long month the turns stay in it; the oldest page has nowhere further to go.
-  vm.runInContext("Object.assign(state, { month: '2026-10', p: 2 }); syncPager()", hall);
-  assert.equal($('prev-page').children[1].textContent, '上一页');
-  assert.equal($('next-page').children[0].textContent, '下一页');
-  vm.runInContext("Object.assign(state, { month: '2026-08', p: 1 }); syncPager()", hall);
+  vm.runInContext(source.slice(source.indexOf('// Chapters:'), source.indexOf('\n', source.indexOf('$("pager").hidden')) + 2), hall);
+  vm.runInContext(source.slice(source.indexOf('function tagWork('), source.indexOf('function renderTagBrowser(')), hall);
+  assert.equal(vm.runInContext('pageCount()', hall), 3, '31 works make three pages of fifteen');
+  assert.equal(vm.runInContext("filterQuery({ limit: 15 }).toString()", hall), 'limit=15&tag=%E5%8E%9F%E7%A5%9E');
+  assert.deepEqual([vm.runInContext('neighbour(-1)', hall), vm.runInContext('neighbour(1)', hall)], [null, 2]);
+  vm.runInContext('state.p = 3; syncPager()', hall);
   assert.equal($('next-page').disabled, true);
-  // Page numbers keep the ends and two either side, with gaps marked.
-  vm.runInContext("state.months = [{ month: '2026-10', cnt: 15 * 20 }]; Object.assign(state, { month: '2026-10', p: 10 }); syncPager()", hall);
+  assert.equal($('prev-page').disabled, false);
+  vm.runInContext('state.total = 15 * 20; state.p = 10; syncPager()', hall);
   const labels = $('page-list').children.map((li) => li.className === 'page-gap' ? '…' : li.children[0].textContent);
   assert.deepEqual(labels, ['1', '…', '8', '9', '10', '11', '12', '…', '20']);
+  vm.runInContext('state.total = 15; state.p = 1; syncPager()', hall);
+  assert.equal($('pager').hidden, true, 'a single page needs no pager');
+  // Chapters: All, then games by count with the rest behind "more"; a character opens its game's cast.
+  const tags = [
+    ...Array.from({ length: 10 }, (_, i) => ({ name: `game${i}`, cnt: 100 - i, kind: 'work' })),
+    { name: 'hero', cnt: 50, kind: 'character', parent: 'game1' },
+    { name: 'twin', cnt: 40, kind: 'character', parent: 'hero' },
+    { name: 'other', cnt: 30, kind: 'character', parent: 'game2' },
+  ];
+  hall.state.tags = tags;
+  for (const tag of tags) hall.tagInfo.set(tag.name, tag);
+  hall.state.tag = 'twin';
+  hall.renderChapters();
+  const chips = $('chapters').children;
+  assert.equal(chips[0].textContent, '全部');
+  assert.deepEqual(chips.slice(1, 8).map((c) => c.children[0].textContent), ['game0', 'game1', 'game2', 'game3', 'game4', 'game5', 'game6']);
+  assert.equal(chips.at(-1).textContent, '更多 3');
+  assert.equal(chips[2].className, 'chapter active', 'a character marks its game, through a parent character');
+  assert.equal($('cast').hidden, false);
+  assert.deepEqual($('cast').children.map((c) => c.children[0].textContent), ['hero', 'twin']);
+  assert.equal($('cast').children[1].className, 'chapter active');
+  chips[3].action?.();
+  hall.state.tag = '';
+  hall.renderChapters();
+  assert.equal($('chapters').children[0].className, 'chapter active');
+  assert.equal($('cast').hidden, true);
   // Spread sizes: one large, four medium, ten small; the large cover asks for the bigger thumbnail.
   vm.runInContext('var artColor = () => "", openLightbox = () => {}, thumbUrl = (u, w) => u + "?width=" + w, coverUrl = (u) => u;', hall);
   vm.runInContext(source.slice(source.indexOf('function hallItem('), source.indexOf('function renderLoadingHall(')), hall);
   const items = Array.from({ length: 15 }, (_, i) => hall.hallItem({ id: `x:${i}`, source: 'x', page_count: 1, cover_url: `/media/x/${i}.jpg` }, i));
   assert.deepEqual([...new Set(items.map((item) => item.className))], ['hall-item lead', 'hall-item medium', 'hall-item small']);
-  assert.deepEqual(items.map((item) => item.className.split(' ')[1]).filter((c) => c === 'medium').length, 4);
+  assert.equal(items.filter((item) => item.className.endsWith('medium')).length, 4);
   const img = (item) => item.children[0].children[0];
   assert.match(img(items[0]).src, /width=1280/);
   assert.match(img(items[1]).src, /width=640/);
@@ -202,7 +215,7 @@ console.log('PASS: tag index groups by kind and work, follows the browser langua
   assert.equal(img(items[4]).loading, 'eager');
   assert.equal(img(items[5]).loading, 'lazy');
 }
-console.log('PASS: hall pages of fifteen per month, turns across month ends, numbered pager with gaps, lead/medium/small spread');
+console.log('PASS: hall pages of fifteen, numbered pager with gaps, chapters by game with a cast row, lead/medium/small spread');
 
 
 const adminSource = readFileSync(new URL('../public/admin.js', import.meta.url), 'utf8');
@@ -294,7 +307,7 @@ console.log('PASS: share URL round-trip and bounded thumbnail presets');
     fetchPage: () => new Promise((resolve) => pending.push(resolve)),
     renderHall: async (works) => { drawn.push(works.map((w) => w.id).join()); },
   });
-  vm.runInContext(source.slice(source.indexOf('let hallTicket = 0;'), source.indexOf('// Months for the current filters')), turns);
+  vm.runInContext(source.slice(source.indexOf('let hallTicket = 0;'), source.indexOf('// The total for the current filters')), turns);
   const first = turns.showPage(1), second = turns.showPage(1);
   pending[1]({ works: [{ id: 'new' }] });
   await second;
