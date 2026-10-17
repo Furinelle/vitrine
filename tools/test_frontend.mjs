@@ -169,6 +169,8 @@ function cardsFixture(withObserver = true) {
     URL, URLSearchParams, location: { origin: 'https://gallery.example' },
     names: { x: 'X' }, $: () => grid, galleryUrl: id => `/?work=${id}`,
     applyFilters() {}, openLightbox() {},
+    // The backdrop's middle-of-screen observer lives outside this slice.
+    middleObserver: null, stage: { cards: new Set() },
     document: { createElement: element, createDocumentFragment: () => element('fragment') },
     IntersectionObserver: withObserver ? class {
       constructor(callback, options) { intersect = callback; observerOptions = options; }
