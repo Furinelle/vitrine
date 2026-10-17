@@ -15,13 +15,13 @@ function tagLabel(tag) {
 function locationFilters() {
   const query = new URLSearchParams(location.search);
   return { source: query.get("source") || "", tag: query.get("tag") || "", q: query.get("q") || "",
-    month: /^\d{4}-\d{2}$/.test(query.get("month") || "") ? query.get("month") : "", p: Math.max(1, parseInt(query.get("p"), 10) || 1) };
+    p: Math.max(1, parseInt(query.get("p"), 10) || 1) };
 }
-// The collection is shown as a hall of pages: one collection month at a time (Beijing time), fifteen
-// works to a page set as one large, four medium and ten small pictures.
+// The collection is shown as a hall of pages, newest first: fifteen works to a page, set as one large,
+// four medium and ten small pictures. Chapters above it are the games (work tags), then their characters.
 const PAGE_SIZE = 15;
 const state = {
-  ...locationFilters(), works: [], months: [], loading: false,
+  ...locationFilters(), works: [], total: null, loading: false,
   request: null, sources: [], tags: [], tagError: "", viewerRequest: null, viewing: null, images: [], imageIndex: 0,
 };
 function node(tag, className, text) {
@@ -70,7 +70,7 @@ async function getJson(url, signal) {
 }
 function galleryUrl(workId = "", page = 0) {
   const query = new URLSearchParams();
-  for (const field of ["source", "tag", "q", "month"]) if (state[field]) query.set(field, state[field]);
+  for (const field of ["source", "tag", "q"]) if (state[field]) query.set(field, state[field]);
   if (state.p > 1) query.set("p", String(state.p));
   if (workId) query.set("work", workId);
   if (workId && page > 0) query.set("page", String(page + 1));
@@ -87,6 +87,7 @@ function syncFilters(preserveDraft = false) {
   });
   document.querySelectorAll("#popular-tags .tag-chip").forEach((item) => item.classList.toggle("active", item.dataset.tag === state.tag));
   placeTabRule();
+  if (state.tags.length) renderChapters();
   const title = state.tag ? `# ${tagLabel(state.tag)}` : state.q ? "搜索结果" : state.source ? names[state.source] || state.source : "全部作品";
   $("collection-title").textContent = title;
   if (!$("lightbox").open) document.title = `${state.source || state.tag || state.q ? title + " · " : ""}Vitrine · 图库`;
@@ -108,14 +109,14 @@ function placeTabRule() {
   rule.style.translate = `${active.offsetLeft}px 0`;
 }
 function updateCount() {
-  // The month counts cover any filter; before they arrive, the source totals cover the unfiltered collection.
+  // The hall's total covers any filter; before it arrives, the source totals cover the unfiltered collection.
   const sources = state.source ? state.sources.find((s) => s.source === state.source)?.cnt : state.sources.length ? state.sources.reduce((sum, s) => sum + s.cnt, 0) : null;
-  const total = state.months.length ? state.months.reduce((sum, month) => sum + month.cnt, 0) : !state.tag && !state.q ? sources : null;
+  const total = state.total ?? (!state.tag && !state.q ? sources : null);
   $("collection-count").textContent = total != null ? `${total.toLocaleString("zh-CN")} 件收藏` : "";
 }
 function applyFilters(changes) {
-  // New filters start from their newest month.
-  Object.assign(state, { month: "", p: 1 }, changes);
+  // New filters start from their first page.
+  Object.assign(state, { p: 1 }, changes);
   if ($("lightbox").open) {
     state.viewerRequest?.abort(); state.viewerRequest = null;
     dismissLightbox();
@@ -273,9 +274,7 @@ function artColor(image) {
     return "";
   }
 }
-const monthName = new Intl.DateTimeFormat(zh ? "zh-CN" : "en", { year: "numeric", month: "long", timeZone: "UTC" });
-const monthLabel = (month) => monthName.format(new Date(`${month}-01T00:00:00Z`));
-const pagesIn = (month) => Math.max(1, Math.ceil((state.months.find((m) => m.month === month)?.cnt || 0) / PAGE_SIZE));
+const pageCount = () => Math.max(1, Math.ceil((state.total || 0) / PAGE_SIZE));
 function filterQuery(extra = {}) {
   const query = new URLSearchParams(extra);
   for (const field of ["source", "tag", "q"]) if (state[field]) query.set(field, state[field]);
@@ -350,19 +349,16 @@ async function renderHall(works, direction) {
   $("grid").replaceChildren(spread);
 }
 const pageCache = new Map();
-function fetchPage(month, p) {
-  const query = filterQuery({ month, limit: PAGE_SIZE, offset: (p - 1) * PAGE_SIZE });
+function fetchPage(p) {
+  const query = filterQuery({ limit: PAGE_SIZE, offset: (p - 1) * PAGE_SIZE });
   const key = query.toString();
   if (!pageCache.has(key)) pageCache.set(key, getJson(`/api/works?${query}`).catch((error) => { pageCache.delete(key); throw error; }));
   return pageCache.get(key);
 }
-// The page one step away, crossing into the neighbouring month at either end; null past the ends.
+// The page one step away; null past either end.
 function neighbour(step) {
-  const index = state.months.findIndex((m) => m.month === state.month);
   const p = state.p + step;
-  if (p >= 1 && p <= pagesIn(state.month)) return { month: state.month, p };
-  const month = state.months[index + step]?.month;
-  return month ? { month, p: step > 0 ? 1 : pagesIn(month) } : null;
+  return p >= 1 && p <= pageCount() ? p : null;
 }
 let hallTicket = 0;
 async function showPage(direction = 0) {
@@ -374,7 +370,7 @@ async function showPage(direction = 0) {
   $("retry").hidden = true;
   syncPager();
   try {
-    const data = await fetchPage(state.month, state.p);
+    const data = await fetchPage(state.p);
     if (ticket !== hallTicket) return;
     state.works = data.works || [];
     await renderHall(state.works, direction);
@@ -384,7 +380,7 @@ async function showPage(direction = 0) {
     // Ready the next and previous pages so a turn shows at once; the next page's large and medium covers too.
     for (const step of [1, -1]) {
       const next = neighbour(step);
-      if (next) fetchPage(next.month, next.p).then((page) => {
+      if (next) fetchPage(next).then((page) => {
         if (step > 0) page.works?.slice(0, 5).forEach((work, i) => { if (coverUrl(work.cover_url)) new Image().src = thumbUrl(coverUrl(work.cover_url), i ? 640 : 1280); });
       }, () => {});
     }
@@ -401,7 +397,7 @@ async function showPage(direction = 0) {
     }
   }
 }
-// Months for the current filters, then the page the address asks for (newest month by default).
+// The total for the current filters (summed from the per-month counts, which are cached per filter), then the page.
 async function loadHall() {
   state.request?.abort();
   const controller = new AbortController();
@@ -416,18 +412,16 @@ async function loadHall() {
   try {
     const data = await getJson(`/api/months?${filterQuery()}`, controller.signal);
     if (state.request !== controller) return;
-    state.months = data.months || [];
+    state.total = (data.months || []).reduce((sum, month) => sum + month.cnt, 0);
     updateCount();
-    renderMonths();
-    if (!state.months.length) {
+    if (!state.total) {
       $("grid").replaceChildren();
       $("status").textContent = "";
       $("empty").hidden = false;
       syncPager();
       return;
     }
-    if (!state.months.some((m) => m.month === state.month)) Object.assign(state, { month: state.months[0].month, p: 1 });
-    state.p = Math.min(state.p, pagesIn(state.month));
+    state.p = Math.min(state.p, pageCount());
     history.replaceState(history.state, "", galleryUrl(new URLSearchParams(location.search).get("work") || "", Math.max(0, (parseInt(new URLSearchParams(location.search).get("page"), 10) || 1) - 1)));
     $("status").textContent = "";
     await showPage(0);
@@ -439,37 +433,52 @@ async function loadHall() {
     $("retry").hidden = false;
   }
 }
-function goToPage(month, p, direction) {
-  if (month === state.month && p === state.p) return;
-  Object.assign(state, { month, p });
+function goToPage(p, direction) {
+  if (p === state.p) return;
+  state.p = p;
   history.pushState(null, "", galleryUrl());
-  renderMonths();
   showPage(direction);
-  const top = $("months").getBoundingClientRect().top;
-  if (top < 0) $("months").scrollIntoView({ behavior: calm.matches ? "auto" : "smooth", block: "start" });
+  if ($("chapters").getBoundingClientRect().top < 0) $("chapters").scrollIntoView({ behavior: calm.matches ? "auto" : "smooth", block: "start" });
 }
 function turn(step) {
   const next = neighbour(step);
-  if (next && !state.loading) goToPage(next.month, next.p, step);
+  if (next && !state.loading) goToPage(next, step);
 }
-function renderMonths() {
-  $("months").replaceChildren(...state.months.map((m) => {
-    const tab = button(`month-tab${m.month === state.month ? " active" : ""}`, undefined, () => goToPage(m.month, 1, m.month < state.month ? 1 : -1));
-    if (m.month === state.month) tab.setAttribute("aria-current", "page");
-    tab.append(node("span", "", monthLabel(m.month)), node("span", "tag-count", m.cnt.toLocaleString("zh-CN")));
-    return tab;
-  }));
+// Chapters: every game in the tag library by number of works, the first seven shown and the rest
+// behind "more"; a chosen game (or one of its characters) opens a row of its characters the same way.
+const chapterOpen = { works: false, cast: false };
+function chapterRow(row, tags, active, limit, key, allButton) {
+  const shown = chapterOpen[key] || tags.length <= limit + 1 ? tags : tags.slice(0, limit);
+  const items = shown.map((tag) => {
+    const chip = button(`chapter${tag.name === active ? " active" : ""}`, undefined, () => applyFilters({ tag: tag.name }));
+    if (tag.name === active) chip.setAttribute("aria-current", "true");
+    chip.append(node("span", "", tagName(tag.name)), node("span", "tag-count", tag.cnt.toLocaleString("zh-CN")));
+    return chip;
+  });
+  if (allButton) items.unshift(allButton);
+  if (shown.length < tags.length) items.push(button("chapter more", `更多 ${tags.length - shown.length}`, () => { chapterOpen[key] = true; renderChapters(); }));
+  row.replaceChildren(...items);
+}
+function renderChapters() {
+  const current = tagInfo.get(state.tag);
+  const work = current?.kind === "work" ? current.name : current ? tagWork(current) : "";
+  if (work !== chapterOpen.work) Object.assign(chapterOpen, { work, cast: false });
+  const all = button(`chapter${!state.tag ? " active" : ""}`, zh ? "全部" : "All", () => applyFilters({ tag: "" }));
+  chapterRow($("chapters"), state.tags.filter((tag) => tag.kind === "work"), work, 7, "works", all);
+  const cast = work ? state.tags.filter((tag) => tag.kind === "character" && tagWork(tag) === work) : [];
+  $("cast").hidden = !cast.length;
+  if (cast.length) chapterRow($("cast"), cast, state.tag, 12, "cast");
 }
 // Page numbers: the first, the last and two either side of the current one, with gaps marked.
 function syncPager() {
-  const pages = pagesIn(state.month), shown = new Set([1, pages]);
+  const pages = pageCount(), shown = new Set([1, pages]);
   for (let p = state.p - 2; p <= state.p + 2; p++) if (p >= 1 && p <= pages) shown.add(p);
   const list = [];
   let last = 0;
   for (const p of [...shown].sort((a, b) => a - b)) {
     if (p - last > 1) list.push(node("li", "page-gap", "…"));
     const item = node("li");
-    const jump = button(`page-number${p === state.p ? " active" : ""}`, String(p), () => goToPage(state.month, p, p > state.p ? 1 : -1));
+    const jump = button(`page-number${p === state.p ? " active" : ""}`, String(p), () => goToPage(p, p > state.p ? 1 : -1));
     if (p === state.p) jump.setAttribute("aria-current", "page");
     jump.setAttribute("aria-label", `第 ${p} 页`);
     item.append(jump);
@@ -477,13 +486,9 @@ function syncPager() {
     last = p;
   }
   $("page-list").replaceChildren(...list);
-  const before = neighbour(-1), after = neighbour(1);
-  $("prev-page").disabled = !before;
-  $("next-page").disabled = !after;
-  // Crossing into another month names it, so the turn is not a surprise.
-  $("prev-page").lastChild.textContent = before && before.month !== state.month ? monthLabel(before.month) : "上一页";
-  $("next-page").firstChild.textContent = after && after.month !== state.month ? monthLabel(after.month) : "下一页";
-  $("pager").hidden = !state.months.length;
+  $("prev-page").disabled = !neighbour(-1);
+  $("next-page").disabled = !neighbour(1);
+  $("pager").hidden = !state.total || pages < 2;
 }
 function showImage(index, updateUrl = true, retry = false) {
   if (!state.images.length) return;
@@ -688,11 +693,11 @@ function syncRoute() {
   state.closing = false;
   const filters = locationFilters();
   const changed = ["source", "tag", "q"].some((key) => filters[key] !== state[key]);
-  const turned = filters.month !== state.month || filters.p !== state.p;
-  const direction = filters.month === state.month ? Math.sign(filters.p - state.p) : filters.month < state.month ? 1 : -1;
+  const turned = filters.p !== state.p;
+  const direction = Math.sign(filters.p - state.p);
   Object.assign(state, filters);
   if (changed) { syncFilters(); loadHall(); }
-  else if (turned && state.months.length) { renderMonths(); showPage(direction); }
+  else if (turned && state.total) showPage(direction);
   const query = new URLSearchParams(location.search);
   const id = query.get("work");
   if (id) {
@@ -721,7 +726,7 @@ $("browse-tags").addEventListener("click", () => {
 });
 $("tag-search").addEventListener("input", renderTagBrowser);
 $("tag-retry").addEventListener("click", () => { state.tagError = ""; renderTagBrowser(); loadTags(); });
-$("retry").addEventListener("click", () => (state.months.length ? showPage(0) : loadHall()));
+$("retry").addEventListener("click", () => (state.total ? showPage(0) : loadHall()));
 $("prev-page").addEventListener("click", () => turn(-1));
 $("next-page").addEventListener("click", () => turn(1));
 // Arrow keys turn pages when nothing else wants them; a horizontal swipe on the hall does the same.
@@ -833,7 +838,7 @@ $("about-close").addEventListener("click", () => $("about").close());
 // Touch feedback: a ring spreads like water from where a tag, tab or thumbnail is pressed, in the tag kind's colour.
 const calm = matchMedia("(prefers-reduced-motion: reduce)");
 document.addEventListener("pointerdown", (event) => {
-  const target = event.target.closest?.(".tag-chip, .source-link, #browse-tags, .tag-kind, .featured-pick, .month-tab, .page-number, .pager-turn:not(:disabled)");
+  const target = event.target.closest?.(".tag-chip, .source-link, #browse-tags, .tag-kind, .featured-pick, .chapter, .page-number, .pager-turn:not(:disabled)");
   if (!target || calm.matches) return;
   const box = target.getBoundingClientRect(), size = Math.max(box.width, box.height) * 2.4;
   const ripple = node("span", "ripple");

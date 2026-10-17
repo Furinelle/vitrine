@@ -13,9 +13,9 @@
   <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
   <link rel="stylesheet" href="/fonts/noto-serif-sc-5.3.1/font.css" />
   <link rel="stylesheet" href="/theme.css?v=20261017-colour" />
-  <link rel="stylesheet" href="/gallery.css?v=20261017-swipe" />
+  <link rel="stylesheet" href="/gallery.css?v=20261017-chapters" />
   <script src="/theme.js?v=20261014-vitrine" defer></script>
-  <script src="/app.js?v=20261017-swipe" defer></script>
+  <script src="/app.js?v=20261017-chapters" defer></script>
 </head>
 <body id="top">
   <div class="backdrop" aria-hidden="true"><span class="on"></span><span></span></div>
@@ -39,7 +39,8 @@
       <h1 id="collection-title">全部作品</h1>
       <p id="collection-count" class="collection-count" aria-live="polite">加载中…</p>
       <button id="reset" type="button" class="text-button" hidden>清除筛选</button>
-      <span class="sort-note">按收藏月份分页</span>
+      <span class="sort-note">按收藏时间排列</span>
+      <button id="browse-tags" type="button" class="text-button" aria-expanded="false" aria-controls="tag-browser">全部标签</button>
     </div>
     <!-- Kept for its submit handler and the hidden source select; tags are chosen from the strip or the tag index. -->
     <form id="filter-form" class="filterbar" hidden>
@@ -47,10 +48,12 @@
       <label class="tag-filter"><span class="sr-only">筛选标签</span><input id="tag" list="taglist" maxlength="64" autocomplete="off" /><datalist id="taglist"></datalist></label>
       <button type="submit" class="filter-apply">筛选</button>
     </form>
-    <div class="tag-strip"><div id="popular-tags" class="popular-tags" aria-label="热门标签"></div><button id="browse-tags" type="button" class="text-button" aria-expanded="false" aria-controls="tag-browser">全部标签</button></div>
+    <!-- The chapters below replaced the popular-tag strip; it stays in the page for the filter code. -->
+    <div class="tag-strip" hidden><div id="popular-tags" class="popular-tags" aria-label="热门标签"></div></div>
     <section id="tag-browser" class="tag-browser" hidden aria-label="标签索引"><label class="tag-search">查找标签<input id="tag-search" type="search" placeholder="输入标签关键词" maxlength="64" /></label><nav id="tag-kinds" class="tag-kinds" aria-label="标签类别"></nav><div id="all-tags"></div><p id="tag-empty" hidden>没有匹配的标签。</p><p id="tag-status" class="status" role="status"></p><button id="tag-retry" class="text-button" hidden>重试</button></section>
     <div id="active-filters" class="active-filters" aria-label="当前筛选条件"></div>
-    <nav id="months" class="months" aria-label="收藏月份"></nav>
+    <nav id="chapters" class="chapters" aria-label="按作品浏览"></nav>
+    <nav id="cast" class="chapters cast" aria-label="角色" hidden></nav>
     <section id="grid" class="hall" aria-label="收藏作品" aria-busy="true"></section>
     <div id="empty" class="empty-state" hidden><svg aria-hidden="true" viewBox="0 0 24 24"><circle cx="10.8" cy="10.8" r="6.8"/><path d="m16 16 4.5 4.5"/></svg><h2>没有匹配的作品</h2><p>试试其他关键词，或清除筛选。</p><button id="empty-reset" class="primary-button">查看全部作品</button></div>
     <nav id="pager" class="pager" aria-label="翻页" hidden><button id="prev-page" class="pager-turn" type="button"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="M15 5l-7 7 7 7"/></svg><span>上一页</span></button><ol id="page-list" class="page-list"></ol><button id="next-page" class="pager-turn" type="button"><span>下一页</span><svg aria-hidden="true" viewBox="0 0 24 24"><path d="M9 5l7 7-7 7"/></svg></button></nav>
