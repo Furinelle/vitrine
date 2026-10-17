@@ -3,10 +3,11 @@ html { scroll-behavior: smooth; scroll-padding-top: 24px; -webkit-font-smoothing
 /* The wall takes the colour of the artwork in view (--stage, set by app.js) and crossfades between them;
    a faint grain keeps it from reading as one flat fill, like the programme's paper. */
 @property --stage { syntax: "<color>"; inherits: true; initial-value: transparent; }
-:root { --stage: var(--water); transition: --stage 1.6s ease; }
-body { margin: 0; font-family: var(--text-sans); font-size: 15px; line-height: 1.6;
+/* Painted on the root, not body: body starts below the header's top margin, and the root's own fill showed through there. */
+:root { --stage: var(--water); transition: --stage 1.6s ease;
   background: radial-gradient(120% 70% at 50% 0, color-mix(in srgb, var(--stage) 26%, transparent), transparent 70%) fixed,
-    linear-gradient(color-mix(in srgb, var(--stage) 13%, var(--bg)), color-mix(in srgb, var(--stage) 7%, var(--bg))) fixed; }
+    linear-gradient(color-mix(in srgb, var(--stage) 13%, var(--bg)), color-mix(in srgb, var(--stage) 7%, var(--bg))) fixed, var(--bg); }
+body { margin: 0; font-family: var(--text-sans); font-size: 15px; line-height: 1.6; }
 body::before { content: ""; position: fixed; inset: 0; z-index: -1; pointer-events: none; opacity: .07;
   background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.9' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 .05 0 0 0 0 .12 0 0 0 0 .27 0 0 0 .9 0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E"); }
 body:has(dialog[open]) { overflow: hidden; }
