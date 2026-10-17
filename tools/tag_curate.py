@@ -5,12 +5,17 @@ decisions Claude signs off on.
     python3 tools/tag_curate.py research RUN       # Grok searches each tag -> RUN/proposals.json
     python3 tools/tag_curate.py apply RUN [--dry-run]
                                                    # RUN/decisions.json (reviewed) -> backup, rehearsal, D1
+    python3 tools/tag_curate.py drops              # drops waiting for the owner's review
+    python3 tools/tag_curate.py approve-drops TAG... | --all
+    python3 tools/tag_curate.py reject-drops TAG...
 
 decisions.json is a list of {"tag", "action", ...}:
   merge  {"target"}                       the tag is another spelling of an existing tag
   item   {"name", "kind", "parent", "en", "ja", "members"}
                                           file it in the library (a different "name" renames it first)
-  drop   {}                               remove it from every work and block it (only tags on <= 2 works)
+  drop   {"note"}                         remove it from every work and block it (only tags on <= 2 works). A
+                                          Japanese tag (it has kana) goes at once; any other waits for the
+                                          owner: `drops` lists them, `approve-drops` / `reject-drops` settle them
   keep   {"note"}                         leave it unsorted; it is not proposed again for 30 days
 Every decision is checked again before anything is written: unknown or blocked targets, missing parents
 or members, implication cycles, display names that already belong to another tag and drops of tags in
@@ -48,14 +53,29 @@ def in_list(names):
     return "(" + ",".join(sql_text(n) for n in names) + ")"
 
 
+def stored(name, empty):
+    path = STATE / name
+    return json.loads(path.read_text()) if path.exists() else empty
+
+
+def store(name, value):
+    STATE.mkdir(parents=True, exist_ok=True)
+    (STATE / name).write_text(json.dumps(value, ensure_ascii=False, indent=1))
+
+
 def seen():
-    path = STATE / "seen.json"
-    return json.loads(path.read_text()) if path.exists() else {}
+    return stored("seen.json", {})
+
+
+def japanese(tag):
+    """Kana mark a tag as Japanese; kanji alone cannot tell it from Chinese."""
+    return any("\u3040" <= c <= "\u30ff" or "\u31f0" <= c <= "\u31ff" or "\uff66" <= c <= "\uff9f" for c in tag)
 
 
 def collect():
     today = datetime.date.today()
     quiet = {t for t, day in seen().items() if (today - datetime.date.fromisoformat(day)).days < QUIET_DAYS}
+    quiet |= set(stored("pending_drops.json", {}))  # waiting for the owner already
     rows = d1("SELECT c.tag AS name, c.cnt FROM tag_counts c LEFT JOIN tag_items i ON i.name = c.tag "
               "WHERE c.cnt > 0 AND i.name IS NULL ORDER BY c.cnt DESC, c.tag")
     rows = [r for r in rows if r["name"] not in quiet][:BATCH]
@@ -141,11 +161,12 @@ def item_sql(name, kind, parent, ja, en, members):
             "ja = excluded.ja, en = excluded.en, members = excluded.members;"]
 
 
-def plan(decisions, counts, library, blocked, keys, taken):
+def plan(decisions, counts, library, blocked, keys, taken, kept=()):
     """Check every decision against the database as it is now and write the SQL for the ones that hold.
 
     counts {tag: visible works}, library {name: {kind, parent, ...}}, blocked {name}, keys {spelling: (key, stored
-    form)}, taken {key: tag already holding it}. Returns (statements, applied, refused)."""
+    form)}, taken {key: tag already holding it}, kept {tags the owner refused to drop}. Returns (statements,
+    applied, refused); a drop of a non-Japanese tag is applied as "review" (no SQL) for the owner to settle."""
     applied, refused, statements, blocks, items = [], [], [], [], []
     parents = {n: e.get("parent") for n, e in library.items()}
     members_of = {n: e.get("members", []) for n, e in library.items()}
@@ -179,11 +200,17 @@ def plan(decisions, counts, library, blocked, keys, taken):
             applied.append(d)
             continue
         if action == "drop":
+            if tag in kept:
+                refuse(d, "站长已否决删除")
+                continue
             if counts[tag] > DROP_MAX:
                 refuse(d, f"用在 {counts[tag]} 件作品上，超过可自动删除的 {DROP_MAX} 件")
                 continue
-            blocks += block_sql(tag)
-            applied.append(d)
+            if japanese(tag):
+                blocks += block_sql(tag)
+                applied.append(d)
+            else:
+                applied.append({**d, "action": "review", "uses": counts[tag]})
             continue
         if action == "merge":
             target = d.get("target")
@@ -261,52 +288,115 @@ def rehearse(backup, sql_path):
                       "WHERE c.cnt > 0 AND i.name IS NULL").fetchone()[0]
 
 
-def apply(run, dry_run=False):
-    run = pathlib.Path(run)
-    decisions = json.loads((run / "decisions.json").read_text())
+def live_state():
     counts = {r["tag"]: r["cnt"] for r in d1("SELECT tag, cnt FROM tag_counts WHERE cnt > 0")}
     library = {r["name"]: {k: r[k] for k in ("kind", "parent") if r[k]} | {"members": json.loads(r["members"] or "[]")}
                for r in d1("SELECT name, kind, parent, members FROM tag_items")}
+    return counts, library
+
+
+def execute(statements, run, dry_run, report):
+    """Back up, rehearse on the backup, then run on D1 and check the counts; notes go into report."""
+    sql_path = run / "apply.sql"
+    sql_path.write_text("\n".join(statements) + "\n")
+    if not statements:
+        return
+    backup = run / "backup.sql"
+    subprocess.run(["wrangler", "d1", "export", "vitrine", "--remote", "--output", str(backup)],
+                   cwd=ROOT, capture_output=True, check=True)
+    left = rehearse(backup, sql_path)
+    report.append(f"演练通过：执行后还剩 {left} 个未分类标签。")
+    if dry_run:
+        return
+    subprocess.run(["wrangler", "d1", "execute", "vitrine", "--remote", "--yes", "--file", str(sql_path)],
+                   cwd=ROOT, capture_output=True, check=True)
+    drift = d1("SELECT COUNT(*) AS n FROM (SELECT wt.tag, COUNT(*) n FROM work_tags wt JOIN works w ON w.id = wt.work_id "
+               "WHERE w.deleted_at IS NULL GROUP BY wt.tag) t LEFT JOIN tag_counts c ON c.tag = t.tag WHERE c.cnt IS NOT t.n")[0]["n"]
+    report.append(f"已写入线上；计数核对 {'一致' if drift == 0 else f'有 {drift} 个标签不一致'}。")
+    # Old runs keep their reports; only the latest few keep their 60 MB backups.
+    for old in sorted((STATE / "runs").glob("*/backup.sql"))[:-5]:
+        old.unlink()
+
+
+def pending_lines(pending):
+    return [f"- {t}（{v['uses']} 件作品）：{v.get('note') or '无说明'}" for t, v in pending.items()]
+
+
+def apply(run, dry_run=False):
+    run = pathlib.Path(run)
+    decisions = json.loads((run / "decisions.json").read_text())
+    counts, library = live_state()
     blocked = {r["name"] for r in d1("SELECT name FROM tag_blocks")}
     spellings = {s for d in decisions for s in (d.get("tag"), d.get("target"), d.get("name"), d.get("ja"), d.get("en")) if s}
     keys = tag_merge.keys_for(sorted(spellings | set(counts) | set(library)))
     wanted = sorted({keys[s][0] for s in spellings})
     taken = {r["key"]: r["tag"] for start in range(0, len(wanted), 80)
              for r in d1(f"SELECT key, tag FROM tag_keys WHERE key IN {in_list(wanted[start:start + 80])}")}
-    statements, applied, refused = plan(decisions, counts, library, blocked, keys, taken)
-    sql_path = run / "apply.sql"
-    sql_path.write_text("\n".join(statements) + "\n")
+    statements, applied, refused = plan(decisions, counts, library, blocked, keys, taken, set(stored("kept.json", [])))
     report = [f"# 标签整理 {run.name}", "", f"决定 {len(decisions)} 条：执行 {len(applied)} 条，拒绝 {len(refused)} 条。", ""]
-    for title, action in (("合并", "merge"), ("归类", "item"), ("删除并屏蔽", "drop"), ("暂不处理", "keep")):
+    for title, action in (("合并", "merge"), ("归类", "item"), ("删除并屏蔽（日语标签，直接删除）", "drop"),
+                          ("待站长审核的删除", "review"), ("暂不处理", "keep")):
         rows = [d for d in applied if d["action"] == action]
         if rows:
             report += [f"## {title}（{len(rows)}）", ""] + [
                 f"- {d['tag']}" + (f" → {d['target']}" if action == "merge" else "")
                 + (f" → {d['name']}（{d['kind']}" + (f"，属于 {d['parent']}" if d.get("parent") else "") + "）" if action == "item" else "")
+                + (f"（{d['uses']} 件作品）" if action == "review" else "")
                 + (f"：{d['note']}" if d.get("note") else "") for d in rows] + [""]
     if refused:
         report += [f"## 拒绝（{len(refused)}）", ""] + [f"- {d.get('tag')}（{d.get('action')}）：{d['refused']}" for d in refused] + [""]
-    if statements:
-        backup = run / "backup.sql"
-        subprocess.run(["wrangler", "d1", "export", "vitrine", "--remote", "--output", str(backup)],
-                       cwd=ROOT, capture_output=True, check=True)
-        left = rehearse(backup, sql_path)
-        report.append(f"演练通过：执行后还剩 {left} 个未分类标签。")
-        if not dry_run:
-            subprocess.run(["wrangler", "d1", "execute", "vitrine", "--remote", "--yes", "--file", str(sql_path)],
-                           cwd=ROOT, capture_output=True, check=True)
-            drift = d1("SELECT COUNT(*) AS n FROM (SELECT wt.tag, COUNT(*) n FROM work_tags wt JOIN works w ON w.id = wt.work_id "
-                       "WHERE w.deleted_at IS NULL GROUP BY wt.tag) t LEFT JOIN tag_counts c ON c.tag = t.tag WHERE c.cnt IS NOT t.n")[0]["n"]
-            report.append(f"已写入线上；计数核对 {'一致' if drift == 0 else f'有 {drift} 个标签不一致'}。")
-            # Old runs keep their reports; only the latest few keep their 60 MB backups.
-            for old in sorted((STATE / "runs").glob("*/backup.sql"))[:-5]:
-                old.unlink()
+    execute(statements, run, dry_run, report)
     if not dry_run:
         quiet = seen()
         today = datetime.date.today().isoformat()
         quiet.update({d["tag"]: today for d in applied if d["action"] == "keep"})
         quiet.update({d["tag"]: today for d in refused if d.get("tag") in counts})
-        (STATE / "seen.json").write_text(json.dumps(quiet, ensure_ascii=False, indent=1))
+        store("seen.json", quiet)
+        pending = stored("pending_drops.json", {})
+        pending.update({d["tag"]: {"uses": d["uses"], "note": d.get("note", ""), "run": run.name}
+                        for d in applied if d["action"] == "review"})
+        store("pending_drops.json", pending)
+        if pending:
+            report += ["", f"待审核的删除共 {len(pending)} 个（含以前的）。批准：`python3 tools/tag_curate.py approve-drops 标签…` 或 `--all`；"
+                       "否决：`reject-drops 标签…`。"]
+    (run / "report.md").write_text("\n".join(report) + "\n")
+    print("\n".join(report))
+
+
+def drops():
+    pending = stored("pending_drops.json", {})
+    print("\n".join(pending_lines(pending)) if pending else "没有待审核的删除。")
+
+
+def settle_drops(tags, approve, dry_run=False):
+    """approve: remove and block the chosen pending tags; otherwise keep them and never propose dropping them again."""
+    pending = stored("pending_drops.json", {})
+    chosen = list(pending) if tags == ["--all"] else tags
+    unknown = [t for t in chosen if t not in pending]
+    if unknown:
+        sys.exit(f"不在待审核清单里：{'、'.join(unknown)}")
+    if not approve:
+        store("kept.json", sorted(set(stored("kept.json", [])) | set(chosen)))
+        for t in chosen:
+            del pending[t]
+        store("pending_drops.json", pending)
+        print(f"已保留 {len(chosen)} 个标签，以后不再提议删除：{'、'.join(chosen)}")
+        return
+    counts, library = live_state()
+    gone = [t for t in chosen if t not in counts or t in library]
+    statements = [sql for t in chosen if t not in gone for sql in block_sql(t)]
+    if statements:
+        statements += list(tag_merge.LINKS_SQL)
+    run = STATE / "runs" / (datetime.datetime.now().strftime("%Y%m%dT%H%M%S") + "-drops")
+    run.mkdir(parents=True)
+    report = [f"# 审核删除 {run.name}", "", f"批准删除 {len(chosen) - len(gone)} 个：" + "、".join(t for t in chosen if t not in gone)]
+    if gone:
+        report.append(f"已不在线上或已归类、跳过：{'、'.join(gone)}")
+    execute(statements, run, dry_run, report)
+    if not dry_run:
+        for t in chosen:
+            del pending[t]
+        store("pending_drops.json", pending)
     (run / "report.md").write_text("\n".join(report) + "\n")
     print("\n".join(report))
 
@@ -319,5 +409,9 @@ if __name__ == "__main__":
         research(rest[0])
     elif command == "apply":
         apply(rest[0], dry_run="--dry-run" in rest)
+    elif command == "drops":
+        drops()
+    elif command in ("approve-drops", "reject-drops") and rest:
+        settle_drops([t for t in rest if t != "--dry-run"], command == "approve-drops", "--dry-run" in rest)
     else:
         sys.exit(__doc__)
