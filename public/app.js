@@ -711,6 +711,8 @@ if (matchMedia("(hover: hover) and (pointer: fine)").matches) {
   });
 }
 addEventListener("resize", placeTabRule);
+// The serif arrives after first layout and widens the tabs; measure the rule again once it has.
+document.fonts?.ready.then(placeTabRule);
 // Featured banner: five recent works, shown only on the unfiltered collection.
 const featured = { works: [], index: 0, timer: 0 };
 function showFeatured(index) {
