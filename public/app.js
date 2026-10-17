@@ -335,8 +335,12 @@ function renderLoadingHall() {
 async function renderHall(works, direction) {
   const old = $("grid").children[0];
   if (old && direction && !calm.matches && old.animate) {
-    await old.animate([{ opacity: 1, translate: "0 0" }, { opacity: 0, translate: `${-direction * 48}px 0` }],
+    const from = { opacity: old.style.opacity || 1, translate: old.style.translate || "0 0" };
+    const dragged = parseFloat(old.style.translate) || 0;
+    const leaving = old.animate([from, { opacity: 0, translate: `${dragged - direction * 48}px 0` }],
       { duration: 240, easing: "cubic-bezier(.4, 0, 1, 1)", fill: "forwards" }).finished.catch(() => {});
+    // A throttled tab may never finish the animation; the turn must not wait on it.
+    await Promise.race([leaving, new Promise((resolve) => setTimeout(resolve, 300))]);
   }
   for (const card of old?.children || []) middleObserver?.unobserve(card);
   stage.cards.clear();
@@ -727,14 +731,54 @@ document.addEventListener("keydown", (event) => {
   if (event.key === "ArrowLeft") turn(-1);
   else if (event.key === "ArrowRight") turn(1);
 });
+// A finger drags the page sideways and lets go past 70px to turn it (with resistance where there is
+// no page to turn to); short of that it springs back. Vertical strokes keep scrolling the page.
 let hallSwipe = null;
-$("grid").addEventListener("touchstart", (event) => { hallSwipe = event.touches.length === 1 ? [event.touches[0].clientX, event.touches[0].clientY] : null; }, { passive: true });
-$("grid").addEventListener("touchend", (event) => {
-  if (!hallSwipe) return;
-  const dx = event.changedTouches[0].clientX - hallSwipe[0], dy = event.changedTouches[0].clientY - hallSwipe[1];
+function releaseSwipe(spread) {
+  spread.style.transition = "translate .35s var(--ease), opacity .35s ease";
+  spread.style.translate = "";
+  spread.style.opacity = "";
+}
+$("grid").addEventListener("touchstart", (event) => {
+  hallSwipe = event.touches.length === 1 && !state.loading ? { x: event.touches[0].clientX, y: event.touches[0].clientY, dx: 0, sideways: null } : null;
+}, { passive: true });
+$("grid").addEventListener("touchmove", (event) => {
+  const spread = $("grid").children[0];
+  if (!hallSwipe || !spread) return;
+  const dx = event.touches[0].clientX - hallSwipe.x, dy = event.touches[0].clientY - hallSwipe.y;
+  if (hallSwipe.sideways === null && Math.hypot(dx, dy) > 10) hallSwipe.sideways = Math.abs(dx) > Math.abs(dy);
+  if (!hallSwipe.sideways) return;
+  hallSwipe.dx = dx;
+  const resist = neighbour(dx < 0 ? 1 : -1) ? .6 : .2;
+  spread.style.transition = "none";
+  spread.style.translate = `${dx * resist}px 0`;
+  spread.style.opacity = String(1 - Math.min(Math.abs(dx) / 900, .35));
+}, { passive: true });
+function endSwipe() {
+  const spread = $("grid").children[0], swipe = hallSwipe;
   hallSwipe = null;
-  if (Math.abs(dx) > 70 && Math.abs(dx) > Math.abs(dy) * 1.6) turn(dx < 0 ? 1 : -1);
-});
+  if (!swipe?.sideways || !spread) return;
+  const step = swipe.dx < 0 ? 1 : -1;
+  if (Math.abs(swipe.dx) > 70 && neighbour(step) && !state.loading) turn(step);
+  else releaseSwipe(spread);
+}
+$("grid").addEventListener("touchend", endSwipe);
+$("grid").addEventListener("touchcancel", endSwipe);
+// A trackpad's two-finger sideways stroke turns one page per gesture, momentum included; taking the
+// stroke here also keeps the browser's own back/forward swipe off the hall.
+const wheel = { sum: 0, done: false, timer: 0 };
+$("grid").addEventListener("wheel", (event) => {
+  if (Math.abs(event.deltaX) <= Math.abs(event.deltaY)) return;
+  event.preventDefault();
+  clearTimeout(wheel.timer);
+  wheel.timer = setTimeout(() => Object.assign(wheel, { sum: 0, done: false }), 250);
+  if (wheel.done) return;
+  wheel.sum += event.deltaX;
+  if (Math.abs(wheel.sum) > 80) {
+    wheel.done = true;
+    turn(wheel.sum > 0 ? 1 : -1);
+  }
+}, { passive: false });
 $("lb-close").addEventListener("click", closeLightbox);
 $("lightbox").addEventListener("cancel", (event) => { event.preventDefault(); closeLightbox(); });
 $("lightbox").addEventListener("close", () => {
