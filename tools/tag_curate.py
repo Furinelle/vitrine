@@ -28,6 +28,7 @@ import pathlib
 import sqlite3
 import subprocess
 import sys
+import urllib.parse
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import tag_merge  # noqa: E402
@@ -39,6 +40,8 @@ NO_ENGLISH = {"theme", "medium", "meta"}  # the owner's rule: themes and the lik
 DROP_MAX = 2
 BATCH = 150
 QUIET_DAYS = 30
+WORK_SAMPLES = 3
+GALLERY = "https://gallery.fontaine.blue"
 GROK = ["grok", "-m", "grok-4.7-build-fast", "--effort", "xhigh", "--always-approve"]
 sql_text = tag_merge.sql_text
 
@@ -81,15 +84,25 @@ def collect():
     rows = [r for r in rows if r["name"] not in quiet][:BATCH]
     run = STATE / "runs" / datetime.datetime.now().strftime("%Y%m%dT%H%M%S")
     run.mkdir(parents=True)
-    co = {}
+    co, works = {}, {}
     names = [r["name"] for r in rows]
     for start in range(0, len(names), 40):
+        batch = in_list(names[start:start + 40])
         for r in d1("SELECT wt.tag AS tag, wt2.tag AS co, COUNT(*) AS n FROM work_tags wt "
                     "JOIN work_tags wt2 ON wt2.work_id = wt.work_id AND wt2.tag <> wt.tag "
-                    f"WHERE wt.tag IN {in_list(names[start:start + 40])} GROUP BY wt.tag, wt2.tag"):
+                    f"WHERE wt.tag IN {batch} GROUP BY wt.tag, wt2.tag"):
             co.setdefault(r["tag"], []).append((r["n"], r["co"]))
+        # The works themselves explain a tag best: titles are often the whole post text, and the original post
+        # (source_url) carries the artist's description.
+        for r in d1("SELECT wt.tag AS tag, w.id, w.title, w.author_name, w.source, w.source_url FROM work_tags wt "
+                    f"JOIN works w ON w.id = wt.work_id WHERE w.deleted_at IS NULL AND wt.tag IN {batch} ORDER BY w.created_at DESC"):
+            listed = works.setdefault(r["tag"], [])
+            if len(listed) < WORK_SAMPLES:
+                listed.append({"title": r["title"][:400], "author": r["author_name"], "source": r["source"],
+                               "source_url": r["source_url"], "gallery": f"{GALLERY}/?work={urllib.parse.quote(r['id'], safe='')}"})
     candidates = [{"tag": r["name"], "uses": r["cnt"],
-                   "co_tags": {c: n for n, c in sorted(co.get(r["name"], []), reverse=True)[:15]}} for r in rows]
+                   "co_tags": {c: n for n, c in sorted(co.get(r["name"], []), reverse=True)[:15]},
+                   "works": works.get(r["name"], [])} for r in rows]
     library = {r["name"]: {k: r[k] for k in ("kind", "parent", "ja", "en") if r[k]}
                for r in d1("SELECT name, kind, parent, ja, en FROM tag_items")}
     (run / "candidates.json").write_text(json.dumps(candidates, ensure_ascii=False, indent=1))
@@ -97,7 +110,7 @@ def collect():
     print(json.dumps({"run": str(run), "candidates": len(candidates)}, ensure_ascii=False))
 
 
-PROMPT = """你在帮一个二次元插画图库整理新标签。candidates.json 是还没归类的标签，每个带使用次数 uses 和同作品上一起出现的其他标签 co_tags（用来判断出自哪个游戏）。library.json 是已有的标签库：键是存储用的名字（多数是中文），kind 取值 work/character/skin/cp/lore/theme/medium/meta，parent 是所属作品或角色。
+PROMPT = """你在帮一个二次元插画图库整理新标签。candidates.json 是还没归类的标签，每个带使用次数 uses、同作品上一起出现的其他标签 co_tags（用来判断出自哪个游戏），以及最多 3 件用到它的作品 works：title 往往就是原帖正文（含话题标签和作者的说明），author 是作者，source_url 是原帖，gallery 是图库里的作品页。判断标签含义时先看这些作品的标题和作者说明；拿不准时打开 source_url 看原帖的说明文字。library.json 是已有的标签库：键是存储用的名字（多数是中文），kind 取值 work/character/skin/cp/lore/theme/medium/meta，parent 是所属作品或角色。
 
 逐个联网搜索每个标签的含义（游戏角色、地名、组织、版本名、活动名、皮肤名、英文名/日文名/缩写、画师或 VTuber 名等）。重点游戏：原神、崩坏星穹铁道、鸣潮、绝区零、崩坏3、明日方舟、明日方舟终末地、蔚蓝档案。很多是最新内容，必须搜索确认，不要凭记忆猜。
 
