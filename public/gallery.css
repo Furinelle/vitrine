@@ -141,7 +141,7 @@ h1 span { color: var(--brass); }
 .month-tab:hover { color: var(--text); }
 .month-tab.active { color: var(--text); }
 .month-tab.active::after { content: ""; position: absolute; left: 0; right: 0; bottom: 4px; height: 2px; border-radius: 2px; background: linear-gradient(90deg, var(--water), var(--brass)); }
-.hall { min-height: 40vh; }
+.hall { min-height: 40vh; touch-action: pan-y; }
 .spread { display: grid; grid-template-columns: repeat(20, minmax(0, 1fr)); gap: 16px; }
 .hall-item { --art: transparent; min-width: 0; animation: item-in .7s var(--ease) both; animation-delay: calc(var(--i, 0) * 32ms); }
 @keyframes item-in { from { opacity: 0; translate: var(--from, 0px) 16px; } }
