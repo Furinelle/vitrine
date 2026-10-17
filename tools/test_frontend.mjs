@@ -104,6 +104,7 @@ for (const language of ['zh-CN', 'en-US']) {
   const element = (id) => {
     if (!elements.has(id)) elements.set(id, {
       children: [], className: '', textContent: '', value: '', hidden: false, dataset: {},
+      addEventListener() {}, setAttribute() {}, style: { setProperty() {} },
       classList: { toggle() {} }, append(...items) { this.children.push(...items); },
       replaceChildren(...items) { this.children = items; },
     });
@@ -120,16 +121,20 @@ for (const language of ['zh-CN', 'en-US']) {
   const ctx = vm.createContext({
     navigator: { languages: [language] }, $: element, state: { tags, tagError: '', tag: '芙宁娜' },
     document: { createElement: (tag) => Object.assign(element(Symbol()), { tagName: tag }) },
-    tagButton: (name) => ({ name, dataset: { tag: name }, classList: { toggle(_c, on) { this.active = on; } } }),
+    tagButton: (name) => ({ name, dataset: { tag: name }, children: [], append(...items) { this.children.push(...items); }, setAttribute() {},
+      classList: { add(c) { this.tier = c; }, toggle(_c, on) { this.active = on; } } }),
   });
   vm.runInContext(source.slice(source.indexOf('// 中文浏览器'), source.indexOf('function locationFilters(')) + 'for (const t of state.tags) tagInfo.set(t.name, t);', ctx);
-  vm.runInContext(source.slice(source.indexOf('function node('), source.indexOf('function button(')), ctx);
+  vm.runInContext(source.slice(source.indexOf('function node('), source.indexOf('function safeLink(')), ctx);
   vm.runInContext(source.slice(source.indexOf('function tagWork('), source.indexOf('function tagButton(')), ctx);
   ctx.renderTagBrowser();
   const groups = element('all-tags').children;
-  const titles = groups.map((g) => g.children[0].textContent);
+  const titles = groups.map((g) => g.children[0].children[0].textContent);
+  assert.deepEqual(groups.map((g) => g.children[0].children[1].textContent), ['1', '3', '1', '1'], 'each kind shows how many tags it has');
+  assert.deepEqual(element('tag-kinds').children.map((b) => b.children[0].textContent), titles, 'one jump link per shown kind');
+  assert.equal(groups[0].children[1].children[0].classList.tier, 'tier-1', 'the most used tag reads largest');
   assert.deepEqual(titles, language === 'zh-CN' ? ['作品', '角色', '题材', '未分类'] : ['Works', 'Characters', 'Themes', 'Other']);
-  const characters = groups[1].children.map((c) => c.textContent || c.children.map((chip) => chip.name).join());
+  const characters = groups[1].children.map((c) => c.children[0]?.textContent ?? (c.textContent || c.children.map((chip) => chip.name).join()));
   // 芙卡洛斯 reaches 原神 through 芙宁娜; 初音未来's parent is not a loaded work, so it lands last.
   assert.deepEqual(characters, [titles[1], language === 'zh-CN' ? '原神' : 'GenshinImpact', '芙宁娜,芙卡洛斯', titles[3], '初音未来']);
   assert.equal(groups[1].children[2].children[0].classList.active, true, 'the current tag is marked');

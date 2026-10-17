@@ -25,6 +25,7 @@
   --serif: "Noto Serif SC", "Source Han Serif SC", "Songti SC", "STSong", serif;
   /* Body text uses each platform's own UI face, as Pixiv, sspai, ZCOOL and bilibili do: PingFang on Apple, HarmonyOS Sans, YaHei on Windows. */
   --text-sans: -apple-system, BlinkMacSystemFont, "PingFang SC", "HarmonyOS Sans SC", "Microsoft YaHei", "Noto Sans SC", sans-serif;
+  --figures: Georgia, "Times New Roman", serif;
   --fs-xs: 12px;
   --fs-sm: 13px;
   --fs-md: 14px;
