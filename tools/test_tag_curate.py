@@ -15,7 +15,7 @@ import tag_merge  # noqa: E402
 SEED = {  # work: tags
     "w1": ["原神", "芙宁娜", "Furinaa"],
     "w2": ["原神", "芙宁娜", "新角色"],
-    "w3": ["原神", "画师某某", "新版本"],
+    "w3": ["原神", "画师某某", "新版本", "魅惑のふともも", "已否决"],
     "w4": ["原神", "热门杂项"], "w5": ["热门杂项"], "w6": ["热门杂项"],
     "w7": ["新组合", "芙宁娜"],
 }
@@ -24,7 +24,9 @@ DECISIONS = [
     {"tag": "Furinaa", "action": "merge", "target": "芙宁娜"},
     {"tag": "新角色", "action": "item", "name": "新角色", "kind": "character", "parent": "原神", "en": "NewOne", "ja": "Furina"},
     {"tag": "新版本", "action": "item", "name": "新版本名", "kind": "lore", "parent": "原神"},
-    {"tag": "画师某某", "action": "drop"},
+    {"tag": "画师某某", "action": "drop", "note": "画师名"},             # Chinese: waits for the owner
+    {"tag": "魅惑のふともも", "action": "drop"},                          # Japanese: goes at once
+    {"tag": "已否决", "action": "drop"},                                  # the owner kept it: refused
     {"tag": "热门杂项", "action": "drop"},                                      # on 3 works: refused
     {"tag": "新组合", "action": "item", "kind": "cp", "members": ["芙宁娜", "不存在"]},  # unknown member: refused
     {"tag": "芙宁娜", "action": "item", "kind": "character", "parent": "芙宁娜"},       # already filed: refused
@@ -62,10 +64,12 @@ def main():
     taken = dict(db.execute("SELECT key, tag FROM tag_keys"))
     unsorted = {t for t in counts if t not in library}
     statements, applied, refused = tag_curate.plan([d for d in DECISIONS if d["tag"] in unsorted or d["tag"] in ("芙宁娜", "原神")],
-                                                   {t: c for t, c in counts.items()}, library, set(), keys, taken)
-    assert sorted(d["tag"] for d in applied) == ["Furinaa", "新版本", "新角色", "画师某某"], applied
+                                                   {t: c for t, c in counts.items()}, library, set(), keys, taken, {"已否决"})
+    assert sorted(d["tag"] for d in applied) == ["Furinaa", "新版本", "新角色", "画师某某", "魅惑のふともも"], applied
+    assert next(d for d in applied if d["tag"] == "画师某某")["action"] == "review"
+    assert not any("画师某某" in s for s in statements), "a non-Japanese drop writes nothing until reviewed"
     reasons = {d["tag"]: d["refused"] for d in refused}
-    assert set(reasons) == {"热门杂项", "新组合", "芙宁娜", "原神"}, reasons
+    assert set(reasons) == {"热门杂项", "新组合", "芙宁娜", "原神", "已否决"}, reasons
     assert "3 件" in reasons["热门杂项"]
     new_one = next(d for d in applied if d["tag"] == "新角色")
     assert new_one["ja"] is None and "芙宁娜" in new_one["note"], new_one  # "Furina" already spells 芙宁娜
@@ -75,14 +79,18 @@ def main():
         dump, sql = pathlib.Path(tmp) / "backup.sql", pathlib.Path(tmp) / "apply.sql"
         dump.write_text("\n".join(db.iterdump()))
         sql.write_text("\n".join(statements))
-        assert tag_curate.rehearse(dump, sql) == 2  # 热门杂项 and 新组合 stay unsorted
+        assert tag_curate.rehearse(dump, sql) == 4  # 热门杂项, 新组合, 画师某某 (in review) and 已否决 stay unsorted
     db.executescript("\n".join(statements))
     tags = lambda work: sorted(t for (t,) in db.execute("SELECT tag FROM work_tags WHERE work_id = ?", (work,)))  # noqa: E731
     assert tags("w1") == ["原神", "芙宁娜"], tags("w1")
-    assert tags("w3") == ["原神", "新版本名"], tags("w3")
+    assert tags("w3") == ["原神", "已否决", "新版本名", "画师某某"], tags("w3")
     items = {r[0]: r[1:] for r in db.execute("SELECT name, kind, parent, ja, en FROM tag_items")}
     assert items["新角色"] == ("character", "原神", None, "NewOne") and items["新版本名"] == ("lore", "原神", None, None)
-    assert "新版本" not in items and db.execute("SELECT 1 FROM tag_blocks WHERE name = '画师某某'").fetchone()
+    assert "新版本" not in items and db.execute("SELECT 1 FROM tag_blocks WHERE name = '魅惑のふともも'").fetchone()
+    assert not db.execute("SELECT 1 FROM tag_blocks WHERE name = '画师某某'").fetchone()
+    # Approving the reviewed drop later runs the same block SQL.
+    db.executescript("\n".join(tag_curate.block_sql("画师某某") + list(tag_merge.LINKS_SQL)))
+    assert tags("w3") == ["原神", "已否决", "新版本名"], tags("w3")
     keys_now = dict(db.execute("SELECT key, tag FROM tag_keys"))
     assert keys_now[keys["Furinaa"][0]] == "芙宁娜" and keys_now[keys["新版本"][0]] == "新版本名"
     assert keys_now[keys["NewOne"][0]] == "新角色"
@@ -90,8 +98,9 @@ def main():
     db.execute("INSERT INTO works (id, source, source_id, created_at) VALUES ('w8', 'x', 'w8', 't')")
     db.execute("INSERT INTO work_tags (work_id, tag) VALUES ('w8', '新角色')")
     assert tags("w8") == ["原神", "新角色"]
-    print("PASS: curation re-checks each decision (drops of tags in use, unknown members, filed tags, taken "
-          "display names), renames, merges, files and blocks through the admin page's SQL, and rehearses it")
+    assert tag_curate.japanese("いろとりどりのセカイ") and tag_curate.japanese("ﾃｽﾄ") and not tag_curate.japanese("二階堂真紅")
+    print("PASS: curation re-checks each decision (drops of tags in use, kept tags, unknown members, filed tags, taken "
+          "display names), renames, merges, files, blocks Japanese tags at once and holds other drops for review")
 
 
 if __name__ == "__main__":
