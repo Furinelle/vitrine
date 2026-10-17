@@ -20,7 +20,8 @@ decisions.json is a list of {"tag", "action", ...}:
 Every decision is checked again before anything is written: unknown or blocked targets, missing parents
 or members, implication cycles, display names that already belong to another tag and drops of tags in
 use are refused and reported. The SQL is the admin tag page's (src/tag_admin.rs) written out, rehearsed
-on a fresh export of the database, and only then run on D1.
+on a copy of the tag tables read with ordinary queries (`wrangler d1 export` would lock the live database
+for its whole run), and only then run on D1, with a Time Travel bookmark noted first.
 """
 import datetime
 import json
@@ -287,11 +288,41 @@ def plan(decisions, counts, library, blocked, keys, taken, kept=()):
     return statements, applied, refused
 
 
-def rehearse(backup, sql_path):
+# The tables a curation touches or checks, copied with plain reads: `wrangler d1 export` would lock the
+# live database for its whole run, and the gallery answers 500 meanwhile.
+SNAPSHOT = [
+    ("works", "id, deleted_at", "INSERT INTO works (id, source, source_id, created_at, deleted_at) VALUES (?, 'x', ?, '', ?)",
+     lambda r: (r["id"], r["id"], r["deleted_at"])),
+    ("tags", "name, use_count", "INSERT OR REPLACE INTO tags (name, use_count) VALUES (?, ?)", lambda r: (r["name"], r["use_count"])),
+    ("work_tags", "work_id, tag", "INSERT INTO work_tags (work_id, tag) VALUES (?, ?)", lambda r: (r["work_id"], r["tag"])),
+    ("tag_counts", "tag, cnt", "INSERT OR REPLACE INTO tag_counts (tag, cnt) VALUES (?, ?)", lambda r: (r["tag"], r["cnt"])),
+    ("tag_items", "name, kind, parent, ja, en, members", "INSERT INTO tag_items (name, kind, parent, ja, en, members) VALUES (?, ?, ?, ?, ?, ?)",
+     lambda r: (r["name"], r["kind"], r["parent"], r["ja"], r["en"], r["members"])),
+    ("tag_links", "tag, also", "INSERT INTO tag_links (tag, also) VALUES (?, ?)", lambda r: (r["tag"], r["also"])),
+    ("tag_keys", "key, tag", "INSERT INTO tag_keys (key, tag) VALUES (?, ?)", lambda r: (r["key"], r["tag"])),
+    ("tag_blocks", "name", "INSERT INTO tag_blocks (name) VALUES (?)", lambda r: (r["name"],)),
+]
+
+
+def snapshot(read=d1):
+    """A local copy of the tag tables on the live schema: migrations, then the rows with triggers off."""
     db = sqlite3.connect(":memory:")
-    db.executescript(pathlib.Path(backup).read_text())
-    db.execute("PRAGMA foreign_keys = ON")
-    db.executescript(pathlib.Path(sql_path).read_text())
+    for path in sorted((ROOT / "migrations").glob("*.sql")):
+        db.executescript(path.read_text())
+    triggers = db.execute("SELECT name, sql FROM sqlite_master WHERE type = 'trigger'").fetchall()
+    for name, _ in triggers:
+        db.execute(f'DROP TRIGGER "{name}"')
+    for table, columns, insert, row in SNAPSHOT:
+        db.execute(f"DELETE FROM {table}")
+        db.executemany(insert, [row(r) for r in read(f"SELECT {columns} FROM {table}")])
+    for _, sql in triggers:
+        db.execute(sql)
+    return db
+
+
+def rehearse(db, sql):
+    """Run the SQL on the copy and check what the live run will be checked for; returns tags left unsorted."""
+    db.executescript(sql)
     truth = dict(db.execute("SELECT wt.tag, COUNT(*) FROM work_tags wt JOIN works w ON w.id = wt.work_id "
                             "WHERE w.deleted_at IS NULL GROUP BY wt.tag"))
     assert {t: c for t, c in db.execute("SELECT tag, cnt FROM tag_counts") if c} == truth, "tag_counts drifted"
@@ -309,26 +340,26 @@ def live_state():
 
 
 def execute(statements, run, dry_run, report):
-    """Back up, rehearse on the backup, then run on D1 and check the counts; notes go into report."""
+    """Rehearse on a copy of the tag tables, note a Time Travel bookmark, run on D1 and check the counts."""
     sql_path = run / "apply.sql"
     sql_path.write_text("\n".join(statements) + "\n")
     if not statements:
         return
-    backup = run / "backup.sql"
-    subprocess.run(["wrangler", "d1", "export", "vitrine", "--remote", "--output", str(backup)],
-                   cwd=ROOT, capture_output=True, check=True)
-    left = rehearse(backup, sql_path)
+    left = rehearse(snapshot(), sql_path.read_text())
     report.append(f"演练通过：执行后还剩 {left} 个未分类标签。")
     if dry_run:
         return
+    # D1 Time Travel can put the whole database back to this point if a run ever has to be undone.
+    info = subprocess.run(["wrangler", "d1", "time-travel", "info", "vitrine", "--json"],
+                          cwd=ROOT, capture_output=True, text=True, check=True).stdout
+    bookmark = json.loads(info[info.index("{"):])["bookmark"]
     subprocess.run(["wrangler", "d1", "execute", "vitrine", "--remote", "--yes", "--file", str(sql_path)],
                    cwd=ROOT, capture_output=True, check=True)
     drift = d1("SELECT COUNT(*) AS n FROM (SELECT wt.tag, COUNT(*) n FROM work_tags wt JOIN works w ON w.id = wt.work_id "
                "WHERE w.deleted_at IS NULL GROUP BY wt.tag) t LEFT JOIN tag_counts c ON c.tag = t.tag WHERE c.cnt IS NOT t.n")[0]["n"]
     report.append(f"已写入线上；计数核对 {'一致' if drift == 0 else f'有 {drift} 个标签不一致'}。")
-    # Old runs keep their reports; only the latest few keep their 60 MB backups.
-    for old in sorted((STATE / "runs").glob("*/backup.sql"))[:-5]:
-        old.unlink()
+    report.append(f"写入前的时间点书签：{bookmark}（整个数据库回到写入前：`wrangler d1 time-travel restore vitrine --bookmark={bookmark}`，"
+                  "之后新收藏的作品也会一并回退）。")
 
 
 def pending_lines(pending):
