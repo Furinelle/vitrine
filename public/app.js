@@ -282,12 +282,17 @@ function renderLoadingCards() {
   }));
 }
 function renderCards(works, append) {
-  if (!append) $("grid").replaceChildren();
+  if (!append) {
+    for (const card of $("grid").children) middleObserver?.unobserve(card);
+    stage.cards.clear();
+    $("grid").replaceChildren();
+  }
   const fragment = document.createDocumentFragment();
   for (const [i, work] of works.entries()) {
     const title = work.title || work.source_id;
     const card = node("article", "card");
     card.dataset.workId = work.id;
+    middleObserver?.observe(card);
     card.style.animationDelay = `${(i % 12) * 40}ms`;
     const art = node("a", "art-button");
     const ratio = coverRatio(work.cover_width, work.cover_height);
@@ -304,7 +309,10 @@ function renderCards(works, append) {
       if (!ratio) art.style.aspectRatio = String(coverRatio(image.naturalWidth, image.naturalHeight) || .75);
       art.classList.add("image-loaded");
       const color = artColor(image);
-      if (color) { card.style.setProperty("--art", color); scheduleStage(); }
+      if (color) {
+        card.style.setProperty("--art", color);
+        if (stage.cards.has(card)) stageColor();
+      }
     };
     image.onerror = () => art.classList.add("image-broken");
     if (original) {
@@ -726,32 +734,47 @@ function showFeatured(index) {
     pick.classList.toggle("active", i === featured.index);
     pick.setAttribute("aria-pressed", String(i === featured.index));
   });
+  const color = $("featured-stage").children[featured.index]?.dataset.color;
+  if (color) $("featured").style.setProperty("--glow", color);
   stageColor();
 }
 // The page takes the colour of the artwork in view: the banner's slide while it fills the top of the
-// screen, otherwise the card nearest the middle of the screen. --stage crossfades in CSS.
+// screen, otherwise a card crossing the middle of the screen. Observers report both, so scrolling does
+// no work of its own; the colour fades in on the hidden backdrop layer, so only opacity animates.
+const stage = { cards: new Set(), banner: false, color: "", front: 0 };
+function paintStage(color) {
+  if (!color || color === stage.color) return;
+  stage.color = color;
+  const layers = document.querySelectorAll(".backdrop > span");
+  if (layers.length < 2) return;
+  stage.front ^= 1;
+  const next = layers[stage.front], previous = layers[stage.front ^ 1];
+  // A quick run of colours can leave both layers shown; start the incoming one from clear so it always fades.
+  next.style.transition = "none";
+  next.classList.remove("on");
+  void next.offsetWidth;
+  next.style.transition = "";
+  next.style.setProperty("--stage", color);
+  next.style.zIndex = "1";
+  previous.style.zIndex = "0";
+  next.classList.add("on");
+  next.addEventListener("transitionend", () => { if (layers[stage.front] === next) previous.classList.remove("on"); }, { once: true });
+}
 function stageColor() {
   let color = "";
-  const banner = $("featured").hidden ? null : $("featured").getBoundingClientRect();
-  if (banner && banner.bottom > innerHeight * .35) color = $("featured-stage").children[featured.index]?.dataset.color;
-  else {
-    let best = Infinity;
-    for (const card of document.querySelectorAll("#grid .card")) {
-      const box = card.getBoundingClientRect();
-      if (box.bottom < 0 || box.top > innerHeight) continue;
-      const distance = Math.abs(box.top + box.height / 2 - innerHeight / 2) + Math.abs(box.left + box.width / 2 - innerWidth / 2) / 2;
-      const art = card.style.getPropertyValue("--art");
-      if (art && distance < best) { best = distance; color = art; }
-    }
+  if (stage.banner && !$("featured").hidden) color = $("featured-stage").children[featured.index]?.dataset.color;
+  else for (const card of stage.cards) { color = card.style.getPropertyValue("--art"); if (color) break; }
+  paintStage(color);
+}
+const middleObserver = typeof IntersectionObserver === "function" ? new IntersectionObserver((entries) => {
+  for (const entry of entries) {
+    if (entry.target.id === "featured") stage.banner = entry.isIntersecting;
+    else if (entry.isIntersecting) stage.cards.add(entry.target);
+    else stage.cards.delete(entry.target);
   }
-  if (color) document.documentElement.style.setProperty("--stage", color);
-}
-let stageFrame = 0;
-function scheduleStage() {
-  cancelAnimationFrame(stageFrame);
-  stageFrame = requestAnimationFrame(stageColor);
-}
-addEventListener("scroll", scheduleStage, { passive: true });
+  stageColor();
+}, { rootMargin: "-40% 0px -40% 0px" }) : null;
+middleObserver?.observe($("featured"));
 function rotateFeatured(run) {
   clearInterval(featured.timer);
   if (run && featured.works.length > 1 && !matchMedia("(prefers-reduced-motion: reduce)").matches) {
@@ -777,7 +800,7 @@ function renderFeatured() {
       image.decoding = "async";
       image.onload = () => {
         slide.dataset.color = artColor(image);
-        if (slide.classList.contains("active")) stageColor();
+        if (slide.classList.contains("active")) { $("featured").style.setProperty("--glow", slide.dataset.color); stageColor(); }
       };
       const caption = node("div", "featured-caption");
       caption.append(node("p", "featured-source", names[work.source] || work.source),
