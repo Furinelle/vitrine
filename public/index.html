@@ -15,7 +15,7 @@
   <link rel="stylesheet" href="/theme.css?v=20261022-admin" />
   <link rel="stylesheet" href="/gallery.css?v=20261022-admin" />
   <script src="/theme.js?v=20261014-vitrine" defer></script>
-  <script src="/app.js?v=20261017-tint" defer></script>
+  <script src="/app.js?v=20261022-hotlink" defer></script>
 </head>
 <body id="top">
   <div class="backdrop" aria-hidden="true"><span class="on"></span><span></span></div>
@@ -78,8 +78,8 @@
       <p id="lb-source" class="eyebrow"></p><h2 id="lb-title"></h2><p id="lb-author" class="detail-author"></p>
       <p id="lb-info" class="detail-info"></p><div id="lb-tags" class="detail-tags"></div>
       <p id="lb-status" class="detail-status" role="status"></p><button id="lb-retry" class="text-button" hidden>重试加载作品</button>
-      <div class="detail-actions"><a id="lb-link" class="primary-button" target="_blank" rel="noopener noreferrer">前往原帖 ↗</a><button id="lb-share" class="secondary-button">复制作品链接</button></div>
-      <label id="share-fallback" class="share-fallback" hidden>复制此链接分享<input id="share-url" readonly /></label>
+      <div class="detail-actions"><a id="lb-link" class="primary-button" target="_blank" rel="noopener noreferrer">前往原帖 ↗</a><button id="lb-share" class="secondary-button">复制作品链接</button><button id="lb-hotlink" class="secondary-button" hidden>复制图床链接</button></div>
+      <label id="share-fallback" class="share-fallback" hidden>无法自动复制，请手动复制<input id="share-url" readonly /></label>
       <p class="viewer-hint">← → 切换图片 · Esc 关闭</p>
     </div>
   </dialog>

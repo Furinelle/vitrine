@@ -296,6 +296,13 @@ assert.equal(context.thumbUrl('/media/a.png', 9000), '');
 assert.equal(context.safeLink('https://user:password@example.com'), '');
 console.log('PASS: share URL round-trip and bounded thumbnail presets');
 
+// The hotlink keeps the encoded object key and only swaps the origin.
+const hotlink = vm.createContext({ URL });
+vm.runInContext(source.slice(source.indexOf('const HOTLINK_ORIGIN'), source.indexOf('$("lb-hotlink").addEventListener')), hotlink);
+assert.equal(hotlink.hotlinkUrl('https://gallery.example/media/x/1/a%20b/00.jpg'), 'https://img.furina.ai/x/1/a%20b/00.jpg');
+assert.equal(hotlink.hotlinkUrl('https://gallery.example/other.jpg'), '');
+console.log('PASS: image-host link swaps only the origin');
+
 // A page turn that resolves late must not overwrite a newer one.
 {
   const pending = [], drawn = [];

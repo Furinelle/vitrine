@@ -497,7 +497,8 @@ function showImage(index, updateUrl = true, retry = false) {
   const direction = Math.sign(state.imageIndex - previous);
   const image = state.images[state.imageIndex];
   const original = coverUrl(image.r2_key ? mediaUrl(image.r2_key) : image.cover_url);
-  $("lb-original").hidden = !original;
+  $("lb-original").hidden = $("lb-hotlink").hidden = !original;
+  $("lb-hotlink").textContent = "复制图床链接";
   if (original) $("lb-original").href = original;
   else $("lb-original").removeAttribute("href");
   $("lb-counter").textContent = `${state.imageIndex + 1} / ${state.images.length}`;
@@ -665,7 +666,7 @@ async function openLightbox(work, cardEl, { push = true, page = 0 } = {}) {
   $("lb-image-loading").hidden = true;
   $("lb-image-error").hidden = true;
   $("lb-prev").hidden = $("lb-next").hidden = true;
-  $("lb-original").hidden = true;
+  $("lb-original").hidden = $("lb-hotlink").hidden = true;
   $("lb-counter").textContent = "正在加载";
   showWorkInfo(work);
   if (push) history.pushState({ galleryViewer: true }, "", galleryUrl(work.id, page));
@@ -841,6 +842,18 @@ $("lb-share").addEventListener("click", async () => {
   if (!state.viewing) return;
   const url = new URL(galleryUrl(state.viewing.id, state.imageIndex), location.origin).href;
   try { await navigator.clipboard.writeText(url); $("lb-share").textContent = "已复制链接 ✓"; }
+  catch { $("share-fallback").hidden = false; $("share-url").value = url; $("share-url").focus(); $("share-url").select(); }
+});
+// img.furina.ai serves the same R2 objects straight from the CDN, so hotlinks never spend the Worker's daily quota.
+const HOTLINK_ORIGIN = "https://img.furina.ai";
+function hotlinkUrl(original) {
+  const path = new URL(original).pathname;
+  return path.startsWith("/media/") ? HOTLINK_ORIGIN + path.slice("/media".length) : "";
+}
+$("lb-hotlink").addEventListener("click", async () => {
+  const url = hotlinkUrl($("lb-original").href);
+  if (!url) return;
+  try { await navigator.clipboard.writeText(url); $("lb-hotlink").textContent = "已复制图床链接 ✓"; }
   catch { $("share-fallback").hidden = false; $("share-url").value = url; $("share-url").focus(); $("share-url").select(); }
 });
 let touchStart = null;
