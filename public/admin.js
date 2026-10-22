@@ -325,8 +325,8 @@ async function loadSources() {
           node("span", "source-symbol", "•"),
           node("span", "", names[row.source] || row.source),
         );
-        if (row.count !== undefined) {
-          btn.append(node("span", "source-count", String(row.count)));
+        if (row.cnt !== undefined) {
+          btn.append(node("span", "source-count", String(row.cnt)));
         }
         btn.addEventListener("click", () => selectSource(row.source));
         nav.append(btn);
@@ -1141,7 +1141,7 @@ function renderTagRows() {
     const open = node("button", `tags-name kind-${tag.kind}`, tag.name);
     open.type = "button";
     open.addEventListener("click", () => openTagEditor(tag));
-    const cells = [pick, open, TAG_KINDS[tag.kind], tag.kind === "cp" ? tag.members.join("、") : tag.parent || "", tag.ja || "", tag.en || "", String(tag.cnt)];
+    const cells = [pick, open, node("span", `tags-kind kind-${tag.kind}`, TAG_KINDS[tag.kind]), tag.kind === "cp" ? tag.members.join("、") : tag.parent || "", tag.ja || "", tag.en || "", String(tag.cnt)];
     row.append(...cells.map((cell) => {
       const td = node("td", "", typeof cell === "string" ? cell : undefined);
       if (typeof cell !== "string") td.append(cell);
