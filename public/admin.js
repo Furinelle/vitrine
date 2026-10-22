@@ -1138,7 +1138,7 @@ function renderTagRows() {
       else tagAdmin.selected.delete(tag.name);
       syncTagBatch();
     });
-    const open = node("button", "tags-name", tag.name);
+    const open = node("button", `tags-name kind-${tag.kind}`, tag.name);
     open.type = "button";
     open.addEventListener("click", () => openTagEditor(tag));
     const cells = [pick, open, TAG_KINDS[tag.kind], tag.kind === "cp" ? tag.members.join("、") : tag.parent || "", tag.ja || "", tag.en || "", String(tag.cnt)];

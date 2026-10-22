@@ -45,8 +45,22 @@
   background: var(--bg);
   color: var(--text);
 }
+.kind-work { --kind: var(--kind-work); } .kind-character { --kind: var(--kind-character); } .kind-cp { --kind: var(--kind-cp); }
+.kind-skin { --kind: var(--kind-skin); } .kind-lore { --kind: var(--kind-lore); } .kind-theme { --kind: var(--kind-theme); }
+.kind-medium { --kind: var(--kind-medium); } .kind-meta { --kind: var(--kind-meta); } .kind-unsorted { --kind: var(--muted); }
 /* Plates: opaque, nearly square, an outer rule and a gilt inner rule. */
 .surface { position: relative; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; box-shadow: inset 0 0 0 3px var(--panel), inset 0 0 0 4px var(--gilt-line); }
+/* The wall takes the colour of the artwork in view (set by app.js). Two fixed layers each hold one colour;
+   a new colour fades in on the layer behind, so changing it animates opacity only and never restyles the page.
+   A faint grain keeps it from reading as one flat fill, like the programme's paper. */
+.backdrop { position: fixed; inset: 0; z-index: -1; pointer-events: none; }
+/* The top edge is one flat colour, the same mix app.js gives Safari's status-bar strip (tintChrome), so the
+   two meet without a seam; the tint thins out downward. */
+.backdrop > span { --stage: var(--water); position: absolute; inset: 0; opacity: 0; transition: opacity 1.6s ease;
+  background: linear-gradient(color-mix(in srgb, var(--stage) 30%, var(--bg)), color-mix(in srgb, var(--stage) 17%, var(--bg)) 40%, color-mix(in srgb, var(--stage) 7%, var(--bg))); }
+.backdrop > span.on { opacity: 1; }
+.backdrop::after { content: ""; position: absolute; inset: 0; z-index: 2; opacity: .07; mask-image: linear-gradient(transparent, #000 220px); -webkit-mask-image: linear-gradient(transparent, #000 220px);
+background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.9' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 .05 0 0 0 0 .12 0 0 0 0 .27 0 0 0 .9 0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E"); }
 @media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } *, *::before, *::after { animation: none !important; transition: none !important; } }
 @media (forced-colors: active) { button, .art-button, .surface, .thumb.active { border: 1px solid ButtonText; } }
 
