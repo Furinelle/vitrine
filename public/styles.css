@@ -270,7 +270,7 @@ h1 { font: 500 30px/1.3 var(--serif); letter-spacing: .06em; margin-bottom: 0; }
 .curation-card figcaption, .curation-meta { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .curation-meta { color: var(--muted); font-size: 12px; }
 .curation-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
-.curation-actions button { flex: 1; min-height: 32px; padding: 4px 8px; border: 1px solid var(--line); border-radius: 999px; color: var(--muted); font-size: 12px; transition: color .2s, border-color .2s, background .2s; }
+.curation-actions button { flex: 1 0 auto; min-height: 32px; padding: 4px 10px; white-space: nowrap; border: 1px solid var(--line); border-radius: 999px; color: var(--muted); font-size: 12px; transition: color .2s, border-color .2s, background .2s; }
 .curation-actions button:hover { border-color: var(--text); color: var(--text); }
 .curation-actions button[aria-pressed="true"] { border-color: var(--text); background: var(--text); color: var(--bg); }
 .curation-actions .curation-delete { flex: 0 0 auto; color: light-dark(#a03535, #eeb1a8); }
