@@ -256,3 +256,22 @@ h1 { font: 500 30px/1.3 var(--serif); letter-spacing: .06em; margin-bottom: 0; }
 .admin-editor:has(#tag-editor-content[hidden]) { display: none; }
 @media (max-width: 900px) { .tags-table th:nth-child(5), .tags-table td:nth-child(5) { display: none; } }
 @media (max-width: 760px) { .tags-table :is(th, td):is(:nth-child(4), :nth-child(6)) { display: none; } .tags-table-wrap { padding: 4px 8px; } }
+
+/* 芙宁娜图片筛选 */
+.curation-filterbar { justify-content: space-between; }
+.curation-tabs { display: flex; flex-wrap: wrap; gap: 4px 26px; }
+.curation-tabs .source-link { padding: 0; min-height: 42px; }
+.curation-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 180px), 1fr)); gap: 14px; }
+.curation-card { display: flex; flex-direction: column; gap: 8px; min-width: 0; margin: 0; padding: 8px; border: 1px solid var(--line); border-radius: 12px; background: var(--bg); }
+.curation-card.removed { opacity: .55; }
+.curation-thumb { display: block; aspect-ratio: 4/5; border-radius: 10px; background: var(--inset); overflow: hidden; }
+.curation-thumb img { display: block; width: 100%; height: 100%; object-fit: contain; }
+.curation-card figcaption { display: flex; flex-direction: column; min-width: 0; font-size: 13px; line-height: 1.5; }
+.curation-card figcaption, .curation-meta { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.curation-meta { color: var(--muted); font-size: 12px; }
+.curation-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.curation-actions button { flex: 1; min-height: 32px; padding: 4px 8px; border: 1px solid var(--line); border-radius: 999px; color: var(--muted); font-size: 12px; transition: color .2s, border-color .2s, background .2s; }
+.curation-actions button:hover { border-color: var(--text); color: var(--text); }
+.curation-actions button[aria-pressed="true"] { border-color: var(--text); background: var(--text); color: var(--bg); }
+.curation-actions .curation-delete { flex: 0 0 auto; color: light-dark(#a03535, #eeb1a8); }
+.curation-removed-note { flex-basis: 100%; color: var(--muted); font-size: 12px; }

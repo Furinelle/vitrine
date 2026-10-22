@@ -1,4 +1,5 @@
 mod admin;
+mod curation;
 mod image_review;
 mod ingest;
 mod presign;
@@ -64,7 +65,8 @@ async fn handle_request(req: Request, env: Env) -> Result<Response> {
             || path.starts_with("/api/works/")
             || path == "/api/tags"
             || path == "/api/sources"
-            || path == "/api/months")
+            || path == "/api/months"
+            || path.starts_with("/api/curation/"))
     {
         Some("PUBLIC_RATE_LIMITER")
     } else {
@@ -154,6 +156,17 @@ async fn handle_request(req: Request, env: Env) -> Result<Response> {
     }
     if path == "/api/admin/works" && method == Method::Get {
         return admin::handle_list(req, env).await;
+    }
+    if path == "/api/admin/curation" && method == Method::Get {
+        return curation::handle_list(req, env).await;
+    }
+    if path == "/api/admin/curation" && method == Method::Post {
+        return curation::handle_decide(req, env).await;
+    }
+    if let Some(collection) = path.strip_prefix("/api/curation/") {
+        if method == Method::Get {
+            return Ok(with_cors(curation::handle_public(&env, collection).await?));
+        }
     }
     if path == "/api/admin/tags" && method == Method::Get {
         return tag_admin::handle_list(req, env).await;

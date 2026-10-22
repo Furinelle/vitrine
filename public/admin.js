@@ -572,6 +572,7 @@ const VIEWS = {
   works: { path: "/admin", title: "作品管理", section: "view-works-section", nav: "nav-works" },
   similar: { path: "/admin/similar", title: "相似图审批", section: "similar", nav: "nav-similar" },
   tags: { path: "/admin/tags", title: "标签管理", section: "tags-view", nav: "nav-tags" },
+  furina: { path: "/admin/furina", title: "芙宁娜图片", section: "curation-view", nav: "nav-curation" },
 };
 
 function setView(view, updateHistory = true) {
@@ -603,12 +604,17 @@ function setView(view, updateHistory = true) {
 
   if (view === "similar") loadSimilar();
   else if (view === "tags") loadTagsAdmin();
+  else if (view === "furina") loadCuration();
   else if (state.works.length === 0 && !state.loading) loadWorks(true);
 }
 
 function syncRoute() {
   const path = window.location.pathname;
-  setView(path.startsWith("/admin/similar") ? "similar" : path.startsWith("/admin/tags") ? "tags" : "works", false);
+  const view = path.startsWith("/admin/similar") ? "similar"
+    : path.startsWith("/admin/tags") ? "tags"
+    : path.startsWith("/admin/furina") ? "furina"
+    : "works";
+  setView(view, false);
 }
 
 function navigate(path, replace = false) {
@@ -934,6 +940,155 @@ $("login-form")?.addEventListener("submit", async (event) => {
   }
 });
 
+/* =====================================================================
+   芙宁娜图片筛选 (/admin/furina)：只有标为“是”的图会发布给 furina.ai 和 log 站
+   ===================================================================== */
+const CURATION = "furina";
+const curation = { images: [], tab: "pending", loaded: false, busy: false };
+const verdictOf = (image) => image.verdict || "pending";
+
+function renderCuration() {
+  const counts = { pending: 0, keep: 0, exclude: 0 };
+  for (const image of curation.images) if (!image.removed) counts[verdictOf(image)] += 1;
+  for (const tab of document.querySelectorAll("#curation-tabs [data-verdict]")) {
+    const active = tab.dataset.verdict === curation.tab;
+    tab.classList.toggle("active", active);
+    tab.setAttribute("aria-pressed", String(active));
+    tab.querySelector(".source-count").textContent = String(counts[tab.dataset.verdict]);
+  }
+  $("nav-curation-count").textContent = counts.pending ? String(counts.pending) : "";
+  $("curation-keep-rest").hidden = curation.tab !== "pending" || counts.pending === 0;
+  $("curation-status").textContent = `共 ${curation.images.filter((i) => !i.removed).length} 张，待筛选 ${counts.pending} 张`;
+
+  const shown = curation.images.filter((image) => verdictOf(image) === curation.tab || (image.removed && image.removedFrom === curation.tab));
+  const grid = $("curation-grid");
+  if (!shown.length) {
+    grid.replaceChildren(node("p", "similar-empty-state", curation.tab === "pending" ? "没有待筛选的图片。" : "这里还没有图片。"));
+    return;
+  }
+  grid.replaceChildren(...shown.map(curationCard));
+}
+
+function curationCard(image) {
+  const work = image.work;
+  const card = node("figure", image.removed ? "curation-card removed" : "curation-card");
+  const link = node("a", "curation-thumb");
+  link.href = coverUrl(image.url);
+  link.target = "_blank";
+  link.rel = "noopener noreferrer";
+  const img = node("img");
+  img.src = thumbUrl(image.url, 320);
+  img.alt = `${work.title || work.id}，第 ${image.page_index + 1} 张`;
+  img.loading = "lazy";
+  link.append(img);
+  const caption = node("figcaption", "", `${work.title || work.id}`);
+  caption.title = `${work.title || work.id}｜${work.author_name || "佚名"}｜第 ${image.page_index + 1} 张`;
+  const meta = node("span", "curation-meta", `${work.author_name || "佚名"} · 第 ${image.page_index + 1} 张`);
+  caption.append(meta);
+  const actions = node("div", "curation-actions");
+  if (image.removed) {
+    const undo = node("button", "", "撤销删除");
+    undo.type = "button";
+    undo.addEventListener("click", () => restoreCurationImage(image));
+    actions.append(node("span", "curation-removed-note", "已从图库删除"), undo);
+  } else {
+    for (const [verdict, label] of [["keep", "是芙宁娜"], ["exclude", "不是"]]) {
+      const button = node("button", "", label);
+      button.type = "button";
+      button.setAttribute("aria-pressed", String(image.verdict === verdict));
+      // 再点一次已选的按钮就退回待筛选
+      button.addEventListener("click", () => decide([image], image.verdict === verdict ? null : verdict));
+      actions.append(button);
+    }
+    const remove = node("button", "curation-delete", "删除");
+    remove.type = "button";
+    remove.addEventListener("click", () => deleteCurationImage(image));
+    actions.append(remove);
+  }
+  card.append(link, caption, actions);
+  return card;
+}
+
+async function loadCuration(force = false) {
+  if (curation.loaded && !force) return renderCuration();
+  $("curation-status").textContent = "正在加载图片…";
+  try {
+    const data = await api(`/api/admin/curation?collection=${CURATION}`);
+    curation.images = data.images;
+    curation.loaded = true;
+    renderCuration();
+  } catch (error) {
+    if (error.status !== 401) $("curation-status").textContent = error.message;
+  }
+}
+
+async function decide(images, verdict) {
+  if (curation.busy || !images.length) return;
+  curation.busy = true;
+  $("curation-status").textContent = "正在保存…";
+  try {
+    for (let i = 0; i < images.length; i += 2000) {
+      await api("/api/admin/curation", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ collection: CURATION, r2_keys: images.slice(i, i + 2000).map((image) => image.r2_key), verdict }),
+      });
+    }
+    for (const image of images) image.verdict = verdict;
+    renderCuration();
+  } catch (error) {
+    if (error.status !== 401) $("curation-status").textContent = error.message;
+  } finally {
+    curation.busy = false;
+  }
+}
+
+async function deleteCurationImage(image) {
+  if (curation.busy || !confirm("从图库删除这张图片？本次打开页面期间可以撤销。")) return;
+  curation.busy = true;
+  $("curation-status").textContent = "正在删除…";
+  try {
+    state.decisions[image.r2_key] = crypto.randomUUID();
+    await reviewImage(image, "prepare");
+    await reviewImage(image, "delete");
+    image.removed = true;
+    image.removedFrom = verdictOf(image);
+    renderCuration();
+  } catch (error) {
+    if (error.status !== 401) $("curation-status").textContent = error.message;
+  } finally {
+    curation.busy = false;
+  }
+}
+
+async function restoreCurationImage(image) {
+  if (curation.busy) return;
+  curation.busy = true;
+  $("curation-status").textContent = "正在恢复…";
+  try {
+    await reviewImage(image, "restore");
+    delete state.decisions[image.r2_key];
+    image.targets = undefined;
+    image.removed = false;
+    renderCuration();
+  } catch (error) {
+    if (error.status !== 401) $("curation-status").textContent = error.message;
+  } finally {
+    curation.busy = false;
+  }
+}
+
+$("curation-tabs")?.addEventListener("click", (event) => {
+  const tab = event.target.closest("[data-verdict]");
+  if (!tab) return;
+  curation.tab = tab.dataset.verdict;
+  renderCuration();
+});
+$("curation-keep-rest")?.addEventListener("click", () => {
+  const rest = curation.images.filter((image) => !image.removed && !image.verdict);
+  if (confirm(`把待筛选的 ${rest.length} 张全部标为“是芙宁娜”？`)) decide(rest, "keep");
+});
+
 // 导航项点击
 $("nav-works")?.addEventListener("click", (e) => {
   e.preventDefault();
@@ -946,6 +1101,10 @@ $("nav-similar")?.addEventListener("click", (e) => {
 $("nav-tags")?.addEventListener("click", (e) => {
   e.preventDefault();
   setView("tags");
+});
+$("nav-curation")?.addEventListener("click", (e) => {
+  e.preventDefault();
+  setView("furina");
 });
 $("mobile-nav-works")?.addEventListener("click", (e) => {
   e.preventDefault();

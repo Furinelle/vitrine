@@ -235,9 +235,11 @@ const elementMap = {
   'nav-works': { classList: { toggle(c, f) { if (f) this[c] = true; else delete this[c]; } }, setAttribute(k, v) { this[k] = v; } },
   'nav-similar': { classList: { toggle(c, f) { if (f) this[c] = true; else delete this[c]; } }, setAttribute(k, v) { this[k] = v; } },
   'nav-tags': { classList: { toggle(c, f) { if (f) this[c] = true; else delete this[c]; } }, setAttribute(k, v) { this[k] = v; } },
+  'nav-curation': { classList: { toggle(c, f) { if (f) this[c] = true; else delete this[c]; } }, setAttribute(k, v) { this[k] = v; } },
   'view-works-section': { hidden: false },
   'similar': { hidden: true },
   'tags-view': { hidden: true },
+  'curation-view': { hidden: true },
   'sidebar-sources-section': { hidden: false },
   'search-form': { style: {} },
 };
@@ -249,6 +251,7 @@ const routingContext = vm.createContext({
   loadSimilar() {},
   loadWorks() {},
   loadTagsAdmin() { routingContext.tagsLoaded = true; },
+  loadCuration() { routingContext.curationLoaded = true; },
 });
 vm.runInContext(
   adminSource.slice(adminSource.indexOf('const VIEWS = {'), adminSource.indexOf('/* =====================================================================\n   相似图审批相关渲染与操作')),
@@ -264,9 +267,19 @@ assert.equal(elementMap['nav-similar'].classList.active, true);
 assert.equal(elementMap['sidebar-sources-section'].hidden, true);
 assert.equal(elementMap['search-form'].hidden, true);
 
+routingContext.window.location.pathname = '/admin/furina';
+routingContext.syncRoute();
+assert.equal(routingContext.state.view, 'furina');
+assert.equal(routingContext.document.title, 'Vitrine · 芙宁娜图片');
+assert.equal(elementMap['curation-view'].hidden, false);
+assert.equal(elementMap['similar'].hidden, true);
+assert.equal(elementMap['nav-curation'].classList.active, true);
+assert.equal(routingContext.curationLoaded, true);
+
 routingContext.window.location.pathname = '/admin';
 routingContext.syncRoute();
 assert.equal(routingContext.state.view, 'works');
+assert.equal(elementMap['curation-view'].hidden, true);
 assert.equal(routingContext.document.title, 'Vitrine · 作品管理');
 assert.equal(elementMap['view-works-section'].hidden, false);
 assert.equal(elementMap['similar'].hidden, true);
