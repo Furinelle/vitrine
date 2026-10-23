@@ -837,6 +837,16 @@ let similarQuotaBlocked = false;
 // Groups already sent for deletion stay off the page while the queue drains.
 const similarHidden = new Set();
 const similarGroupOf = new Map();
+const autoCleaned = new Set();
+
+// Server-marked duplicates are removed without review; each pair is tried once per page load.
+function cleanAutoPairs() {
+  const pairs = state.autoPairs.filter((pair) => !autoCleaned.has(pair.remove.r2_key)).slice(0, 100);
+  for (const pair of pairs) autoCleaned.add(pair.remove.r2_key);
+  const items = similarDeleteItems(pairs.map((pair) => pair.remove.r2_key),
+    (key) => pairs.filter((pair) => pair.remove.r2_key === key).map((pair) => pair.keep.r2_key));
+  if (items.length) deleteSimilarItems(items);
+}
 function scheduleSimilarRefresh(delay = similarRefreshDelay) {
   clearTimeout(similarRefreshTimer);
   similarRefreshTimer = setTimeout(() => {
@@ -897,8 +907,9 @@ async function loadSimilar(automatic = false) {
     const autoLine = $("similar-auto");
     if (state.autoPairs.length) {
       autoLine.hidden = false;
-      autoLine.textContent = `${state.autoPairs.length} 对单图去重建议，确认后保留更高分辨率版本。`;
+      autoLine.textContent = `${state.autoPairs.length} 对单图重复，自动清理并保留更高分辨率版本。`;
       autoBtn.hidden = false;
+      cleanAutoPairs();
     } else {
       autoLine.hidden = true;
       autoBtn.hidden = true;
@@ -1141,13 +1152,9 @@ $("editor-close")?.addEventListener("click", () => {
 });
 $("similar-refresh")?.addEventListener("click", () => loadSimilar());
 
-$("similar-clean-dup")?.addEventListener("click", async () => {
-  const pairs = state.autoPairs.slice(0, 100);
-  const items = similarDeleteItems(pairs.map((pair) => pair.remove.r2_key),
-    (key) => pairs.filter((pair) => pair.remove.r2_key === key).map((pair) => pair.keep.r2_key));
-  if (!items.length) return;
-  if (!confirm(`清理 ${items.length} 张单图重复，仅保留更高分辨率版本？`)) return;
-  await deleteSimilarItems(items);
+$("similar-clean-dup")?.addEventListener("click", () => {
+  autoCleaned.clear();
+  cleanAutoPairs();
 });
 
 async function doLogout() {

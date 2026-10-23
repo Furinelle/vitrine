@@ -13,6 +13,8 @@ pub const MAX_SIMILAR_GROUPS: usize = 100;
 pub const MAX_GROUP_ITEMS: usize = 20;
 pub const CLIP_DIM: usize = 512;
 pub const CLIP_SIMILAR: f32 = 0.93;
+// Every reviewed pair at or above this score was the same picture.
+const CLIP_DUPLICATE: f32 = 0.995;
 const SIMILAR_CACHE_VERSION: &str = "strict-only-v2";
 pub const SIMILAR_ALGORITHM: &str = SIMILAR_CACHE_VERSION;
 
@@ -1161,7 +1163,7 @@ async fn review_result(req: &Request, db: &D1Database) -> Result<Option<ReviewRe
     {
         let cache = Cache::default();
         let key = format!(
-            "{}/__similar-review/v2/{}/{}/{}",
+            "{}/__similar-review/v3/{}/{}/{}",
             req.url()?.origin().ascii_serialization(),
             row.generation,
             result.generation,
@@ -1242,6 +1244,19 @@ async fn review_result(req: &Request, db: &D1Database) -> Result<Option<ReviewRe
     }))
 }
 
+fn clip_duplicate(
+    keep: &ImageFingerprint,
+    remove: &ImageFingerprint,
+    embeddings: &std::collections::HashMap<String, Vec<f32>>,
+) -> bool {
+    // The aspect check keeps crops, which CLIP scores as the same scene, in review.
+    same_aspect_ratio(keep, remove, 0.005)
+        && match (embeddings.get(&keep.r2_key), embeddings.get(&remove.r2_key)) {
+            (Some(left), Some(right)) => cosine(left, right) >= CLIP_DUPLICATE,
+            _ => false,
+        }
+}
+
 fn revalidate_candidates(
     mut response: SimilarResponse,
     images: &std::collections::HashMap<String, ImageFingerprint>,
@@ -1292,6 +1307,30 @@ fn revalidate_candidates(
             })
         })
         .collect();
+    // Worker-side so the rule applies without rebuilding Oracle's compute binary.
+    let (duplicates, groups): (Vec<_>, Vec<_>) = std::mem::take(&mut response.groups)
+        .into_iter()
+        .partition(|group| {
+            let [keep, remove] = group.items.as_slice() else {
+                return false;
+            };
+            response.engine == "clip"
+                && keep.keep
+                && images
+                    .get(&keep.r2_key)
+                    .zip(images.get(&remove.r2_key))
+                    .is_some_and(|(keep, remove)| clip_duplicate(keep, remove, embeddings))
+        });
+    response.groups = groups;
+    response
+        .auto_pairs
+        .extend(duplicates.into_iter().filter_map(|group| {
+            let mut items = group.items.into_iter();
+            Some(AutoPair {
+                keep: items.next()?,
+                remove: items.next()?,
+            })
+        }));
     response.auto_pairs = response
         .auto_pairs
         .into_iter()
@@ -1301,11 +1340,12 @@ fn revalidate_candidates(
             (keep.work_id == pair.keep.work_id
                 && remove.work_id == pair.remove.work_id
                 && keep.quality_key() >= remove.quality_key()
-                && classify_similarity(keep, remove) == MatchKind::StrictSame)
-                .then(|| AutoPair {
-                    keep: item_from(keep, MatchKind::StrictSame, true),
-                    remove: item_from(remove, MatchKind::StrictSame, false),
-                })
+                && (classify_similarity(keep, remove) == MatchKind::StrictSame
+                    || clip_duplicate(keep, remove, embeddings)))
+            .then(|| AutoPair {
+                keep: item_from(keep, MatchKind::StrictSame, true),
+                remove: item_from(remove, MatchKind::StrictSame, false),
+            })
         })
         .collect();
     response
@@ -2230,8 +2270,12 @@ mod tests {
         let b = fp("b", "pixiv:2", "second", u64::MAX, 100, 100, 10);
         let mut vector = vec![0.0; CLIP_DIM];
         vector[0] = 1.0;
+        // Below the duplicate cutoff, so the pair stays in review.
+        let mut near = vector.clone();
+        near[0] = 0.99;
+        near[1] = (1.0f32 - 0.99 * 0.99).sqrt();
         let mut embeddings =
-            std::collections::HashMap::from([("a".into(), vector.clone()), ("b".into(), vector)]);
+            std::collections::HashMap::from([("a".into(), vector.clone()), ("b".into(), near)]);
         let response = SimilarResponse {
             ok: true,
             engine: "clip".into(),
@@ -2717,5 +2761,44 @@ mod tests {
             group.items[1].kind = stale_label.into();
             assert!(split_auto_pairs(vec![group], &images).1.is_empty());
         }
+    }
+
+    #[test]
+    fn near_identical_clip_pairs_become_auto_pairs() {
+        let unit = |x: f32| {
+            let mut v = vec![0.0; CLIP_DIM];
+            v[0] = x;
+            v[1] = (1.0 - x * x).sqrt();
+            v
+        };
+        let review = |b: ImageFingerprint, score: f32| {
+            let a = fp("a", "pixiv:1", "a", 1, 200, 200, 20);
+            let embeddings = std::collections::HashMap::from([
+                ("a".to_string(), unit(1.0)),
+                ("b".to_string(), unit(score)),
+            ]);
+            let images = vec![a, b];
+            let response = SimilarResponse {
+                ok: true,
+                engine: "clip".into(),
+                groups: cluster_clip(&images, &embeddings),
+                auto_pairs: vec![],
+            };
+            assert_eq!(response.groups.len(), 1);
+            let images = images
+                .into_iter()
+                .map(|image| (image.r2_key.clone(), image))
+                .collect();
+            revalidate_candidates(response, &images, &embeddings)
+        };
+        let promoted = review(fp("b", "pixiv:2", "b", u64::MAX, 100, 100, 10), 0.999);
+        assert!(promoted.groups.is_empty());
+        assert_eq!(promoted.auto_pairs.len(), 1);
+        assert_eq!(promoted.auto_pairs[0].keep.r2_key, "a");
+        assert_eq!(promoted.auto_pairs[0].remove.r2_key, "b");
+        let cropped = review(fp("b", "pixiv:2", "b", u64::MAX, 100, 150, 10), 0.999);
+        assert!(cropped.auto_pairs.is_empty() && cropped.groups.len() == 1);
+        let similar = review(fp("b", "pixiv:2", "b", u64::MAX, 100, 100, 10), 0.99);
+        assert!(similar.auto_pairs.is_empty() && similar.groups.len() == 1);
     }
 }

@@ -156,6 +156,7 @@ console.log('PASS: request errors preserve quota metadata, non-JSON status and e
 const pendingElements = new Map(['similar-status','similar-coverage','similar-groups','similar-auto',
   'similar-clean-dup','nav-similar-count','console'].map(id => [id, element()]));
 let retryTimer, retryDelay, visibilityChange, rendered = 0, requests = 0;
+const autoDeleted = [];
 let similarResponse = {pending:true,groups:[],auto_pairs:[],engine:'hash'};
 const offloadState = { view: 'similar', similar: [{id:'old'}], autoPairs: [{id:'old'}] };
 const offloadDocument = { hidden: false, addEventListener(name, callback) { visibilityChange = callback; } };
@@ -163,6 +164,7 @@ const offload = vm.createContext({
   state: offloadState, $: id => pendingElements.get(id), document: offloadDocument,
   clearTimeout() { retryTimer = null; }, setTimeout(callback, delay) { retryTimer = callback; retryDelay = delay; },
   saveSimilarRetry() {}, renderSimilar() { rendered++; },
+  similarDeleteItems: keys => keys.map(r2_key => ({ r2_key })), deleteSimilarItems(items) { autoDeleted.push(...items); },
   async api(path) { requests++; return path.includes('fingerprints')
     ? {clipped:2,online:4,hashed:4,pending_clip:2}
     : similarResponse; },
@@ -215,8 +217,9 @@ assert.equal(retryTimer, null, 'current cached results do not poll');
 console.log('PASS: daily pending results clear stale proposals, poll every five minutes, back off errors and stop on daily quota');
 
 similarResponse = {pending:false,stale:true,computed_at:'2026-10-10T00:15:00Z',
-  groups:[{id:'reviewable'}],auto_pairs:[{id:'auto-reviewable'}],engine:'clip'};
+  groups:[{id:'reviewable'}],auto_pairs:[{id:'auto-reviewable',keep:{r2_key:'k'},remove:{r2_key:'r'}}],engine:'clip'};
 await offload.loadSimilar();
+assert.deepEqual(autoDeleted.map(item => item.r2_key), ['r'], 'duplicate pairs clean up without a click');
 assert.equal(rendered, 2);
 assert.equal(offloadState.similar[0].id, 'reviewable');
 assert.equal(offloadState.autoPairs[0].id, 'auto-reviewable');
