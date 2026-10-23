@@ -138,38 +138,52 @@ function similarDeleteItems(keys, keepers) {
     { r2_key, decision_id: `sim-${crypto.randomUUID()}`, keep_r2_keys: [...new Set(keepers(r2_key))] });
 }
 
+// similarRetry doubles as the background queue; a running drain picks up items queued meanwhile.
 async function deleteSimilarItems(items) {
-  if (!items.length || state.similarDeleting) return;
-  state.similarDeleting = true;
   const byKey = new Map(state.similarRetry.map((item) => [item.r2_key, item]));
   for (const item of items) byKey.set(item.r2_key, item);
   state.similarRetry = [...byKey.values()];
   saveSimilarRetry();
-  $("similar-status").textContent = `正在删除 ${items.length} 张…`;
+  if (!items.length || state.similarDeleting) return;
+  state.similarDeleting = true;
+  saveSimilarRetry();
+  const attempted = new Set();
+  let deletedCount = 0;
+  const failures = [], channelFailed = [], pending = [];
   let message;
   try {
-    const data = await api("/api/admin/similar/delete", {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ items }),
-    });
-    const deleted = new Set(data.deleted || []);
-    state.similarRetry = state.similarRetry.filter((item) => !deleted.has(item.r2_key));
-    const failures = data.failed || [];
-    const channelFailed = data.telegram_failed || [];
-    const pending = data.telegram_pending || [];
-    message = `图库已删除 ${deleted.size} 张；${failures.length} 张未完成。`;
+    for (;;) {
+      const batch = state.similarRetry.filter((item) => !attempted.has(item.r2_key)).slice(0, 100);
+      if (!batch.length) break;
+      for (const item of batch) attempted.add(item.r2_key);
+      $("similar-status").textContent = `后台删除中，剩余 ${state.similarRetry.filter((item) => !attempted.has(item.r2_key)).length + batch.length} 张…`;
+      const data = await api("/api/admin/similar/delete", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ items: batch }),
+      });
+      const deleted = new Set(data.deleted || []);
+      deletedCount += deleted.size;
+      state.similarRetry = state.similarRetry.filter((item) => !deleted.has(item.r2_key));
+      saveSimilarRetry();
+      failures.push(...(data.failed || []));
+      channelFailed.push(...(data.telegram_failed || []));
+      pending.push(...(data.telegram_pending || []));
+    }
+    message = `图库已删除 ${deletedCount} 张；${failures.length} 张未完成。`;
     if (channelFailed.length) message += ` ${channelFailed.length} 条频道消息删除失败，需人工核实：${channelFailed.map((target) => `${target.chat_id}/${target.message_id}`).join("，")}。`;
     if (pending.length) message += ` ${pending.length} 条频道消息状态未确认，需人工核实：${pending.map((target) => `${target.chat_id}/${target.message_id}`).join("，")}。`;
     if (failures.length) message += ` ${failures.map((item) => `${item.r2_key}: ${item.error}`).join("；")}`;
-    await loadSimilar();
   } catch (error) {
     if (error.status === 401) return;
     message = `未确认删除结果，已保留操作 ID，可重试：${error.message}`;
   } finally {
     state.similarDeleting = false;
     saveSimilarRetry();
-    if (message) $("similar-status").textContent = message;
   }
+  // Groups whose deletion did not finish come back so they can be reviewed again.
+  for (const item of state.similarRetry) similarHidden.delete(similarGroupOf.get(item.r2_key));
+  await loadSimilar(true);
+  $("similar-status").textContent = message;
 }
 
 function showLogin(message = "") {
@@ -809,7 +823,10 @@ async function deleteGroup(group, box) {
     return;
   }
   if (!confirm(`确定删除这组中勾选的 ${items.length} 张图片？对应作品图片将下线并清理。`)) return;
-  await deleteSimilarItems(items);
+  similarHidden.add(group.id);
+  for (const item of items) similarGroupOf.set(item.r2_key, group.id);
+  hideGroup(group.id, box);
+  deleteSimilarItems(items);
 }
 
 let similarRefreshTimer;
@@ -817,6 +834,9 @@ let similarNeedsRefresh = false;
 let similarRequestVersion = 0;
 let similarRefreshDelay = 30000;
 let similarQuotaBlocked = false;
+// Groups already sent for deletion stay off the page while the queue drains.
+const similarHidden = new Set();
+const similarGroupOf = new Map();
 function scheduleSimilarRefresh(delay = similarRefreshDelay) {
   clearTimeout(similarRefreshTimer);
   similarRefreshTimer = setTimeout(() => {
@@ -865,7 +885,7 @@ async function loadSimilar(automatic = false) {
       scheduleSimilarRefresh(300000);
       return;
     }
-    state.similar = similar.groups || [];
+    state.similar = (similar.groups || []).filter((group) => !similarHidden.has(group.id));
     state.autoPairs = similar.auto_pairs || [];
     renderSimilar(state.similar, automatic);
 

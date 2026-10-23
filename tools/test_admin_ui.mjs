@@ -248,3 +248,34 @@ assert.equal(offloadState.similar.length, 0, 'genuinely missing cache still clea
 assert.equal(offloadState.autoPairs.length, 0);
 assert.equal(pendingElements.get('similar-clean-dup').hidden, true);
 console.log('PASS: stale cache remains reviewable with Beijing scan time, pending update notice and five-minute polling');
+
+// Deleting while a batch is in flight queues the new items behind it; unfinished groups come back.
+{
+  const status = element();
+  const calls = [];
+  let release;
+  const queueState = { similarRetry: [], similarDeleting: false };
+  const queue = vm.createContext({
+    state: queueState, $: () => status, saveSimilarRetry() {},
+    similarHidden: new Set(['g1', 'g2']), similarGroupOf: new Map([['a', 'g1'], ['b', 'g2']]),
+    reloads: 0, async loadSimilar() { queue.reloads++; },
+    async api(path, options) {
+      const items = JSON.parse(options.body).items.map(item => item.r2_key);
+      calls.push(items);
+      if (calls.length === 1) await new Promise(resolve => { release = resolve; });
+      return items[0] === 'b' ? { deleted: [], failed: [{ r2_key: 'b', error: 'x' }] } : { deleted: items };
+    },
+  });
+  vm.runInContext(source.slice(source.indexOf('// similarRetry doubles'), source.indexOf('function showLogin(')), queue);
+  const first = queue.deleteSimilarItems([{ r2_key: 'a', decision_id: 'sim-1' }]);
+  await queue.deleteSimilarItems([{ r2_key: 'b', decision_id: 'sim-2' }]);
+  assert.equal(calls.length, 1);
+  release();
+  await first;
+  assert.deepEqual(calls, [['a'], ['b']]);
+  assert.deepEqual(Array.from(queueState.similarRetry, item => item.r2_key), ['b']);
+  assert.deepEqual([...queue.similarHidden], ['g1']);
+  assert.equal(queue.reloads, 1);
+  assert.match(status.textContent, /已删除 1 张；1 张未完成/);
+  console.log('PASS: similar deletions queue in the background and failed groups return');
+}
