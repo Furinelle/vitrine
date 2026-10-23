@@ -21,7 +21,7 @@ Oracle 计算迁移前版本：`bc157b67-62dd-4731-814f-47a9636f47b7`。
 - 管理员可以查看下线作品并恢复完整的人工下线作品。重新入库保留人工下线状态；撤回与恢复使用版本及原图完整性保护；未保存编辑有离开确认。
 - 登录签名 cookie、CSRF、请求体限制、上传格式与大小校验、安全响应头、登录和公开接口限速。公开响应移除内部采集 origin。
 - 相似结果由 Oracle 按数据版本预计算；并发删除在同一 D1 事务检查保留图片及版本，避免双方把最后一张也删掉；失败项目可按稳定 ID 重试。
-- 原图和缩略图都经 D1 可见性校验；关闭 workers.dev 与 preview 入口；R2 保持私有；保留后台 WAF Challenge。
+- 原图和缩略图都经 D1 可见性校验；关闭 workers.dev 与 preview 入口；R2 保持私有；保留后台 WAF Challenge。（2026-10-23 起不再成立，见文末「2026-10-23 现状更正」）
 
 ## 验证证据
 
@@ -30,7 +30,7 @@ Oracle 计算迁移前版本：`bc157b67-62dd-4731-814f-47a9636f47b7`。
 - `npm run test:public`：正式站只读检查通过。首页安全头、未授权 catalog 401、游标和完整标签索引、三档真实缩图尺寸、ETag 304，以及旧缩图入口 403。
 - 样本原图 1,351 × 1,431 / 498,467 B；WebP 缩图宽度 160 / 640 / 1,280，分别 10,602 / 87,370 / 238,488 B。已修复 workers-rs 的数值质量参数序列化导致静默回退原图的问题，使用平台默认质量。
 - 既有下线作品：公开详情、原图及三档缩略图均为 404，带条件缓存请求也不能绕过。
-- workers.dev 与版本预览 URL 实测 403；R2 r2.dev 禁用且没有公开自定义域。
+- workers.dev 与版本预览 URL 实测 403；R2 r2.dev 禁用且没有公开自定义域。（2026-10-23 起不再成立，见文末「2026-10-23 现状更正」）
 - Oracle 上实际 Hanabi 容器部署后只读检查通过：health、Bearer catalog、来源/ID 作者查找、原图和新缩略图均正常。凭据只在容器内读取，未输出；没有生产上传、写入或 Telegram 操作。记录在 `/tmp/vitrine-oracle-readonly-acceptance-20261008.jsonl`。
 - 手机正式页无横向溢出；分享链接能直接打开第 2 张图片。桌面和 320/390 宽度布局、自动分页 24 → 48、多图键盘与筛选在本地样本验收通过。
 - 后续按用户要求在 Chrome 正式页复验：点击打开多图、下一张及左箭头、Escape 关闭、无结果搜索与恢复、完整标签搜索及筛选、自动加载 24 → 48（无重复）、320/390 双列及无横向溢出，均通过。分享 URL 随页码更新，复制按钮显示成功；系统剪贴板内容未独立确认。正式页控制台未见 error。
@@ -112,7 +112,7 @@ Oracle 计算迁移前版本：`bc157b67-62dd-4731-814f-47a9636f47b7`。
 npx wrangler rollback 1b7d8aac-80c2-4e3f-85d8-741ad6e4c104
 ```
 
-若回退到更早的公开改版前版本 `2ec2f26f-2295-4edf-8761-f05e105eaf12`，旧前端使用 `/cdn-cgi/image/`，因此完整回退还需停用本次新增的 WAF 规则 `e41a69a481324622bd194a9c1eeedd12`（ruleset `53bafaa2128745a2b588a2a77082a847`）。保留原后台 Challenge `a7940432beeb4799a74e515a9dd1bf4b`。回退不需要迁移或恢复作品数据；旧版重新带回旧的缓存可见性限制。
+若回退到更早的公开改版前版本 `2ec2f26f-2295-4edf-8761-f05e105eaf12`，旧前端使用 `/cdn-cgi/image/`，因此完整回退还需停用本次新增的 WAF 规则 `e41a69a481324622bd194a9c1eeedd12`（ruleset `53bafaa2128745a2b588a2a77082a847`）。原后台 Challenge `a7940432beeb4799a74e515a9dd1bf4b` 现已删除。回退不需要迁移或恢复作品数据；旧版重新带回旧的缓存可见性限制。
 
 ## D1 读取额度修复与每日扫描
 
@@ -234,3 +234,10 @@ npx wrangler rollback 1b7d8aac-80c2-4e3f-85d8-741ad6e4c104
 - Oracle 上实际 Bearer 调用 health、两项 catalog 增量页与 similarity snapshot 成功，`catalog_id`、非空 `fingerprint_digest` 与 `next_cursor` 齐全。验收快照 generation=3975、result_generation=3807，后续入库使结果过期属既有每日扫描安排；未为验收强制全库扫描，旧候选仍需按当前成员/特征复核。
 - Oracle current 仍为 `20261010-solid-filter`。运行中的两份 Python 脚本 SHA 与源码一致，服务源码目录中的 `similar.rs` / CLI 源码 SHA 与发布提交一致；现有 ARM64 二进制 SHA `7886c7bd74b3cfa27d4a6bd0dcecf0c2243f3eda7d8def1510b40c0084f60a29`。今日任务成功补齐142张CLIP并发布generation=3807，四核/2GiB限制、每日08:15 timer均保留。因此未重建、重启或修改Oracle任务。
 - 回滚、dry-run、发布、模块/settings、资产权限和公开API验收证据保存在 `/tmp/vitrine-deploy-closeout-20261011/`。免费 Worker 大上传1102与iPhone/本轮Safari真机路径仍未完成验证；未用生产作品做上传、删除或恢复测试。
+
+## 2026-10-23 现状更正
+
+- 后台不再有 WAF Challenge。zone `fontaine.blue` 的自定义规则只剩一条：拦截 `gallery.fontaine.blue/cdn-cgi/image/*`，确保缩图都经过 Worker 的可见性校验。后台靠 `INGEST_TOKEN` 登录、每分钟 5 次的登录限速、签名 HttpOnly cookie 和 CSRF 校验保护；`/api/admin/*` 未登录返回 401。
+- `vitrine-media` 绑定了公开自定义域 `img.furina.ai`，供前端「复制图床链接」和 log.furina.ai 的 `bench/` 测评图使用。这条路径直接读 R2，不经过 D1 可见性校验：知道 key 的人仍能取到已下线作品的原图。
+- 同日清理 R2：删除 D1 未引用的旧媒体对象 1,131 个、`review-trash/` 撤销备份 361 个和 `healthcheck/` 测试对象 1 个，共约 1.61 GB；`orphan_objects` 中 483 条待清理记录标为已删除。保留在线图片 5,828 个（7.05 GB）和 `bench/` 103 个。此前删除的单图和相似图决策从此无法撤销；后台撤销本就只在删除时的浏览器会话内可用。
+- 同日按用户确认移除 R18：迁移 `0023` 删除 `works.is_r18`，入库忽略 Hanabi 传来的该字段（Worker `1476bddb-d2eb-4f56-8802-11c727207b69`）。

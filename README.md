@@ -116,7 +116,7 @@ JSONL 按图片 ID 严格递增，每份文件含格式/来源/版本头、图�
 
 Header: `Authorization: Bearer <INGEST_TOKEN>`
 
-Oracle / Hanabi 指纹同步写入感知哈希（hex，最多 50 条）。相同内容为真正 no-op，不更新 timestamp、不增加版本；`upserted` 仍表示接受条数。CLIP PUT 同样跳过内容相同的写入。Worker 不解图。路径在 `/api/catalog` 下，不会被 `/admin` WAF Challenge 挡住。
+Oracle / Hanabi 指纹同步写入感知哈希（hex，最多 50 条）。相同内容为真正 no-op，不更新 timestamp、不增加版本；`upserted` 仍表示接受条数。CLIP PUT 同样跳过内容相同的写入。Worker 不解图。路径在 `/api/catalog` 下，只接受 Bearer。
 
 ### `GET /api/admin/similar` · `POST /api/admin/similar/delete`
 
@@ -152,16 +152,9 @@ Hanabi 拿到 targets 后删除对应频道消息，再调用 `POST /api/catalog
 
 同源管理页：改标题/作者/标签，删/恢复单图，下线整部作品（只写 `works.deleted_at`，不动频道），以及「相似图」按张去重。登录用现有 `INGEST_TOKEN`，Worker 发 HttpOnly cookie。频道删帖另需 `npx wrangler secret put TELEGRAM_BOT_TOKEN`。首次部署须按顺序应用迁移 `0001`–`0023`；已有实例先核对实际迁移状态，保留 D1 备份与回滚方案，再由操作者执行 `npm run db:remote`。
 
-WAF Managed Challenge 已加在 zone `fontaine.blue`（规则 id `a7940432beeb4799a74e515a9dd1bf4b`）：
+后台没有 WAF Challenge（原规则已删除），靠 token 登录、登录限速、签名 cookie 与 CSRF 保护。zone `fontaine.blue` 只保留一条自定义规则：拦截 `gallery.fontaine.blue/cdn-cgi/image/*`，让缩图都走 `/media` 的可见性校验。Worker 的 workers.dev / preview 入口已关闭，生产只用自定义域。
 
-```
-(http.host eq "gallery.fontaine.blue" and (
-  starts_with(http.request.uri.path, "/admin") or
-  starts_with(http.request.uri.path, "/api/admin")
-))
-```
-
-不要再手建一条同样的。不要把 `/api/catalog`、`/api/ingest`、`/api/works`、`/media` 加进去。`*.workers.dev` 不走这条 hostname 规则；生产只用自定义域。Worker 的 workers.dev / preview 入口已关闭，避免绕过该域名下的 WAF。
+R2 桶 `vitrine-media` 另有公开自定义域 `img.furina.ai`（图床直链、log.furina.ai 的 `bench/` 图片），它直接读 R2，不经过 D1 可见性校验。清理桶内对象时保留 `bench/` 和 `images.r2_key` 引用的对象。
 
 ### `GET /api/admin/session` · `POST /api/admin/login` · `POST /api/admin/logout`
 
