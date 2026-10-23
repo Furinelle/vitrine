@@ -57,6 +57,9 @@ struct Snapshot {
     image_count: Option<usize>,
     #[serde(default)]
     similar_survivors: Vec<Vec<SimilarKeeper>>,
+    // Unmappable publications skipped on opt-in; they stay active and untouched.
+    #[serde(default)]
+    skipped: usize,
 }
 
 impl Snapshot {
@@ -137,7 +140,8 @@ async fn snapshot_is_current(db: &D1Database, snapshot: &Snapshot, state: &str) 
         .targets
         .iter()
         .filter(|t| state == "prepared" || !t.remaining.is_empty())
-        .count();
+        .count()
+        + snapshot.skipped;
     if publications
         .iter()
         .filter(|p| p.deleted_at.is_none())
@@ -178,7 +182,8 @@ fn snapshot_guards(
         .targets
         .iter()
         .filter(|t| deleting || !t.remaining.is_empty())
-        .count();
+        .count()
+        + snapshot.skipped;
     let mut statements = vec![db.prepare("UPDATE catalog_image_reviews SET state=CASE WHEN state=? AND EXISTS(SELECT 1 FROM works WHERE id=? AND review_version=? AND (deleted_at IS NOT NULL)=?) AND (SELECT COUNT(*) FROM images WHERE work_id=?)=? AND (SELECT COUNT(*) FROM telegram_publications WHERE work_id=? AND deleted_at IS NULL)=? AND (EXISTS(SELECT 1 FROM images WHERE id=? OR r2_key=?))=? THEN state ELSE 'conflict' END WHERE decision_id=?")
         .bind(&[JsValue::from_str(state), JsValue::from_str(&image.work_id), JsValue::from_f64(snapshot.review_version.unwrap_or(-1) as f64), JsValue::from_f64(if expected_images == 0 { 1.0 } else { 0.0 }), JsValue::from_str(&image.work_id), JsValue::from_f64(expected_images as f64), JsValue::from_str(&image.work_id), JsValue::from_f64(expected_active as f64), JsValue::from_str(&image.id), JsValue::from_str(&image.r2_key), JsValue::from_f64(if deleting { 1.0 } else { 0.0 }), JsValue::from_str(decision_id)])?];
     if deleting {
@@ -317,14 +322,16 @@ async fn handle_inner(
                 409,
             );
         }
-        let targets = match publications
-            .into_iter()
-            .map(|p| image_target(p, images.len(), position))
-            .collect::<std::result::Result<Vec<_>, _>>()
-        {
-            Ok(targets) => targets,
-            Err(error) => return json_response(&json!({"ok":false,"error":error}), 409),
-        };
+        let mut targets = Vec::new();
+        let mut skipped = 0;
+        for publication in publications {
+            match image_target(publication, images.len(), position) {
+                Ok(target) => targets.push(target),
+                // Telegram cannot be cleaned up here; the gallery deletion still proceeds.
+                Err(_) if request.allow_missing_telegram => skipped += 1,
+                Err(error) => return json_response(&json!({"ok":false,"error":error}), 409),
+            }
+        }
         let backup_key = catalog_backup_key(&request.decision_id, &image.r2_key);
         copy_catalog_object(&env.bucket("MEDIA")?, &image.r2_key, &backup_key).await?;
         let snapshot = Snapshot {
@@ -334,6 +341,7 @@ async fn handle_inner(
             review_version: Some(work.review_version),
             image_count: Some(images.len()),
             similar_survivors: survivors.to_vec(),
+            skipped,
         };
         db.prepare("INSERT INTO catalog_image_reviews(decision_id,payload,state,created_at) VALUES(?,?,'prepared',?) ON CONFLICT DO NOTHING")
             .bind(&[JsValue::from_str(&request.decision_id),JsValue::from_str(&serde_json::to_string(&snapshot).map_err(|e| Error::RustError(e.to_string()))?),JsValue::from_str(&js_iso_now())])?.run().await?;

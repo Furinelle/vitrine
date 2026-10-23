@@ -308,11 +308,16 @@ def main():
     cancel('delete', expected=409)
     assert catalog(cancelled[0]['work_id']) == cancelled
 
-    # Opt-in never guesses an existing incomplete mapping or ignores a newly added one.
+    # Opt-in skips an unmappable publication instead of guessing, and never ignores a newly added one.
     malformed = ingest()
     local_d1(f"UPDATE telegram_publications SET message_ids_json='[101]' WHERE work_id='{malformed[0]['work_id']}'")
     _, invalid_mapping = review(malformed[1])
-    invalid_mapping('prepare', expected=409, allow_missing_telegram=True)
+    invalid_mapping('prepare', expected=409)
+    assert invalid_mapping('prepare', allow_missing_telegram=True)['targets'] == []
+    invalid_mapping('delete')
+    assert catalog(malformed[1]['work_id']) == [i for i in malformed if i != malformed[1]]
+    invalid_mapping('restore', restored=[])
+    assert catalog(malformed[1]['work_id']) == malformed
     added_images = ingest(publication=False)
     _, added = review(added_images[1])
     added('prepare', allow_missing_telegram=True)
