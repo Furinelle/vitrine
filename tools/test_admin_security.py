@@ -310,25 +310,27 @@ def main():
     c, d = [local.ingest(count=1, publication=False)[0] for _ in range(2)]
     put_fingerprints(fingerprint(c, "c" * 64), fingerprint(d, "d" * 64, "aaaaaaaaaaaaaaaa"))
 
-    def embedding(image, axis):
+    def embedding(image, axis, score=1.0):
+        # Unit vector whose cosine with the plain `axis` vector is `score`.
         values = [0.0] * 512
-        values[axis] = 1.0
+        values[axis] = score
+        values[axis + 1] = (1 - score * score) ** 0.5
         return {"r2_key": image["r2_key"], "dim": 512,
                 "embedding": struct.pack("<512f", *values).hex()}
 
     local.request("/api/catalog/clip", {"images": [embedding(b, 1), embedding(replacement, 2),
-                  embedding(c, 0), embedding(d, 0)]}, method="PUT")
+                  embedding(c, 0), embedding(d, 0, 0.98)]}, method="PUT")
     semantic = admin_get()
     before_noop = snapshot()
     repeated = local.request("/api/catalog/clip", {"images": [embedding(b, 1), embedding(replacement, 2),
-                  embedding(c, 0), embedding(d, 0)]}, method="PUT")
+                  embedding(c, 0), embedding(d, 0, 0.98)]}, method="PUT")
     assert repeated["upserted"] == 4, "No-op CLIP batch acknowledgement changed"
     assert snapshot() == before_noop and before_noop["result_fresh"], "Identical CLIP batch invalidated cache"
     assert review_pair_present(semantic, c, d)
-    assert not pair_present(semantic, c, d), "High CLIP score entered automatic cleanup"
+    assert not pair_present(semantic, c, d), "A sub-duplicate CLIP score entered automatic cleanup"
     assert all(image["kind"] != "dup" for group in semantic["groups"] for image in group["items"])
 
-    # The vectors remain identical: a solid-color flag must override their CLIP
+    # The vectors remain similar: a solid-color flag must override their CLIP
     # score, including legacy payloads falsely marked as the current generation.
     put_fingerprints({**fingerprint(c, "c" * 64), "solid_color": True})
     filtered = admin_get(refresh=False)

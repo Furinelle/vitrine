@@ -14,7 +14,6 @@ export interface IngestMeta {
   author_name?: string;
   author_url?: string;
   tags?: string[];
-  is_r18?: boolean;
   origin?: string;
 }
 
@@ -26,7 +25,6 @@ export interface WorkRow {
   title: string;
   author_name: string;
   author_url: string;
-  is_r18: number;
   page_count: number;
   origin: string;
   created_at: string;

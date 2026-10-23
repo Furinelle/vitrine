@@ -34,7 +34,7 @@ for (const width of [160, 640, 1280]) {
   const response = await get(path, { Accept: "image/webp" });
   assert.equal(response.status, 200);
   assert.ok(response.headers.get("cf-resized"), "Resize silently fell back to the original");
-  assert.equal(response.headers.get("cache-control"), "private, no-cache");
+  assert.equal(response.headers.get("cache-control"), "private, max-age=3600");
   const bytes = Buffer.from(await response.arrayBuffer());
   const metadata = await sharp(bytes).metadata();
   assert.equal(metadata.format, "webp");

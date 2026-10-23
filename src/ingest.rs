@@ -116,7 +116,6 @@ pub struct IngestMetaRaw {
     pub author_name: Option<Value>,
     pub author_url: Option<Value>,
     pub tags: Option<Value>,
-    pub is_r18: Option<Value>,
     pub origin: Option<Value>,
     pub telegram_publication: Option<Value>,
 }
@@ -155,7 +154,6 @@ pub struct ValidatedMeta {
     pub author_name: String,
     pub author_url: String,
     pub tags: Vec<String>,
-    pub is_r18: bool,
     pub origin: String,
     pub telegram_publication: Option<ValidatedPublication>,
 }
@@ -194,7 +192,6 @@ impl MetaError {
                 "author_name" => "invalid author_name",
                 "author_url" => "invalid author_url",
                 "tags" => "invalid tags",
-                "is_r18" => "invalid is_r18",
                 "origin" => "invalid origin",
                 _ => "invalid meta field",
             },
@@ -257,7 +254,6 @@ pub fn validate_meta(raw: IngestMetaRaw) -> std::result::Result<ValidatedMeta, M
         MAX_ORIGIN_LEN,
         "origin",
     )?;
-    let is_r18 = opt_bool(raw.is_r18, "is_r18")?.unwrap_or(false);
     let tags = opt_tags(raw.tags)?;
     let wid = work_id(&source, &source_id);
     let telegram_publication = validate_telegram_publication(&wid, raw.telegram_publication)?;
@@ -270,7 +266,6 @@ pub fn validate_meta(raw: IngestMetaRaw) -> std::result::Result<ValidatedMeta, M
         author_name,
         author_url,
         tags,
-        is_r18,
         origin,
         telegram_publication,
     })
@@ -368,21 +363,6 @@ fn opt_string(
     }
 }
 
-fn opt_bool(v: Option<Value>, field: &'static str) -> std::result::Result<Option<bool>, MetaError> {
-    match v {
-        None | Some(Value::Null) => Ok(None),
-        Some(Value::Bool(b)) => Ok(Some(b)),
-        Some(Value::Number(n)) => {
-            if let Some(i) = n.as_i64() {
-                Ok(Some(i != 0))
-            } else {
-                Err(MetaError::InvalidField(field))
-            }
-        }
-        Some(_) => Err(MetaError::InvalidField(field)),
-    }
-}
-
 fn opt_tags(v: Option<Value>) -> std::result::Result<Vec<String>, MetaError> {
     match v {
         None | Some(Value::Null) => Ok(Vec::new()),
@@ -448,7 +428,8 @@ pub fn compute_fingerprint(meta: &ValidatedMeta, file_sha256s: &[String]) -> Str
         meta.title.as_str(),
         meta.author_name.as_str(),
         meta.author_url.as_str(),
-        if meta.is_r18 { "1" } else { "0" },
+        // Former is_r18 slot; kept so existing idempotency fingerprints still match.
+        "0",
         meta.origin.as_str(),
     ] {
         hasher.update(part.as_bytes());
@@ -1602,14 +1583,13 @@ async fn commit_d1_batch(
             r#"
             INSERT INTO works (
               id, source, source_id, source_url, title, author_name, author_url,
-              is_r18, page_count, origin, created_at, deleted_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)
+              page_count, origin, created_at, deleted_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)
             ON CONFLICT(id) DO UPDATE SET
               source_url=excluded.source_url,
               title=excluded.title,
               author_name=excluded.author_name,
               author_url=excluded.author_url,
-              is_r18=excluded.is_r18,
               page_count=excluded.page_count,
               origin=excluded.origin,
               review_version=works.review_version+1,
@@ -1626,7 +1606,6 @@ async fn commit_d1_batch(
             JsValue::from_str(&meta.title),
             JsValue::from_str(&meta.author_name),
             JsValue::from_str(&meta.author_url),
-            JsValue::from_f64(if meta.is_r18 { 1.0 } else { 0.0 }),
             JsValue::from_f64(prepared.len() as f64),
             JsValue::from_str(&meta.origin),
             JsValue::from_str(now),
@@ -1897,7 +1876,7 @@ mod tests {
         assert_eq!(err, MetaError::MissingSourceId);
 
         let ok = validate_meta_json(
-            r##"{"source":"Pixiv","source_id":"123","tags":["#foo bar","foo_bar"],"is_r18":false}"##,
+            r##"{"source":"Pixiv","source_id":"123","tags":["#foo bar","foo_bar"],"is_r18":true}"##,
         )
         .unwrap();
         assert_eq!(ok.source, "pixiv");
@@ -1957,7 +1936,6 @@ mod tests {
             author_name: "a".into(),
             author_url: "".into(),
             tags: vec!["tag".into()],
-            is_r18: false,
             origin: "hanabi".into(),
             telegram_publication: None,
         };

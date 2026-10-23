@@ -61,7 +61,7 @@ fn candidates_sql(term_count: usize) -> String {
          JOIN works w ON w.id = i.work_id \
          LEFT JOIN image_fingerprints f ON f.r2_key = i.r2_key \
          LEFT JOIN image_curation c ON c.collection = ? AND c.r2_key = i.r2_key \
-         WHERE w.deleted_at IS NULL AND w.is_r18 = 0 AND EXISTS ( \
+         WHERE w.deleted_at IS NULL AND EXISTS ( \
            SELECT 1 FROM work_tags wt LEFT JOIN tag_items t ON t.name = wt.tag \
            WHERE wt.work_id = w.id AND ({matches})) \
          ORDER BY w.created_at DESC, w.id, i.page_index"
@@ -73,7 +73,7 @@ const KEPT_SQL: &str =
      w.source, w.source_url, w.created_at, f.width, f.height \
      FROM image_curation c JOIN images i ON i.r2_key = c.r2_key JOIN works w ON w.id = i.work_id \
      LEFT JOIN image_fingerprints f ON f.r2_key = i.r2_key \
-     WHERE c.collection = ? AND c.verdict = 'keep' AND w.deleted_at IS NULL AND w.is_r18 = 0 \
+     WHERE c.collection = ? AND c.verdict = 'keep' AND w.deleted_at IS NULL \
      ORDER BY w.created_at DESC, w.id, i.page_index";
 
 fn page(row: &ImageRow) -> Value {
@@ -237,7 +237,7 @@ mod tests {
     fn candidates_sql_binds_three_names_per_term() {
         let sql = candidates_sql(4);
         assert_eq!(sql.matches('?').count(), 1 + 4 * 3);
-        assert!(sql.contains("w.is_r18 = 0") && sql.contains("w.deleted_at IS NULL"));
+        assert!(sql.contains("w.deleted_at IS NULL"));
     }
 
     #[test]

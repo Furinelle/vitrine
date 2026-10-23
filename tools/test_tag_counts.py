@@ -25,8 +25,8 @@ def ingest(db, work_id, tags):
     """Same statement order as ingest.rs: upsert work, replace tags."""
     db.execute(
         """INSERT INTO works (id, source, source_id, source_url, title, author_name, author_url,
-             is_r18, page_count, origin, created_at, deleted_at)
-           VALUES (?, 'x', ?, '', '', '', '', 0, 1, 'test', '2026-10-16', NULL)
+             page_count, origin, created_at, deleted_at)
+           VALUES (?, 'x', ?, '', '', '', '', 1, 'test', '2026-10-16', NULL)
            ON CONFLICT(id) DO UPDATE SET review_version=works.review_version+1,
              deleted_at=CASE WHEN works.deleted_at IS NOT NULL
                AND EXISTS(SELECT 1 FROM images WHERE work_id=works.id)

@@ -28,8 +28,7 @@ def main():
     furina = local.ingest(count=3, publication=False, meta_overrides={"tags": ["芙宁娜", tag]})
     by_alias = local.ingest(count=1, publication=False, meta_overrides={"tags": [f"Furina-{tag}"]})
     other = local.ingest(count=1, publication=False, meta_overrides={"tags": [f"other-{tag}"]})
-    r18 = local.ingest(count=1, publication=False, meta_overrides={"tags": ["芙宁娜"], "is_r18": True})
-    ours = {images[0]["work_id"] for images in (furina, by_alias, other, r18)}
+    ours = {images[0]["work_id"] for images in (furina, by_alias, other)}
 
     def candidates():
         return {i["r2_key"]: i for i in admin("/api/admin/curation?collection=furina")["images"] if i["work"]["id"] in ours}
@@ -48,7 +47,7 @@ def main():
     decide([], "keep", 400)
     decide(furina[:1], "keep", 404, collection="nobody")
 
-    # Candidates: every page of tagged works (name or alias match), never R18 or untagged works.
+    # Candidates: every page of tagged works (name or alias match), never untagged works.
     listed = candidates()
     assert set(listed) == {i["r2_key"] for i in furina + by_alias}, listed.keys()
     assert all(i["verdict"] is None for i in listed.values())

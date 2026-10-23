@@ -598,7 +598,6 @@ struct WorkOut {
     title: String,
     author_name: String,
     author_url: String,
-    is_r18: bool,
     page_count: i64,
     created_at: String,
     cover_url: Option<String>,
@@ -733,7 +732,11 @@ fn month_range(month: &str) -> Option<(String, String)> {
         let (py, pm) = if m == 1 { (y - 1, 12) } else { (y, m - 1) };
         format!("{py:04}-{pm:02}-{:02}T16:00:00.000Z", days(py, pm))
     };
-    let (ny, nm) = if month_number == 12 { (year + 1, 1) } else { (year, month_number + 1) };
+    let (ny, nm) = if month_number == 12 {
+        (year + 1, 1)
+    } else {
+        (year, month_number + 1)
+    };
     Some((start(year, month_number), start(ny, nm)))
 }
 
@@ -746,21 +749,31 @@ struct WorkFilter {
     values: Vec<JsValue>,
 }
 
-async fn work_filter(url: &Url, env: &Env, extra: &[(&str, &[String])]) -> Result<std::result::Result<WorkFilter, Response>> {
+async fn work_filter(
+    url: &Url,
+    env: &Env,
+    extra: &[(&str, &[String])],
+) -> Result<std::result::Result<WorkFilter, Response>> {
     let tag = query_param(url, "tag");
     let tags = tag_filter(&tag);
     let source = query_param(url, "source").to_lowercase();
     let q = query_param(url, "q");
     let month = query_param(url, "month");
     if q.len() > 512 || tag.len() > 4096 || tags.len() > MAX_FILTER_TAGS || source.len() > 64 {
-        return Ok(Err(json_response(&json!({"ok": false, "error": "query too long"}), 400)?));
+        return Ok(Err(json_response(
+            &json!({"ok": false, "error": "query too long"}),
+            400,
+        )?));
     }
     let range = if month.is_empty() {
         None
     } else if let Some(range) = month_range(&month) {
         Some(range)
     } else {
-        return Ok(Err(json_response(&json!({"ok": false, "error": "invalid month"}), 400)?));
+        return Ok(Err(json_response(
+            &json!({"ok": false, "error": "invalid month"}),
+            400,
+        )?));
     };
     let tags = resolve_tags(env, tags).await?;
 
@@ -795,7 +808,11 @@ async fn work_filter(url: &Url, env: &Env, extra: &[(&str, &[String])]) -> Resul
     Ok(Ok(WorkFilter {
         from_sql: works_from_clause(tags.len()),
         where_sql: format!("WHERE {}", where_parts.join(" AND ")),
-        values: from_binds.iter().chain(binds.iter()).map(|s| JsValue::from_str(s)).collect(),
+        values: from_binds
+            .iter()
+            .chain(binds.iter())
+            .map(|s| JsValue::from_str(s))
+            .collect(),
     }))
 }
 
@@ -805,7 +822,9 @@ async fn handle_list_works(url: &Url, env: &Env) -> Result<Response> {
         return json_response(&json!({"ok": false, "error": "invalid cursor"}), 400);
     };
     let offset = if cursor.is_some() { 0 } else { offset };
-    let cursor_binds: Vec<String> = cursor.map(|(created_at, id)| vec![created_at, id]).unwrap_or_default();
+    let cursor_binds: Vec<String> = cursor
+        .map(|(created_at, id)| vec![created_at, id])
+        .unwrap_or_default();
     let extra: Vec<(&str, &[String])> = if cursor_binds.is_empty() {
         Vec::new()
     } else {
@@ -860,7 +879,6 @@ fn public_work(row: WorkRow) -> WorkOut {
         title: row.title,
         author_name: row.author_name,
         author_url: row.author_url,
-        is_r18: row.is_r18 != 0,
         page_count: row.page_count,
         created_at: row.created_at,
         cover_url: cover_url_from_key(row.cover_key.as_deref()),
@@ -879,7 +897,6 @@ struct WorkRow {
     title: String,
     author_name: String,
     author_url: String,
-    is_r18: i64,
     page_count: i64,
     created_at: String,
     cover_key: Option<String>,
@@ -2406,7 +2423,10 @@ async fn cached_filter_rows<T: serde::de::DeserializeOwned + Serialize>(
     let (rows, source) = if let Some(cached) = cached.filter(|c| c.generation == generation) {
         (cached.rows, "HIT")
     } else {
-        (db.prepare(sql).bind(values)?.all().await?.results::<T>()?, "MISS")
+        (
+            db.prepare(sql).bind(values)?.all().await?.results::<T>()?,
+            "MISS",
+        )
     };
     if similar::current_generation(&db).await? != generation {
         return Ok(None);
@@ -2505,11 +2525,18 @@ async fn handle_list_months(url: &Url, env: &Env) -> Result<Response> {
         urlencoding::encode(&query_param(url, "tag")),
         urlencoding::encode(&query_param(url, "q"))
     );
-    let Some((months, source)) = cached_filter_rows::<MonthRow>(url, env, &kind, &sql, &filter.values).await? else {
-        return json_response(&json!({"ok": false, "error": "catalog changed; retry"}), 409);
+    let Some((months, source)) =
+        cached_filter_rows::<MonthRow>(url, env, &kind, &sql, &filter.values).await?
+    else {
+        return json_response(
+            &json!({"ok": false, "error": "catalog changed; retry"}),
+            409,
+        );
     };
     let mut response = json_response(&json!({"ok": true, "months": months}), 200)?;
-    response.headers_mut().set("X-Catalog-Stats-Cache", source)?;
+    response
+        .headers_mut()
+        .set("X-Catalog-Stats-Cache", source)?;
     Ok(response)
 }
 
@@ -2778,12 +2805,32 @@ mod tests {
     fn month_range_counts_months_in_beijing_time() {
         assert_eq!(
             month_range("2026-10"),
-            Some(("2026-09-30T16:00:00.000Z".into(), "2026-10-31T16:00:00.000Z".into()))
+            Some((
+                "2026-09-30T16:00:00.000Z".into(),
+                "2026-10-31T16:00:00.000Z".into()
+            ))
         );
-        assert_eq!(month_range("2026-01").unwrap().0, "2025-12-31T16:00:00.000Z");
-        assert_eq!(month_range("2024-03").unwrap().0, "2024-02-29T16:00:00.000Z");
-        assert_eq!(month_range("2026-12").unwrap().1, "2026-12-31T16:00:00.000Z");
-        for bad in ["2026-13", "2026-1", "26-10", "2026-00", "abcd-ef", "2026-10-01", "+026-10"] {
+        assert_eq!(
+            month_range("2026-01").unwrap().0,
+            "2025-12-31T16:00:00.000Z"
+        );
+        assert_eq!(
+            month_range("2024-03").unwrap().0,
+            "2024-02-29T16:00:00.000Z"
+        );
+        assert_eq!(
+            month_range("2026-12").unwrap().1,
+            "2026-12-31T16:00:00.000Z"
+        );
+        for bad in [
+            "2026-13",
+            "2026-1",
+            "26-10",
+            "2026-00",
+            "abcd-ef",
+            "2026-10-01",
+            "+026-10",
+        ] {
             assert!(month_range(bad).is_none(), "{bad}");
         }
     }
@@ -2927,7 +2974,6 @@ mod tests {
             title: "t".into(),
             author_name: "a".into(),
             author_url: "".into(),
-            is_r18: false,
             page_count: 1,
             created_at: "2026-01-01T00:00:00Z".into(),
             cover_url: Some("/media/pixiv/1/00.jpg".into()),
@@ -2939,7 +2985,6 @@ mod tests {
         assert_eq!(v["id"], "pixiv:1");
         assert_eq!(v["cover_url"], "/media/pixiv/1/00.jpg");
         assert_eq!(v["tags"][0], "foo");
-        assert_eq!(v["is_r18"], false);
         assert_eq!(v["cover_width"], 1200);
         assert!(v["cover_height"].is_null());
         assert!(v.get("origin").is_none());

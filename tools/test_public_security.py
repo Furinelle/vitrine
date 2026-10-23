@@ -79,7 +79,7 @@ def main():
     for width in (160, 640, 1280):
         _, body, headers = fetch('/media/' + image['r2_key'] + f'?width={width}')
         assert body and headers['Content-Type'].startswith('image/')
-        assert headers['Cache-Control'] == 'private, no-cache'
+        assert headers['Cache-Control'] == 'private, max-age=3600'
     fetch('/media/' + image['r2_key'] + '?width=9999', expected=400)
     _, _, headers = fetch('/media/' + image['r2_key'])
     etag = headers['ETag']

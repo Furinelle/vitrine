@@ -138,14 +138,13 @@ async function handleIngest(request: Request, env: Env): Promise<Response> {
 
   // upsert work
   await env.DB.prepare(
-    `INSERT INTO works (id, source, source_id, source_url, title, author_name, author_url, is_r18, page_count, origin, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `INSERT INTO works (id, source, source_id, source_url, title, author_name, author_url, page_count, origin, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT(id) DO UPDATE SET
        source_url=excluded.source_url,
        title=excluded.title,
        author_name=excluded.author_name,
        author_url=excluded.author_url,
-       is_r18=excluded.is_r18,
        page_count=excluded.page_count,
        origin=excluded.origin`
   )
@@ -157,7 +156,6 @@ async function handleIngest(request: Request, env: Env): Promise<Response> {
       meta.title || "",
       meta.author_name || "",
       meta.author_url || "",
-      meta.is_r18 ? 1 : 0,
       files.length,
       meta.origin || "",
       now
@@ -282,7 +280,6 @@ async function handleListWorks(url: URL, env: Env): Promise<Response> {
     title: row.title,
     author_name: row.author_name,
     author_url: row.author_url,
-    is_r18: !!row.is_r18,
     page_count: row.page_count,
     origin: row.origin,
     created_at: row.created_at,

@@ -105,7 +105,7 @@ def main():
     assert [i['r2_key'] for i in detail] == [i['r2_key'] for i in images]
     assert set(detail[0]) == {'r2_key', 'content_type', 'page_index', 'byte_size'}
     _, original, headers = fetch('/media/' + key, auth=False)
-    assert headers['Cache-Control'] == 'private, no-cache'
+    assert headers['Cache-Control'] == 'private, max-age=3600'
     assert original.startswith(b'\x89PNG')
     fetch('/media/' + key, expected=304, headers={'If-None-Match': headers['ETag']}, auth=False)
     act('delete')

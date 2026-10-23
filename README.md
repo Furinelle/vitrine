@@ -80,7 +80,7 @@ Body: `multipart/form-data`
 
 | 字段 | 说明 |
 |---|---|
-| `meta` | JSON：`source`, `source_id`, `source_url`, `title`, `author_name`, `author_url`, `tags[]`, `is_r18`, `origin` |
+| `meta` | JSON：`source`, `source_id`, `source_url`, `title`, `author_name`, `author_url`, `tags[]`, `origin` |
 | `files` | 一张或多张图片（可重复字段名） |
 
 可带 `Idempotency-Key`；相同 key 与内容重试复用已提交回执，不同内容返回 409。R2 上传完成后，元数据、成功审计及回执在同一 D1 batch 提交。如果提交确认丢失，会补读本次成功审计或现有回执；仅确认成功才返回成功，补读失败仍返回失败且保留原图。D1 错误无法可靠区分回滚与提交后响应丢失，因此失败尝试可能留下未引用的 R2 对象，不会自动清理这些结果不明的对象；调用方应使用原 key 重试。此处使用普通 D1 绑定，按 [D1 文档](https://developers.cloudflare.com/d1/worker-api/d1-database/) 读取 primary，不启用读副本 Sessions。
@@ -150,7 +150,7 @@ Hanabi 拿到 targets 后删除对应频道消息，再调用 `POST /api/catalog
 
 ### 后台 `/admin`
 
-同源管理页：改标题/作者/标签/R18，删/恢复单图，下线整部作品（只写 `works.deleted_at`，不动频道），以及「相似图」按张去重。登录用现有 `INGEST_TOKEN`，Worker 发 HttpOnly cookie。频道删帖另需 `npx wrangler secret put TELEGRAM_BOT_TOKEN`。首次部署须按顺序应用迁移 `0001`–`0017`；已有实例先核对实际迁移状态，保留 D1 备份与回滚方案，再由操作者执行 `npm run db:remote`。
+同源管理页：改标题/作者/标签，删/恢复单图，下线整部作品（只写 `works.deleted_at`，不动频道），以及「相似图」按张去重。登录用现有 `INGEST_TOKEN`，Worker 发 HttpOnly cookie。频道删帖另需 `npx wrangler secret put TELEGRAM_BOT_TOKEN`。首次部署须按顺序应用迁移 `0001`–`0023`；已有实例先核对实际迁移状态，保留 D1 备份与回滚方案，再由操作者执行 `npm run db:remote`。
 
 WAF Managed Challenge 已加在 zone `fontaine.blue`（规则 id `a7940432beeb4799a74e515a9dd1bf4b`）：
 
@@ -169,7 +169,7 @@ Login body：`{ "token": "<INGEST_TOKEN>" }`。只认 cookie，不认 Bearer。�
 
 ### `PATCH /api/admin/works/<URL 编码的 work_id>`
 
-Cookie。可改 `title`、`author_name`、`author_url`、`tags`、`is_r18`。缺省字段不动；`tags` 一旦出现即整表替换。
+Cookie。可改 `title`、`author_name`、`author_url`、`tags`。缺省字段不动；`tags` 一旦出现即整表替换。
 
 ### `POST /api/admin/works/<URL 编码的 work_id>/hide`
 
@@ -244,7 +244,7 @@ npm run build       # release Worker 构建；不部署
 ## 公开访问版本
 
 - 公共页面使用独立 `public/gallery.css`；管理后台继续使用既有 `public/styles.css`，避免公开页重构影响管理布局。
-- 稳定的按行网格、固定图片占位、自动分页、筛选浏览历史、作品与页码分享链接、键盘/触摸切图、深浅外观、失败重试及标签索引。公开页统一展示作品，不展示历史 R18 标签；数据库标记保留。
+- 稳定的按行网格、固定图片占位、自动分页、筛选浏览历史、作品与页码分享链接、键盘/触摸切图、深浅外观、失败重试及标签索引。图库不区分 R18，入库与后台都不再读写该标记（`0023` 已删除 `works.is_r18`）。
 - 前后台共用 theme.css / theme.js。悬浮控件以 WebGL 采样视口内已加载的同源缩略图，沿胶囊边缘折射；未采样文字使用 CSS 背景模糊。无 WebGL 时保留 CSS 材质；减少透明度/高对比时使用实色。图库本身不加模糊、不裁切。
 - 登录按 IP/Cloudflare 机房限制 5 次/分钟，公开列表/详情/标签/来源 API 为 120 次/分钟。该机制并非全局硬配额，不能替代 Cloudflare DDoS 防护。配置绑定必须随 Worker 一起部署。
 - 静态资源与 Worker 响应均提供 CSP、防 iframe、nosniff、Referrer/Permissions Policy 与 HSTS；后台 cookie 使用 HMAC-SHA256、HttpOnly、Secure（HTTPS）、SameSite=Lax。更新后旧会话需要重新登录，入库 Bearer token 不变。

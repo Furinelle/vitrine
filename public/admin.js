@@ -243,9 +243,6 @@ function renderList(works, append) {
     const titleEl = node("strong", "admin-card-title", title);
     titleRow.append(titleEl);
     if (work.deleted_at) titleRow.append(node("span", "status", "已下线"));
-    if (work.is_r18) {
-      titleRow.append(node("em", "r18-badge", "R18"));
-    }
 
     const meta = node("div", "admin-card-meta");
     meta.append(
@@ -369,7 +366,7 @@ function selectSource(sourceVal) {
 
 function editorPayload() {
   return { title: $("edit-title").value, author_name: $("edit-author").value,
-    author_url: $("edit-author-url").value, tags: parseTags($("edit-tags").value), is_r18: $("edit-r18").checked };
+    author_url: $("edit-author-url").value, tags: parseTags($("edit-tags").value) };
 }
 
 function hasUnsavedEdit() {
@@ -419,7 +416,6 @@ function fillEditor(work) {
   $("edit-author").value = work.author_name || "";
   $("edit-author-url").value = work.author_url || "";
   $("edit-tags").value = (work.tags || []).join(", ");
-  $("edit-r18").checked = Boolean(work.is_r18);
   state.savedEdit = JSON.stringify(editorPayload());
   $("edit-status").textContent = work.deleted_at
     ? work.can_restore ? "已下线；元数据和当前图片保留，可恢复公开。" : "图片已被清理，无法在这里恢复。"
@@ -1214,7 +1210,6 @@ $("edit-form")?.addEventListener("submit", async (event) => {
       author_name: data.author_name,
       author_url: data.author_url,
       tags: data.tags,
-      is_r18: data.is_r18,
     };
     Object.assign(work, patch);
     Object.assign(state.works.find((item) => item.id === work.id) || {}, patch);

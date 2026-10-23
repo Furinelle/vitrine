@@ -125,7 +125,6 @@ pub struct WorkPatch {
     pub author_name: Option<String>,
     pub author_url: Option<String>,
     pub tags: Option<Vec<String>>,
-    pub is_r18: Option<bool>,
 }
 
 #[derive(Deserialize)]
@@ -139,7 +138,6 @@ struct WorkEditRow {
     title: String,
     author_name: String,
     author_url: String,
-    is_r18: i64,
 }
 
 #[derive(Deserialize)]
@@ -290,7 +288,6 @@ pub fn parse_work_patch(value: &Value) -> std::result::Result<WorkPatch, &'stati
             ingest::MAX_AUTHOR_URL_LEN,
         )?,
         tags: optional_tags(map.get("tags"))?,
-        is_r18: optional_bool(map.get("is_r18"), "is_r18")?,
     })
 }
 
@@ -317,25 +314,6 @@ fn optional_capped(
             "author_name" => "invalid author_name",
             "author_url" => "invalid author_url",
             _ => "invalid meta field",
-        }),
-    }
-}
-
-fn optional_bool(
-    value: Option<&Value>,
-    field: &'static str,
-) -> std::result::Result<Option<bool>, &'static str> {
-    match value {
-        None | Some(Value::Null) => Ok(None),
-        Some(Value::Bool(b)) => Ok(Some(*b)),
-        Some(Value::Number(n)) => match n.as_i64() {
-            Some(i) => Ok(Some(i != 0)),
-            None => Err("invalid is_r18"),
-        },
-        Some(_) => Err(if field == "is_r18" {
-            "invalid is_r18"
-        } else {
-            "invalid meta field"
         }),
     }
 }
@@ -496,7 +474,7 @@ pub async fn handle_patch(mut req: Request, env: Env, work_id: &str) -> Result<R
     let db = env.d1("DB")?;
     let Some(mut work) = db
         .prepare(
-            "SELECT id, title, author_name, author_url, is_r18 FROM works WHERE id=? AND deleted_at IS NULL",
+            "SELECT id, title, author_name, author_url FROM works WHERE id=? AND deleted_at IS NULL",
         )
         .bind(&[JsValue::from_str(&work_id)])?
         .first::<WorkEditRow>(None)
@@ -513,9 +491,6 @@ pub async fn handle_patch(mut req: Request, env: Env, work_id: &str) -> Result<R
     if let Some(author_url) = patch.author_url {
         work.author_url = author_url;
     }
-    if let Some(is_r18) = patch.is_r18 {
-        work.is_r18 = if is_r18 { 1 } else { 0 };
-    }
 
     let current_tags = db
         .prepare("SELECT tag FROM work_tags WHERE work_id=?")
@@ -531,13 +506,12 @@ pub async fn handle_patch(mut req: Request, env: Env, work_id: &str) -> Result<R
 
     let mut statements = vec![db
         .prepare(
-            "UPDATE works SET title=?,author_name=?,author_url=?,is_r18=? WHERE id=? AND deleted_at IS NULL",
+            "UPDATE works SET title=?,author_name=?,author_url=? WHERE id=? AND deleted_at IS NULL",
         )
         .bind(&[
             JsValue::from_str(&work.title),
             JsValue::from_str(&work.author_name),
             JsValue::from_str(&work.author_url),
-            JsValue::from_f64(work.is_r18 as f64),
             JsValue::from_str(&work.id),
         ])?];
 
@@ -603,7 +577,6 @@ pub async fn handle_patch(mut req: Request, env: Env, work_id: &str) -> Result<R
             "author_name": work.author_name,
             "author_url": work.author_url,
             "tags": tags,
-            "is_r18": work.is_r18 != 0,
         }),
         200,
     )?))
@@ -801,13 +774,11 @@ mod tests {
     fn patch_parser_normalizes_and_caps() {
         let patch = parse_work_patch(&json!({
             "title": "hello",
-            "tags": ["#foo bar", "foo_bar", ""],
-            "is_r18": true
+            "tags": ["#foo bar", "foo_bar", ""]
         }))
         .unwrap();
         assert_eq!(patch.title.as_deref(), Some("hello"));
         assert_eq!(patch.tags, Some(vec!["foo_bar".into()]));
-        assert_eq!(patch.is_r18, Some(true));
         assert!(parse_work_patch(&json!({})).unwrap().title.is_none());
         assert_eq!(
             parse_work_patch(&json!({ "title": "t".repeat(ingest::MAX_TITLE_LEN + 1) }))
@@ -817,10 +788,6 @@ mod tests {
         assert_eq!(
             parse_work_patch(&json!({ "tags": "nope" })).unwrap_err(),
             "invalid tags"
-        );
-        assert_eq!(
-            parse_work_patch(&json!({ "is_r18": "yes" })).unwrap_err(),
-            "invalid is_r18"
         );
         assert_eq!(parse_work_patch(&json!("x")).unwrap_err(), "invalid json");
         assert!(parse_work_patch(&json!({ "tags": [] })).unwrap().tags == Some(vec![]));

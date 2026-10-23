@@ -470,7 +470,7 @@ def apply(run, only, token, fingerprint_bin):
             files.append(file)
             blobs.append(data)
         meta = json.dumps({k: work[k] for k in ("source", "source_id", "source_url", "title", "author_name",
-                                                 "author_url", "origin")} | {"is_r18": bool(work["is_r18"]), "tags": tags},
+                                                 "author_url", "origin")} | {"tags": tags},
                           ensure_ascii=False)
         key = "stitch-" + hashlib.sha256((work_id + "".join(f["sha256"] for f in files)).encode()).hexdigest()[:32]
         prepared = idempotent_api(token, "/api/ingest/prepare", {"meta": meta, "files": files}, key)
