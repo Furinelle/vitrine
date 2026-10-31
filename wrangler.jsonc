@@ -54,6 +54,8 @@
     // S3 endpoint for presigned direct uploads; must name the MEDIA bucket above.
     // R2_ACCESS_KEY_ID / R2_SECRET_ACCESS_KEY are secrets scoped to this bucket.
     "R2_S3_HOST": "162b16d65f8f218eb5c4c4c8bdb9606c.r2.cloudflarestorage.com",
-    "R2_BUCKET_NAME": "vitrine-media"
+    "R2_BUCKET_NAME": "vitrine-media",
+    // Oracle disk holding R2 objects archived by deploy/oracle-cold; same Bearer token as ingest.
+    "COLD_STORE_URL": "https://vitrine-cold.fontaine.blue"
   }
 }

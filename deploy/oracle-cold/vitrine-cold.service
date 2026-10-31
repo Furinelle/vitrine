@@ -1,0 +1,26 @@
+[Unit]
+Description=Serve archived Vitrine originals to the Worker
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+User=ubuntu
+Group=ubuntu
+StateDirectory=vitrine-cold
+StateDirectoryMode=0700
+ExecStart=/usr/bin/python3 /home/ubuntu/vitrine-cold/cold_store.py serve
+Restart=on-failure
+RestartSec=5
+MemoryMax=256M
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+
+[Install]
+WantedBy=multi-user.target

@@ -670,15 +670,21 @@ pub async fn handle_restore(req: Request, env: Env, work_id: &str) -> Result<Res
     }
     let bucket = env.bucket("MEDIA")?;
     for image in &images {
-        let Some(original) = bucket.head(image.r2_key.as_str()).await? else {
+        let original = match bucket.head(image.r2_key.as_str()).await? {
+            Some(object) => Some((
+                object.size(),
+                object
+                    .custom_metadata()?
+                    .remove("sha256")
+                    .unwrap_or_default(),
+            )),
+            None => crate::cold::head(&env, &image.r2_key).await?,
+        };
+        let Some((size, sha256)) = original else {
             return reject(409, "image originals are missing; cannot restore");
         };
-        if (image.byte_size > 0 && original.size() != image.byte_size as u64)
-            || (!image.sha256.is_empty()
-                && original
-                    .custom_metadata()?
-                    .get("sha256")
-                    .is_some_and(|sha| sha != &image.sha256))
+        if (image.byte_size > 0 && size != image.byte_size as u64)
+            || (!image.sha256.is_empty() && !sha256.is_empty() && sha256 != image.sha256)
         {
             return reject(409, "image originals changed; cannot restore");
         }

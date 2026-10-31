@@ -1,0 +1,23 @@
+[Unit]
+Description=Move the earliest Vitrine gallery originals from R2 to local disk above the free-tier mark
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=ubuntu
+Group=ubuntu
+StateDirectory=vitrine-cold
+StateDirectoryMode=0700
+ExecStart=/usr/bin/python3 /home/ubuntu/vitrine-cold/cold_store.py archive
+TimeoutStartSec=2h
+Nice=10
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true

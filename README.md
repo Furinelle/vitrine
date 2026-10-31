@@ -198,6 +198,14 @@ Cookie。只软删除作品并保留图片。已下线返回 `replayed: true`。
 
 可加 `?width=160|640|1280` 读取预设缩略图。原图与缩略图都先检查 D1 在线状态，再用 `private, no-cache` 和 ETag 重验证。浏览器不再直接请求 `/cdn-cgi/image/`；gallery 域名已拦截旧裸变换入口（规则 `e41a69a481324622bd194a9c1eeedd12`），以免旧缓存绕开 Worker。`npm run test:public` 只读验收正式站，包括真实缩图尺寸，避免将返回原图的 200 误认为优化成功。
 
+### R2 冷存（Oracle）
+
+R2 免费存储是每账号 10 GB-month。`deploy/oracle-cold/cold_store.py archive` 每 6 小时在 Oracle 运行一次：桶超过 8 GB 时，按 D1 `images.created_at` 从最早入库的图库原图开始，复制到 Oracle `/var/lib/vitrine-cold/objects/<r2_key>`，核对大小、SHA-256 和单段上传的 MD5 ETag 后，调用 `POST /api/storage/archive` 删除 R2 副本，直到降到 7.5 GB。Worker 删除前会再次确认 R2 ETag 未变、冷存副本大小一致。`review-trash/`、`bench/` 等非图库对象不搬。
+
+`/media/<r2_key>` 在 R2 未命中时向 `COLD_STORE_URL`（Cloudflare Tunnel `vitrine-cold.fontaine.blue` → Oracle `127.0.0.1:8797`）回源，可见性检查、缩略图和缓存头不变。删除备份到 `review-trash/` 及其恢复会在冷存内用硬链接复制；作品恢复的原图校验也会查冷存。冷存接口和 `/api/storage/*` 都用 `INGEST_TOKEN` Bearer 鉴权。永久删除只删 R2，已归档的冷存文件会留在 Oracle 盘上，但 D1 没有对应图片后 `/media` 不再返回它。
+
+部署：`cold_store.py` 放到 `/home/ubuntu/vitrine-cold/`，安装 `vitrine-cold.service`（常驻读服务）、`vitrine-cold-archive.service` 与 `.timer`，以及 `cloudflared-vitrine-cold.service`（配置 `/etc/cloudflared/vitrine-cold.yml`）。离线测试：`python3 deploy/oracle-cold/test_cold_store.py`（读服务部分需要 Linux xattr）。
+
 ## 与 hanabi 的行为
 
 | 操作 | 频道 | 图库 |

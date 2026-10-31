@@ -333,7 +333,7 @@ async fn handle_inner(
             }
         }
         let backup_key = catalog_backup_key(&request.decision_id, &image.r2_key);
-        copy_catalog_object(&env.bucket("MEDIA")?, &image.r2_key, &backup_key).await?;
+        copy_catalog_object(env, &env.bucket("MEDIA")?, &image.r2_key, &backup_key).await?;
         let snapshot = Snapshot {
             image,
             targets,
@@ -501,7 +501,7 @@ async fn handle_inner(
     }
     let bucket = env.bucket("MEDIA")?;
     if bucket.head(&image.r2_key).await?.is_none() {
-        copy_catalog_object(&bucket, &snapshot.backup_key, &image.r2_key).await?;
+        copy_catalog_object(env, &bucket, &snapshot.backup_key, &image.r2_key).await?;
     }
     statements.push(db.prepare("INSERT INTO images(id,work_id,page_index,r2_key,content_type,byte_size,created_at,sha256) VALUES(?,?,?,?,?,?,?,?)")
         .bind(&[JsValue::from_str(&image.id),JsValue::from_str(&image.work_id),JsValue::from_f64(image.page_index as f64),JsValue::from_str(&image.r2_key),JsValue::from_str(&image.content_type),JsValue::from_f64(image.byte_size as f64),JsValue::from_str(&image.created_at),JsValue::from_str(&image.sha256)])?);

@@ -1,4 +1,5 @@
 mod admin;
+mod cold;
 mod curation;
 mod image_review;
 mod ingest;
@@ -240,6 +241,19 @@ async fn handle_request(req: Request, env: Env) -> Result<Response> {
     if let Some(work_id) = path.strip_prefix("/api/works/") {
         if method == Method::Get {
             return Ok(with_cors(handle_work_images(work_id, &env).await?));
+        }
+    }
+
+    if let Some(action) = path.strip_prefix("/api/storage/") {
+        if let Some(response) = require_catalog_auth(&req, &env)? {
+            return Ok(response);
+        }
+        match (action, &method) {
+            ("objects", Method::Get) => return cold::handle_objects(&url, &env).await,
+            ("object", Method::Get) => return cold::handle_object(&url, &env).await,
+            ("images", Method::Get) => return cold::handle_images(&url, &env).await,
+            ("archive", Method::Post) => return cold::handle_archive(req, &env).await,
+            _ => {}
         }
     }
 
@@ -1473,12 +1487,16 @@ fn catalog_backup_key(decision_id: &str, original: &str) -> String {
     format!("review-trash/{safe_decision}/{original}")
 }
 
-async fn copy_catalog_object(bucket: &Bucket, original: &str, backup: &str) -> Result<()> {
-    let object = bucket
-        .get(original)
-        .execute()
-        .await?
-        .ok_or_else(|| Error::RustError(format!("R2 object not found: {original}")))?;
+async fn copy_catalog_object(
+    env: &Env,
+    bucket: &Bucket,
+    original: &str,
+    backup: &str,
+) -> Result<()> {
+    let Some(object) = bucket.get(original).execute().await? else {
+        // Archived originals are copied within the cold store.
+        return cold::copy(env, original, backup).await;
+    };
     let http_metadata = object.http_metadata();
     let custom_metadata = object.custom_metadata()?;
     let body = object
@@ -1580,7 +1598,7 @@ async fn handle_catalog_prune(mut req: Request, env: &Env) -> Result<Response> {
         .map(|row| catalog_backup_key(&request.decision_id, &row.r2_key))
         .collect();
     for (row, backup) in rows.iter().zip(&backup_keys) {
-        copy_catalog_object(&bucket, &row.r2_key, backup).await?;
+        copy_catalog_object(env, &bucket, &row.r2_key, backup).await?;
     }
 
     let now = js_iso_now();
@@ -1942,7 +1960,7 @@ async fn handle_catalog_work_prune(mut req: Request, env: &Env) -> Result<Respon
         .map(|row| catalog_backup_key(&request.decision_id, &row.r2_key))
         .collect();
     for (row, backup) in images.iter().zip(&backup_keys) {
-        copy_catalog_object(&bucket, &row.r2_key, backup).await?;
+        copy_catalog_object(env, &bucket, &row.r2_key, backup).await?;
     }
 
     let now = js_iso_now();
@@ -2159,7 +2177,7 @@ async fn handle_catalog_retract(mut req: Request, env: &Env) -> Result<Response>
     let mut copied: Vec<(&CatalogPruneImageRow, String)> = Vec::new();
     for row in &images {
         let backup = catalog_backup_key(&request.decision_id, &row.r2_key);
-        match copy_catalog_object(&bucket, &row.r2_key, &backup).await {
+        match copy_catalog_object(env, &bucket, &row.r2_key, &backup).await {
             Ok(()) => copied.push((row, backup)),
             Err(error) if is_missing_r2_object(&error) => {}
             Err(error) => return Err(error),
@@ -2711,16 +2729,32 @@ async fn handle_media(key: &str, req: &Request, env: &Env) -> Result<Response> {
     }
 
     let bucket = env.bucket("MEDIA")?;
-    let Some(obj) = bucket.get(decoded.as_ref()).execute().await? else {
-        return Response::error("not found", 404);
+    let (response_body, meta, etag) = match bucket.get(decoded.as_ref()).execute().await? {
+        Some(obj) => {
+            let body = obj
+                .body()
+                .ok_or_else(|| Error::RustError("empty object body".into()))?;
+            (body.response_body()?, obj.http_metadata(), obj.http_etag())
+        }
+        None => {
+            // Archived to the Oracle cold store; HEAD avoids pulling the bytes.
+            let method = if req.method() == Method::Head {
+                Method::Head
+            } else {
+                Method::Get
+            };
+            let Some(cold) = cold::get(env, &decoded, method).await? else {
+                return Response::error("not found", 404);
+            };
+            let meta = HttpMetadata {
+                content_type: cold.headers().get("Content-Type")?,
+                ..HttpMetadata::default()
+            };
+            let etag = cold.headers().get("ETag")?.unwrap_or_default();
+            (cold.into_parts().1, meta, etag)
+        }
     };
 
-    let body = obj
-        .body()
-        .ok_or_else(|| Error::RustError("empty object body".into()))?;
-    let response_body = body.response_body()?;
-
-    let meta = obj.http_metadata();
     let Ok(content_type) = ingest::normalize_allowed_image_mime(
         meta.content_type.as_deref().unwrap_or_default(),
         &decoded,
@@ -2733,7 +2767,7 @@ async fn handle_media(key: &str, req: &Request, env: &Env) -> Result<Response> {
         meta.content_disposition.as_deref(),
         meta.content_encoding.as_deref(),
         meta.cache_control.as_deref(),
-        &obj.http_etag(),
+        &etag,
     );
 
     let headers = Headers::new();
@@ -2755,12 +2789,7 @@ async fn handle_media(key: &str, req: &Request, env: &Env) -> Result<Response> {
         headers.set("Cache-Control", RESIZER_MEDIA_CACHE)?;
     }
 
-    if !private
-        && media_not_modified(
-            req.headers().get("If-None-Match")?.as_deref(),
-            &obj.http_etag(),
-        )
-    {
+    if !private && media_not_modified(req.headers().get("If-None-Match")?.as_deref(), &etag) {
         return Ok(Response::empty()?.with_status(304).with_headers(headers));
     }
 

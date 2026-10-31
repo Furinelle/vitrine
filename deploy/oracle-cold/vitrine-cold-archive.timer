@@ -1,0 +1,11 @@
+[Unit]
+Description=Keep the Vitrine R2 bucket under the free-tier mark
+
+[Timer]
+OnCalendar=*-*-* 00/6:30:00 UTC
+Persistent=true
+RandomizedDelaySec=5min
+Unit=vitrine-cold-archive.service
+
+[Install]
+WantedBy=timers.target
