@@ -772,22 +772,6 @@ pub fn cluster_clip(
     groups
 }
 
-pub fn reject_empty_groups(groups: &[SimilarGroup], delete_keys: &[String]) -> bool {
-    let delete: std::collections::HashSet<&str> = delete_keys.iter().map(String::as_str).collect();
-    groups.iter().any(|group| {
-        let touches = group
-            .items
-            .iter()
-            .any(|item| delete.contains(item.r2_key.as_str()));
-        let remaining = group
-            .items
-            .iter()
-            .filter(|item| !delete.contains(item.r2_key.as_str()))
-            .count();
-        touches && remaining == 0
-    })
-}
-
 fn reject(status: u16, error: &str) -> Result<Response> {
     Ok(with_cors(json_response(
         &json!({ "ok": false, "error": error }),
@@ -1683,9 +1667,6 @@ pub async fn handle_delete(mut req: Request, env: Env) -> Result<Response> {
             });
         }
     }
-    if reject_empty_groups(&guarded, &keys) {
-        return reject(400, "keep at least one image in each group");
-    }
     let mut keeper_keys: Vec<String> = body
         .items
         .iter()
@@ -1745,6 +1726,8 @@ pub async fn handle_delete(mut req: Request, env: Env) -> Result<Response> {
                 );
             }
         }
+        // A group deleted in full has no keeper to guard; partial deletes still need one alive.
+        required_groups.retain(|group| !group.is_empty());
         let survivors: Vec<Vec<_>> = required_groups
             .iter()
             .map(|group| {
@@ -2629,47 +2612,6 @@ mod tests {
         assert_eq!(groups[0].items[0].r2_key, "high");
         assert!(groups[0].items[0].keep);
         assert!(!groups[0].items[1].keep);
-    }
-
-    #[test]
-    fn reject_deleting_entire_group() {
-        let group = SimilarGroup {
-            id: "g".into(),
-            items: vec![
-                SimilarItem {
-                    r2_key: "a".into(),
-                    work_id: "pixiv:1".into(),
-                    source: "pixiv".into(),
-                    title: String::new(),
-                    width: 1,
-                    height: 1,
-                    bytes: 1,
-                    kind: "strict".into(),
-                    distance: 0,
-                    keep: true,
-                },
-                SimilarItem {
-                    r2_key: "b".into(),
-                    work_id: "pixiv:2".into(),
-                    source: "pixiv".into(),
-                    title: String::new(),
-                    width: 1,
-                    height: 1,
-                    bytes: 1,
-                    kind: "strict".into(),
-                    distance: 0,
-                    keep: false,
-                },
-            ],
-        };
-        assert!(reject_empty_groups(
-            std::slice::from_ref(&group),
-            &["a".into(), "b".into()]
-        ));
-        assert!(!reject_empty_groups(
-            std::slice::from_ref(&group),
-            &["b".into()]
-        ));
     }
 
     #[test]

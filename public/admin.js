@@ -695,7 +695,7 @@ function renderSimilar(groups, preserveSelection = false) {
     const headLeft = node("div", "");
     headLeft.append(
       node("p", "similar-group-number", `相似组 ${index + 1}`),
-      node("h3", "similar-group-title", `${group.items.length} 张图片 · 至少保留一张`),
+      node("h3", "similar-group-title", `${group.items.length} 张图片`),
     );
     head.append(headLeft);
     box.append(head);
@@ -814,11 +814,8 @@ async function deleteGroup(group, box) {
     $("similar-status").textContent = "这组没有勾选要删除的图片。";
     return;
   }
-  if (!keepers.length) {
-    $("similar-status").textContent = "请至少保留这组中的一张图片。";
-    return;
-  }
-  if (!confirm(`确定删除这组中勾选的 ${items.length} 张图片？对应作品图片将下线并清理。`)) return;
+  const scope = keepers.length ? `这组中勾选的 ${items.length} 张图片` : `整组 ${items.length} 张图片（不保留任何一张）`;
+  if (!confirm(`确定删除${scope}？对应作品图片将下线并清理。`)) return;
   similarHidden.add(group.id);
   for (const item of items) similarGroupOf.set(item.r2_key, group.id);
   hideGroup(group.id, box);
