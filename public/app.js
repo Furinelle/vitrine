@@ -21,7 +21,7 @@ function locationFilters() {
 // four medium and ten small pictures. Chapters above it are the games (work tags), then their characters.
 const PAGE_SIZE = 15;
 const state = {
-  ...locationFilters(), works: [], total: null, loading: false,
+  ...locationFilters(), works: [], months: [], total: null, loading: false,
   request: null, sources: [], tags: [], tagError: "", viewerRequest: null, viewing: null, images: [], imageIndex: 0,
 };
 function node(tag, className, text) {
@@ -35,6 +35,11 @@ function button(className, text, action) {
   element.type = "button";
   element.addEventListener("click", action);
   return element;
+}
+// X posts carry their hashtags in the text; the tags are listed on their own, so titles drop them.
+function workTitle(work) {
+  const title = (work.title || "").replace(/[#＃][^\s#＃]+/g, " ").replace(/\s+/g, " ").trim();
+  return title || (work.author_name ? `${work.author_name} 的作品` : work.source_id || "");
 }
 function safeLink(value) {
   try {
@@ -54,7 +59,7 @@ function coverUrl(value) {
 }
 function thumbUrl(value, width = 640) {
   const original = coverUrl(value);
-  if (!original || ![160, 640, 1280].includes(width)) return "";
+  if (!original || ![160, 640, 1280, 1920].includes(width)) return "";
   const url = new URL(original);
   url.search = new URLSearchParams({ width });
   return url.href;
@@ -280,9 +285,11 @@ function filterQuery(extra = {}) {
   for (const field of ["source", "tag", "q"]) if (state[field]) query.set(field, state[field]);
   return query;
 }
+// A landscape cover is cropped into a portrait cell by its height, so it needs the wider thumbnail to stay sharp.
+const coverSize = (work, lead) => (lead || work.cover_width > work.cover_height * .9 ? 1280 : 640);
 function hallItem(work, i) {
   const size = i === 0 ? "lead" : i < 5 ? "medium" : "small";
-  const title = work.title || work.source_id;
+  const title = workTitle(work);
   const card = node("article", `hall-item ${size}`);
   card.dataset.workId = work.id;
   card.style.setProperty("--i", String(i));
@@ -305,7 +312,7 @@ function hallItem(work, i) {
   };
   image.onerror = () => art.classList.add("image-broken");
   const original = coverUrl(work.cover_url);
-  if (original) image.src = thumbUrl(original, size === "lead" ? 1280 : 640);
+  if (original) image.src = thumbUrl(original, coverSize(work, i === 0));
   else art.classList.add("image-broken");
   art.append(image, node("span", "image-fallback", "预览暂不可用 · 查看详情"));
   if (work.page_count > 1) art.append(node("span", "image-badge", `${work.page_count} 张`));
@@ -381,7 +388,7 @@ async function showPage(direction = 0) {
     for (const step of [1, -1]) {
       const next = neighbour(step);
       if (next) fetchPage(next).then((page) => {
-        if (step > 0) page.works?.slice(0, 5).forEach((work, i) => { if (coverUrl(work.cover_url)) new Image().src = thumbUrl(coverUrl(work.cover_url), i ? 640 : 1280); });
+        if (step > 0) page.works?.slice(0, 5).forEach((work, i) => { if (coverUrl(work.cover_url)) new Image().src = thumbUrl(coverUrl(work.cover_url), coverSize(work, i === 0)); });
       }, () => {});
     }
   } catch (error) {
@@ -405,17 +412,23 @@ async function loadHall() {
   hallTicket++;
   pageCache.clear();
   renderLoadingHall();
+  // The banner's place is held from the start, so the hall below it does not jump when it fills in.
+  $("featured").hidden = !!(state.source || state.tag || state.q);
   $("empty").hidden = true;
   $("retry").hidden = true;
   $("status").textContent = "正在加载作品…";
   $("status").classList.remove("error");
+  // The page is asked for alongside the totals; showPage picks it up from the cache.
+  fetchPage(state.p).catch(() => {});
   try {
     const data = await getJson(`/api/months?${filterQuery()}`, controller.signal);
     if (state.request !== controller) return;
-    state.total = (data.months || []).reduce((sum, month) => sum + month.cnt, 0);
+    state.months = data.months || [];
+    state.total = state.months.reduce((sum, month) => sum + month.cnt, 0);
     updateCount();
     if (!state.total) {
       $("grid").replaceChildren();
+      $("featured").hidden = true;
       $("status").textContent = "";
       $("empty").hidden = false;
       syncPager();
@@ -430,6 +443,7 @@ async function loadHall() {
     $("status").textContent = `${error.message}。`;
     $("status").classList.add("error");
     $("grid").replaceChildren();
+    $("featured").hidden = true;
     $("retry").hidden = false;
   }
 }
@@ -488,6 +502,17 @@ function syncPager() {
   $("page-list").replaceChildren(...list);
   $("prev-page").disabled = !neighbour(-1);
   $("next-page").disabled = !neighbour(1);
+  // The hall runs newest first, so each collection month starts on a known page: the months jump there.
+  let before = 0;
+  $("month-jump").replaceChildren(...state.months.map((month) => {
+    const option = node("option", "", `${month.month} · ${month.cnt.toLocaleString("zh-CN")} 件`);
+    option.value = String(Math.floor(before / PAGE_SIZE) + 1);
+    // The last month whose first page has been reached, so the month just chosen stays chosen.
+    option.selected = Number(option.value) <= state.p;
+    before += month.cnt;
+    return option;
+  }));
+  $("month-jump").hidden = state.months.length < 2;
   $("pager").hidden = !state.total || pages < 2;
 }
 function showImage(index, updateUrl = true, retry = false) {
@@ -502,15 +527,15 @@ function showImage(index, updateUrl = true, retry = false) {
   if (original) $("lb-original").href = original;
   else $("lb-original").removeAttribute("href");
   $("lb-counter").textContent = `${state.imageIndex + 1} / ${state.images.length}`;
-  $("lb-prev").disabled = state.imageIndex === 0;
-  $("lb-next").disabled = state.imageIndex === state.images.length - 1;
-  $("lb-prev").hidden = $("lb-next").hidden = state.images.length < 2;
+  $("lb-prev").disabled = state.imageIndex === 0 && !besideWork(-1);
+  $("lb-next").disabled = state.imageIndex === state.images.length - 1 && !besideWork(1);
+  $("lb-prev").hidden = $("lb-next").hidden = state.images.length < 2 && !besideWork(-1) && !besideWork(1);
   $("lb-thumbs").querySelectorAll("button").forEach((thumb, i) => {
     thumb.classList.toggle("active", i === state.imageIndex);
     thumb.setAttribute("aria-pressed", String(i === state.imageIndex));
   });
-  $("lb-img").alt = `${state.viewing?.title || state.viewing?.source_id || "作品"} · 第 ${state.imageIndex + 1} 张`;
-  const width = ($("lb-stage").clientWidth - 72) * Math.min(window.devicePixelRatio || 1, 2) <= 640 ? 640 : 1280;
+  $("lb-img").alt = `${$("lb-title").textContent || "作品"} · 第 ${state.imageIndex + 1} 张`;
+  const width = viewerWidth(image);
   const url = original ? thumbUrl(original, width) : "";
   if (retry || state.imageKey !== url) {
     state.imageKey = url;
@@ -574,13 +599,20 @@ function showImage(index, updateUrl = true, retry = false) {
     else full.onerror();
   }
   for (const near of [state.images[state.imageIndex + 1], state.images[state.imageIndex - 1]]) {
-    const nearUrl = near?.r2_key ? thumbUrl(mediaUrl(near.r2_key), width) : "";
+    const nearUrl = near?.r2_key ? thumbUrl(mediaUrl(near.r2_key), viewerWidth(near)) : "";
     if (nearUrl) new Image().src = nearUrl;
   }
   if (updateUrl && state.viewing) history.replaceState(history.state, "", galleryUrl(state.viewing.id, state.imageIndex));
 }
+// The thumbnail the stage can show in full: a tall picture is bound by the stage's height, so it needs fewer pixels.
+function viewerWidth(image) {
+  const stage = $("lb-stage"), wide = stage.clientWidth - 72;
+  const shown = image.width > 0 && image.height > 0 ? Math.min(wide, (stage.clientHeight - 34) * image.width / image.height) : wide;
+  const need = shown * Math.min(window.devicePixelRatio || 1, 2);
+  return need <= 640 ? 640 : need <= 1280 ? 1280 : 1920;
+}
 function showWorkInfo(work) {
-  $("lb-title").textContent = work.title || work.source_id || "正在加载作品…";
+  $("lb-title").textContent = workTitle(work) || "正在加载作品…";
   document.title = `${$("lb-title").textContent} · Vitrine`;
   $("lb-source").textContent = names[work.source] || work.source || "";
   const author = safeLink(work.author_url);
@@ -647,7 +679,7 @@ async function openLightbox(work, cardEl, { push = true, page = 0 } = {}) {
   const controller = new AbortController();
   state.viewerRequest = controller;
   state.viewing = work;
-  state.images = work.cover_url ? [{ cover_url: work.cover_url }] : [];
+  state.images = work.cover_url ? [{ cover_url: work.cover_url, width: work.cover_width, height: work.cover_height }] : [];
   state.imageIndex = 0;
   state.lastCard = cardEl || null;
   const art = cardEl?.style?.getPropertyValue("--art");
@@ -710,6 +742,20 @@ function closeLightbox() {
     dismissLightbox();
   }
 }
+// ← → run through a work's pictures, then on to the work beside it in the hall.
+// shortcut: stops at the ends of the current page; turn the page from here once that is wanted.
+function besideWork(step) {
+  const i = state.works.findIndex((work) => work.id === state.viewing?.id);
+  return i < 0 ? null : state.works[i + step] || null;
+}
+function stepViewer(step) {
+  const index = state.imageIndex + step, next = besideWork(step);
+  if (index >= 0 && index < state.images.length) showImage(index);
+  else if (next) {
+    history.replaceState(history.state, "", galleryUrl(next.id));
+    openLightbox(next, $("grid").querySelector(`[data-work-id="${CSS.escape(next.id)}"]`), { push: false });
+  }
+}
 function syncRoute() {
   state.closing = false;
   const filters = locationFilters();
@@ -750,6 +796,10 @@ $("tag-retry").addEventListener("click", () => { state.tagError = ""; renderTagB
 $("retry").addEventListener("click", () => (state.total ? showPage(0) : loadHall()));
 $("prev-page").addEventListener("click", () => turn(-1));
 $("next-page").addEventListener("click", () => turn(1));
+$("month-jump").addEventListener("change", (event) => {
+  const p = Number(event.target.value);
+  goToPage(p, Math.sign(p - state.p));
+});
 // Arrow keys turn pages when nothing else wants them; a horizontal swipe on the hall does the same.
 document.addEventListener("keydown", (event) => {
   if ($("lightbox").open || event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
@@ -831,11 +881,11 @@ $("lightbox").addEventListener("keydown", (event) => {
   if (event.target.matches("input, select, textarea")) return;
   if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
     event.preventDefault();
-    showImage(state.imageIndex + (event.key === "ArrowLeft" ? -1 : 1));
+    stepViewer(event.key === "ArrowLeft" ? -1 : 1);
   }
 });
-$("lb-prev").addEventListener("click", () => showImage(state.imageIndex - 1));
-$("lb-next").addEventListener("click", () => showImage(state.imageIndex + 1));
+$("lb-prev").addEventListener("click", () => stepViewer(-1));
+$("lb-next").addEventListener("click", () => stepViewer(1));
 $("lb-image-retry").addEventListener("click", () => showImage(state.imageIndex, true, true));
 $("lb-retry").addEventListener("click", () => { if (state.viewing) openLightbox(state.viewing, state.lastCard, { push: false, page: state.imageIndex }); });
 $("lb-share").addEventListener("click", async () => {
@@ -863,7 +913,7 @@ $("lb-img").addEventListener("touchend", (event) => {
   const dx = event.changedTouches[0].clientX - touchStart.x;
   const dy = event.changedTouches[0].clientY - touchStart.y;
   touchStart = null;
-  if (Math.abs(dx) > 60 && Math.abs(dx) > Math.abs(dy) * 1.5) showImage(state.imageIndex + (dx < 0 ? 1 : -1));
+  if (Math.abs(dx) > 60 && Math.abs(dx) > Math.abs(dy) * 1.5) stepViewer(dx < 0 ? 1 : -1);
 }, { passive: true });
 $("lb-img").addEventListener("touchcancel", () => { touchStart = null; });
 $("about-open").addEventListener("click", () => $("about").showModal());
@@ -898,10 +948,15 @@ if (matchMedia("(hover: hover) and (pointer: fine)").matches) {
 addEventListener("resize", placeTabRule);
 // The serif arrives after first layout and widens the tabs; measure the rule again once it has.
 document.fonts?.ready.then(placeTabRule);
-// Featured banner: five recent works, shown only on the unfiltered collection.
+// Featured banner: five works from further back in the collection, shown only when nothing is filtered.
 const featured = { works: [], index: 0, timer: 0 };
 function showFeatured(index) {
   featured.index = (index + featured.works.length) % featured.works.length;
+  // Only the slide on show and the one after it are fetched, so the banner does not crowd the first screen.
+  for (const i of [featured.index, (featured.index + 1) % featured.works.length]) {
+    const image = $("featured-stage").children[i]?.querySelector("img");
+    if (image && !image.src) image.src = image.dataset.src;
+  }
   $("featured-stage").querySelectorAll(".featured-slide").forEach((slide, i) => {
     slide.classList.toggle("active", i === featured.index);
     slide.setAttribute("aria-hidden", String(i !== featured.index));
@@ -972,56 +1027,66 @@ middleObserver?.observe($("featured"));
 tintChrome();
 function rotateFeatured(run) {
   clearInterval(featured.timer);
-  if (run && featured.works.length > 1 && !matchMedia("(prefers-reduced-motion: reduce)").matches) {
+  // Choosing a slide by hand stops the rotation for good: touch has no hover to pause it with.
+  if (run && !featured.manual && featured.works.length > 1 && !matchMedia("(prefers-reduced-motion: reduce)").matches) {
     featured.timer = setInterval(() => showFeatured(featured.index + 1), 7000);
   }
 }
 function renderFeatured() {
-  const visible = !state.source && !state.tag && !state.q;
-  if (visible && !featured.works.length && state.works.length) {
-    const pool = state.works.filter((work) => coverUrl(work.cover_url));
-    // Wide-ish covers crop well into a banner; fall back to anything with a cover.
-    const wide = pool.filter((work) => coverRatio(work.cover_width, work.cover_height) >= .9);
-    featured.works = (wide.length >= 5 ? wide : pool).map((work) => [Math.random(), work])
-      .sort((a, b) => a[0] - b[0]).slice(0, 5).map(([, work]) => work);
-    $("featured-stage").replaceChildren(...featured.works.map((work) => {
-      const title = work.title || work.source_id;
-      const slide = node("a", "featured-slide");
-      slide.href = galleryUrl(work.id);
-      slide.setAttribute("aria-label", `查看 ${title}`);
-      const image = node("img");
-      image.src = thumbUrl(work.cover_url, 1280);
-      image.alt = "";
-      image.decoding = "async";
-      image.onload = () => {
-        slide.dataset.color = artColor(image);
-        if (slide.classList.contains("active")) { $("featured").style.setProperty("--glow", slide.dataset.color); stageColor(); }
-      };
-      const caption = node("div", "featured-caption");
-      caption.append(node("p", "featured-source", names[work.source] || work.source),
-        node("h2", "featured-title", title), node("p", "featured-author", work.author_name || "未署名"));
-      slide.append(image, caption);
-      slide.addEventListener("click", (event) => {
-        if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
-        event.preventDefault();
-        openLightbox(work, slide);
-      });
-      return slide;
-    }));
-    $("featured-picker").replaceChildren(...featured.works.map((work, i) => {
-      const pick = button("featured-pick", undefined, () => { showFeatured(i); rotateFeatured(true); });
-      pick.setAttribute("aria-label", `第 ${i + 1} 幅：${work.title || work.source_id}`);
-      const thumb = node("img");
-      thumb.src = thumbUrl(work.cover_url, 160);
-      thumb.alt = "";
-      pick.append(thumb);
-      return pick;
-    }));
-    showFeatured(0);
+  const visible = !state.source && !state.tag && !state.q && state.total > 0 && (!featured.ready || featured.works.length > 0);
+  $("featured").hidden = !visible;
+  if (visible && !featured.ready && !featured.loading) {
+    featured.loading = true;
+    // Thirty works from a random place past the first page, so the banner does not repeat the hall below it.
+    const offset = state.total > 45 ? PAGE_SIZE + Math.floor(Math.random() * (state.total - 45)) : 0;
+    getJson(`/api/works?limit=30&offset=${offset}`).then((data) => data.works || [], () => state.works).then(fillFeatured);
   }
-  $("featured").hidden = !visible || !featured.works.length;
   stageColor();
-  rotateFeatured(!$("featured").hidden);
+  rotateFeatured(visible);
+}
+function fillFeatured(works) {
+  // Landscape covers fill a banner; nearly square ones crop acceptably; portraits only make up the number.
+  const rank = (work) => { const ratio = coverRatio(work.cover_width, work.cover_height); return ratio >= 1.2 ? 0 : ratio >= .9 ? 1 : 2; };
+  featured.works = works.filter((work) => coverUrl(work.cover_url)).map((work) => [rank(work) + Math.random(), work])
+    .sort((a, b) => a[0] - b[0]).slice(0, 5).map(([, work]) => work);
+  featured.ready = true;
+  const width = Math.min(innerWidth, 1536) * Math.min(window.devicePixelRatio || 1, 2) > 1280 ? 1920 : 1280;
+  $("featured-stage").replaceChildren(...featured.works.map((work, i) => {
+    const title = workTitle(work);
+    const slide = node("a", "featured-slide");
+    slide.href = galleryUrl(work.id);
+    slide.setAttribute("aria-label", `查看 ${title}`);
+    const image = node("img");
+    image.dataset.src = thumbUrl(work.cover_url, width);
+    if (i === 0) image.fetchPriority = "high";
+    image.alt = "";
+    image.decoding = "async";
+    image.onload = () => {
+      slide.dataset.color = artColor(image);
+      if (slide.classList.contains("active")) { $("featured").style.setProperty("--glow", slide.dataset.color); stageColor(); }
+    };
+    const caption = node("div", "featured-caption");
+    caption.append(node("p", "featured-source", names[work.source] || work.source),
+      node("h2", "featured-title", title), node("p", "featured-author", work.author_name || "未署名"));
+    slide.append(image, caption);
+    slide.addEventListener("click", (event) => {
+      if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+      event.preventDefault();
+      openLightbox(work, slide);
+    });
+    return slide;
+  }));
+  $("featured-picker").replaceChildren(...featured.works.map((work, i) => {
+    const pick = button("featured-pick", undefined, () => { featured.manual = true; showFeatured(i); rotateFeatured(false); });
+    pick.setAttribute("aria-label", `第 ${i + 1} 幅：${workTitle(work)}`);
+    const thumb = node("img");
+    thumb.src = thumbUrl(work.cover_url, 160);
+    thumb.alt = "";
+    pick.append(thumb);
+    return pick;
+  }));
+  if (featured.works.length) showFeatured(0);
+  renderFeatured();
 }
 for (const [type, run] of [["pointerenter", false], ["pointerleave", true], ["focusin", false], ["focusout", true]]) {
   $("featured").addEventListener(type, () => rotateFeatured(run && !$("featured").hidden));

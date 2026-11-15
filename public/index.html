@@ -11,11 +11,12 @@
   <meta property="og:url" content="https://gallery.fontaine.blue/" />
   <title>Vitrine · 图库</title>
   <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+  <script src="/theme-init.js"></script>
   <link rel="stylesheet" href="/fonts/noto-serif-sc-5.3.1/font.css" />
   <link rel="stylesheet" href="/theme.css?v=20261022-admin" />
-  <link rel="stylesheet" href="/gallery.css?v=20261022-admin" />
-  <script src="/theme.js?v=20261014-vitrine" defer></script>
-  <script src="/app.js?v=20261022-hotlink" defer></script>
+  <link rel="stylesheet" href="/gallery.css?v=20261115-hall" />
+  <script src="/theme.js?v=20261115-hall" defer></script>
+  <script src="/app.js?v=20261115-hall" defer></script>
 </head>
 <body id="top">
   <div class="backdrop" aria-hidden="true"><span class="on"></span><span></span></div>
@@ -56,7 +57,7 @@
     <nav id="cast" class="chapters cast" aria-label="角色" hidden></nav>
     <section id="grid" class="hall" aria-label="收藏作品" aria-busy="true"></section>
     <div id="empty" class="empty-state" hidden><svg aria-hidden="true" viewBox="0 0 24 24"><circle cx="10.8" cy="10.8" r="6.8"/><path d="m16 16 4.5 4.5"/></svg><h2>没有匹配的作品</h2><p>试试其他关键词，或清除筛选。</p><button id="empty-reset" class="primary-button">查看全部作品</button></div>
-    <nav id="pager" class="pager" aria-label="翻页" hidden><button id="prev-page" class="pager-turn" type="button"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="M15 5l-7 7 7 7"/></svg><span>上一页</span></button><ol id="page-list" class="page-list"></ol><button id="next-page" class="pager-turn" type="button"><span>下一页</span><svg aria-hidden="true" viewBox="0 0 24 24"><path d="M9 5l7 7-7 7"/></svg></button></nav>
+    <nav id="pager" class="pager" aria-label="翻页" hidden><button id="prev-page" class="pager-turn" type="button"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="M15 5l-7 7 7 7"/></svg><span>上一页</span></button><ol id="page-list" class="page-list"></ol><button id="next-page" class="pager-turn" type="button"><span>下一页</span><svg aria-hidden="true" viewBox="0 0 24 24"><path d="M9 5l7 7-7 7"/></svg></button><select id="month-jump" class="month-jump" aria-label="跳到收藏月份" hidden></select></nav>
     <div class="pagination"><p id="status" class="status" role="status" aria-live="polite">正在加载作品…</p><button id="retry" class="more-button" hidden>重新加载</button></div>
     <footer class="page-footer"><div><a class="footer-brand" href="/">Vitrine.</a><p class="footer-note">一些喜欢的画，慢慢看。</p><p>图片版权归原作者。作者与原帖见作品详情。</p></div><div class="footer-links"><button id="about-open" class="text-button">关于</button><a href="#top">回到顶部</a></div></footer>
     <noscript><p class="status">请启用 JavaScript 以搜索和浏览作品。</p></noscript>

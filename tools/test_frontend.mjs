@@ -157,7 +157,7 @@ console.log('PASS: tag index groups by kind and work, follows the browser langua
   const filtered = [];
   const hall = vm.createContext({
     $, URLSearchParams, zh: true, names: {}, location: { origin: 'https://gallery.example' },
-    state: { source: '', tag: '原神', q: '', p: 1, total: 31, tags: [] },
+    state: { source: '', tag: '原神', q: '', p: 1, total: 31, tags: [], months: [] },
     document: { createElement: (tag) => Object.assign(element(), { tagName: tag }) },
     middleObserver: null, stage: { cards: new Set() }, galleryUrl: (id) => `/?work=${id}`,
     applyFilters: (changes) => filtered.push(changes), tagName: (name) => name, tagInfo: new Map(),
@@ -178,6 +178,12 @@ console.log('PASS: tag index groups by kind and work, follows the browser langua
   assert.deepEqual(labels, ['1', '…', '8', '9', '10', '11', '12', '…', '20']);
   vm.runInContext('state.total = 15; state.p = 1; syncPager()', hall);
   assert.equal($('pager').hidden, true, 'a single page needs no pager');
+  // Months jump to the page they start on; the last one whose first page has been reached is selected.
+  vm.runInContext('state.total = 40; state.p = 1; state.months = [{ month: "2026-11", cnt: 20 }, { month: "2026-10", cnt: 20 }]; syncPager()', hall);
+  assert.deepEqual($('month-jump').children.map((o) => [o.value, o.selected]), [['1', true], ['2', false]]);
+  vm.runInContext('state.p = 2; syncPager()', hall);
+  assert.deepEqual($('month-jump').children.map((o) => o.selected), [true, true], 'the second month starts on page 2');
+  vm.runInContext('state.months = []; state.total = 15 * 20', hall);
   // Chapters: All, then games by count with the rest behind "more"; a character opens its game's cast.
   const tags = [
     ...Array.from({ length: 10 }, (_, i) => ({ name: `game${i}`, cnt: 100 - i, kind: 'work' })),
@@ -214,8 +220,13 @@ console.log('PASS: tag index groups by kind and work, follows the browser langua
   assert.equal(img(items[0]).fetchPriority, 'high');
   assert.equal(img(items[4]).loading, 'eager');
   assert.equal(img(items[5]).loading, 'lazy');
+  const wide = hall.hallItem({ id: 'x:w', source: 'x', page_count: 1, cover_url: '/media/x/w.jpg', cover_width: 1600, cover_height: 900 }, 6);
+  assert.match(img(wide).src, /width=1280/, 'a landscape cover in a portrait cell asks for the wider thumbnail');
+  assert.equal(vm.runInContext("workTitle({ title: '夜の庭 #原神\\n＃Furina', author_name: 'Miko' })", hall), '夜の庭');
+  assert.equal(vm.runInContext("workTitle({ title: '#原神 #Furina', author_name: 'Miko' })", hall), 'Miko 的作品', 'a title that was only hashtags falls back to the author');
+  assert.equal(vm.runInContext("workTitle({ id: 'x:1' })", hall), '');
 }
-console.log('PASS: hall pages of fifteen, numbered pager with gaps, chapters by game with a cast row, lead/medium/small spread');
+console.log('PASS: hall pages of fifteen, numbered pager with gaps and month jumps, chapters by game with a cast row, lead/medium/small spread, hashtag-free titles');
 
 
 const adminSource = readFileSync(new URL('../public/admin.js', import.meta.url), 'utf8');
@@ -354,7 +365,7 @@ function viewerElement(id) {
   });
   return viewerElements.get(id);
 }
-const viewerState = { source: '', tag: '', q: '', month: '', p: 1, months: [], viewerRequest: null };
+const viewerState = { source: '', tag: '', q: '', month: '', p: 1, months: [], works: [], viewerRequest: null };
 const viewerRoutes = [];
 const viewerHistory = {
   state: null,
@@ -390,9 +401,11 @@ assert.equal(viewerRoutes.at(-1).includes('work='), false);
 console.log('PASS: closing during a detail request cannot rewrite the new filter URL');
 
 
-// Shared theme boots before either page script, without their $ helper.
+// Shared theme boots before either page script, without their $ helper: theme-init.js picks the scheme
+// ahead of first paint (a saved choice, else the system's) and theme.js wires the toggle to it.
 const themeSource = readFileSync(new URL('../public/theme.js', import.meta.url), 'utf8');
-for (const saved of [null, 'dark', 'light', 'invalid', 'blocked']) for (const withViewport of [false, true]) {
+const themeInitSource = readFileSync(new URL('../public/theme-init.js', import.meta.url), 'utf8');
+for (const saved of [null, 'dark', 'light', 'invalid', 'blocked']) for (const systemDark of [false, true]) for (const withViewport of [false, true]) {
   const root = { style: {} }, meta = {}, toggle = { label: '', click: null };
   const input = { addEventListener() {} };
   const toggleElement = {
@@ -404,13 +417,16 @@ for (const saved of [null, 'dark', 'light', 'invalid', 'blocked']) for (const wi
     document: { documentElement: root, querySelector: () => meta,
       getElementById: id => id === 'theme-toggle' ? toggleElement : ['q', 'back-to-top'].includes(id) ? input : null },
     localStorage: { getItem() { if (saved === 'blocked') throw new Error('blocked'); return saved; }, setItem() {} },
+    matchMedia: () => ({ matches: systemDark }),
   });
+  vm.runInContext(themeInitSource, boot);
   vm.runInContext(themeSource, boot);
-  assert.equal(root.style.colorScheme, saved === 'dark' ? 'dark' : 'light');
+  const expected = saved === 'dark' || saved === 'light' ? saved : systemDark ? 'dark' : 'light';
+  assert.equal(root.style.colorScheme, expected);
   toggle.click();
-  assert.equal(root.style.colorScheme, saved === 'dark' ? 'light' : 'dark');
+  assert.equal(root.style.colorScheme, expected === 'dark' ? 'light' : 'dark');
 }
-console.log('PASS: shared theme boots independently, honors saved choices, toggles and tolerates blocked storage');
+console.log('PASS: shared theme boots independently, honors saved choices over the system scheme, toggles and tolerates blocked storage');
 
 // Floating controls keep draft text while the software keyboard pans the viewport.
 const scrollEvents = new Map(), viewportEvents = new Map(), scrollCalls = [];

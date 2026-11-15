@@ -368,6 +368,16 @@ async fn handle_request(req: Request, env: Env) -> Result<Response> {
         return json_response(&json!({"ok": false, "error": "not found"}), 404);
     }
 
+    // A shared work link gets that work's preview card; any failure falls back to the plain page.
+    if path == "/" && method == Method::Get {
+        let work_id = url.query_pairs().find(|(key, _)| key == "work");
+        if let Some((_, work_id)) = work_id {
+            if let Ok(Some(response)) = share_page(&url, &env, &work_id).await {
+                return Ok(response);
+            }
+        }
+    }
+
     // SPA / static assets binding (wrangler assets.directory = ./public)
     if let Ok(assets) = env.assets("ASSETS") {
         return assets.fetch_request(req).await;
@@ -925,6 +935,96 @@ struct PublicImage {
     content_type: String,
     page_index: i64,
     byte_size: i64,
+    // Lets the viewer ask for the thumbnail that fits its stage; absent until fingerprinted.
+    width: Option<i64>,
+    height: Option<i64>,
+}
+
+/// The gallery page for a shared work link (`/?work=…`): the same static shell, with the work's
+/// title, author and cover in its preview-card tags. `None` leaves the plain page to be served.
+async fn share_page(url: &Url, env: &Env, work_id: &str) -> Result<Option<Response>> {
+    if validate_work_id_value(work_id).is_err() {
+        return Ok(None);
+    }
+    let Some(work) = env
+        .d1("DB")?
+        .prepare(format!(
+            "{WORK_SELECT} WHERE w.id=? AND w.deleted_at IS NULL"
+        ))
+        .bind(&[JsValue::from_str(work_id)])?
+        .first::<WorkRow>(None)
+        .await?
+    else {
+        return Ok(None);
+    };
+    let Some(cover) = cover_url_from_key(work.cover_key.as_deref()) else {
+        return Ok(None);
+    };
+    let mut shell_url = url.clone();
+    shell_url.set_query(None);
+    let mut shell = env
+        .assets("ASSETS")?
+        .fetch_request(Request::new(shell_url.as_str(), Method::Get)?)
+        .await?;
+    if shell.status_code() != 200 {
+        return Ok(None);
+    }
+    let origin = url.origin().ascii_serialization();
+    let html = share_meta(
+        &shell.text().await?,
+        &share_title(&work.title, &work.author_name),
+        &format!("{} · {} 张图片", work.author_name, work.page_count),
+        &format!("{origin}{cover}?width=1280"),
+        &format!("{origin}/?work={}", urlencoding::encode(work_id)),
+    );
+    let headers = shell.headers().clone();
+    headers.set("Content-Type", "text/html; charset=utf-8")?;
+    headers.delete("ETag")?;
+    headers.delete("Content-Length")?;
+    Ok(Some(Response::from_html(html)?.with_headers(headers)))
+}
+
+/// A work's title without the hashtags X posts carry in their text, as the gallery shows it.
+fn share_title(title: &str, author: &str) -> String {
+    let words: Vec<&str> = title
+        .split_whitespace()
+        .filter_map(|word| word.split(['#', '＃']).next().filter(|w| !w.is_empty()))
+        .collect();
+    if words.is_empty() {
+        format!("{author} 的作品")
+    } else {
+        words.join(" ")
+    }
+}
+
+/// Swap the page's own Open Graph tags for one work's. Titles and authors are catalog
+/// metadata, so every value is escaped for an attribute.
+fn share_meta(html: &str, title: &str, description: &str, image: &str, url: &str) -> String {
+    let esc = |value: &str| {
+        value
+            .replace('&', "&amp;")
+            .replace('"', "&quot;")
+            .replace('<', "&lt;")
+            .replace('>', "&gt;")
+    };
+    let tags = format!(
+        r#"  <meta property="og:type" content="article" />
+  <meta property="og:title" content="{} · Vitrine" />
+  <meta property="og:description" content="{}" />
+  <meta property="og:url" content="{}" />
+  <meta property="og:image" content="{}" />
+  <meta name="twitter:card" content="summary_large_image" />
+</head>"#,
+        esc(title),
+        esc(description),
+        esc(url),
+        esc(image)
+    );
+    let page: Vec<&str> = html
+        .lines()
+        .filter(|line| !line.contains("property=\"og:"))
+        .collect();
+    page.join("\n").replacen("</head>", &tags, 1)
 }
 
 async fn handle_work_images(work_id: &str, env: &Env) -> Result<Response> {
@@ -946,7 +1046,7 @@ async fn handle_work_images(work_id: &str, env: &Env) -> Result<Response> {
         return json_response(&json!({"ok": false, "error": "work not found"}), 404);
     };
     let images = env.d1("DB")?.prepare(
-        "SELECT i.r2_key,i.content_type,i.page_index,i.byte_size FROM images i JOIN works w ON w.id=i.work_id WHERE w.id=? AND w.deleted_at IS NULL ORDER BY i.page_index"
+        "SELECT i.r2_key,i.content_type,i.page_index,i.byte_size,f.width,f.height FROM images i JOIN works w ON w.id=i.work_id LEFT JOIN image_fingerprints f ON f.r2_key=i.r2_key WHERE w.id=? AND w.deleted_at IS NULL ORDER BY i.page_index"
     ).bind(&[JsValue::from_str(&work_id)])?.all().await?.results::<PublicImage>()?;
     if images.is_empty() {
         return json_response(&json!({"ok":false,"error":"work not found"}), 404);
@@ -2584,6 +2684,11 @@ async fn handle_list_sources(url: &Url, env: &Env) -> Result<Response> {
 }
 
 const PUBLIC_MEDIA_CACHE: &str = "private, max-age=3600";
+// Thumbnails are addressed by content, so a browser may keep one for a week, also after a
+// catalog deletion; every request that does reach the Worker still passes the visibility check.
+const THUMB_MEDIA_CACHE: &str = "private, max-age=604800";
+// How long a finished thumbnail stays in this data centre's cache (the Cache API refuses `private`).
+const THUMB_EDGE_CACHE: &str = "public, max-age=2592000";
 // Cloudflare's resizer may keep originals at the edge; viewers still reach them
 // only through this Worker's visibility check.
 const RESIZER_MEDIA_CACHE: &str = "public, max-age=604800";
@@ -2672,13 +2777,25 @@ async fn handle_media(key: &str, req: &Request, env: &Env) -> Result<Response> {
         let mut source = url.clone();
         source.set_query(None);
         let accept = req.headers().get("Accept")?.unwrap_or_default();
-        let format = if accept.contains("image/avif") {
-            Some(ResizeFormat::Avif)
+        let (format, format_name) = if accept.contains("image/avif") {
+            (Some(ResizeFormat::Avif), "avif")
         } else if accept.contains("image/webp") {
-            Some(ResizeFormat::Webp)
+            (Some(ResizeFormat::Webp), "webp")
         } else {
-            None
+            (None, "source")
         };
+        // The resizer revalidates its copy against this Worker on every request (two more
+        // invocations and an R2 read). Keeping the finished thumbnail in the Cache API makes a
+        // repeat view cost only the visibility check above.
+        let cache = Cache::default();
+        let cache_key = format!(
+            "{}/__thumbs/v1{}?width={width}&format={format_name}",
+            url.origin().ascii_serialization(),
+            url.path()
+        );
+        if let Ok(Some(hit)) = cache.get(cache_key.as_str(), false).await {
+            return thumb_response(req, hit, "HIT");
+        }
         let mut cf = CfProperties::new();
         cf.image = Some(ResizeConfig {
             width: Some(width),
@@ -2701,19 +2818,19 @@ async fn handle_media(key: &str, req: &Request, env: &Env) -> Result<Response> {
                         .unwrap_or_default(),
                 )
             {
-                let headers = response.headers().clone();
-                headers.set("Cache-Control", PUBLIC_MEDIA_CACHE)?;
-                headers.set("Vary", "Accept")?;
-                if let Some(etag) = headers.get("ETag")? {
-                    if media_not_modified(req.headers().get("If-None-Match")?.as_deref(), &etag) {
-                        return Ok(Response::empty()?.with_status(304).with_headers(headers));
+                // The format is in the key, so the stored copy carries no Vary. A thumbnail
+                // that cannot be stored is still served.
+                let stored = response.headers().clone();
+                if stored.set("Cache-Control", THUMB_EDGE_CACHE).is_ok()
+                    && stored.delete("Vary").is_ok()
+                {
+                    if let Ok(copy) = response.cloned() {
+                        let _ = cache
+                            .put(cache_key.as_str(), copy.with_headers(stored))
+                            .await;
                     }
                 }
-                if req.method() == Method::Head {
-                    return Ok(Response::empty()?.with_headers(headers));
-                }
-                response = response.with_headers(headers);
-                return Ok(response);
+                return thumb_response(req, response, "MISS");
             }
             resize_fallback = Some(format!(
                 "{} {} {}",
@@ -2800,6 +2917,23 @@ async fn handle_media(key: &str, req: &Request, env: &Env) -> Result<Response> {
     Ok(Response::from_body(response_body)?.with_headers(headers))
 }
 
+/// A finished thumbnail, fresh from the resizer or out of the edge cache, as the viewer gets it.
+fn thumb_response(req: &Request, response: Response, source: &str) -> Result<Response> {
+    let headers = response.headers().clone();
+    headers.set("Cache-Control", THUMB_MEDIA_CACHE)?;
+    headers.set("Vary", "Accept")?;
+    headers.set("X-Thumb-Cache", source)?;
+    if let Some(etag) = headers.get("ETag")? {
+        if media_not_modified(req.headers().get("If-None-Match")?.as_deref(), &etag) {
+            return Ok(Response::empty()?.with_status(304).with_headers(headers));
+        }
+    }
+    if req.method() == Method::Head {
+        return Ok(Response::empty()?.with_headers(headers));
+    }
+    Ok(response.with_headers(headers))
+}
+
 /// Resized output may be AVIF, which uploads never are; anything else must
 /// still pass the ingest allow-list.
 fn resized_mime_allowed(content_type: &str) -> bool {
@@ -2821,6 +2955,7 @@ fn media_width(value: Option<&str>) -> std::result::Result<Option<usize>, ()> {
         Some("160") => Ok(Some(160)),
         Some("640") => Ok(Some(640)),
         Some("1280") => Ok(Some(1280)),
+        Some("1920") => Ok(Some(1920)),
         _ => Err(()),
     }
 }
@@ -2971,7 +3106,7 @@ mod tests {
             Some((400, "invalid content length"))
         );
         assert_eq!(media_width(None), Ok(None));
-        for width in ["160", "640", "1280"] {
+        for width in ["160", "640", "1280", "1920"] {
             assert!(media_width(Some(width)).is_ok());
         }
         assert!(resized_mime_allowed("image/avif"));
@@ -3038,6 +3173,28 @@ mod tests {
             cover_url_from_key(Some("pixiv/a?#/00.jpg")).as_deref(),
             Some("/media/pixiv/a%3F%23/00.jpg")
         );
+    }
+
+    #[test]
+    fn share_meta_replaces_preview_tags_and_escapes_metadata() {
+        let html = "<head>\n  <meta property=\"og:title\" content=\"Vitrine · 图库\" />\n  <title>Vitrine</title>\n</head>\n<body></body>";
+        let page = share_meta(
+            html,
+            "a\"><script>",
+            "作者 & 友人 · 2 张图片",
+            "https://g.example/media/x/0.jpg?width=1280",
+            "https://g.example/?work=x%3A1",
+        );
+        assert_eq!(page.matches("og:title").count(), 1);
+        assert!(page.contains(r#"content="a&quot;&gt;&lt;script&gt; · Vitrine""#));
+        assert!(page.contains("作者 &amp; 友人"));
+        assert!(page.contains(
+            r#"<meta property="og:image" content="https://g.example/media/x/0.jpg?width=1280" />"#
+        ));
+        assert!(!page.contains("<script>"));
+        assert!(page.contains("<title>Vitrine</title>") && page.ends_with("<body></body>"));
+        assert_eq!(share_title("夜の庭 #原神\n＃Furina", "Miko"), "夜の庭");
+        assert_eq!(share_title("#原神 #Furina", "Miko"), "Miko 的作品");
     }
 
     #[test]

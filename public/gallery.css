@@ -165,6 +165,8 @@ h1 span { color: var(--brass); }
 .page-number:hover { color: var(--text); background: var(--inset); }
 .page-number.active { color: var(--bg); background: var(--text); font-style: normal; }
 .page-gap { padding: 0 2px; color: var(--muted); }
+.month-jump { min-height: 44px; padding: 0 16px; border: 1px solid var(--line); border-radius: 999px; background: var(--panel); color: var(--muted); font: 500 var(--fs-sm) var(--serif); letter-spacing: .04em; cursor: pointer; transition: border-color .25s, color .2s; }
+.month-jump:hover, .month-jump:focus-visible { border-color: var(--gilt-line); color: var(--text); }
 .pagination:has(.status:empty):has(#retry[hidden]) { display: none; }
 /* The image is the card: rounded, borderless, with a faint edge so white artwork still reads as a shape. */
 .art-button { width: 100%; aspect-ratio: 3 / 4; display: grid; place-items: center; position: relative; overflow: hidden; background: var(--inset); border-radius: 12px; box-shadow: 0 18px 34px -22px var(--art); transform: perspective(900px) rotateX(var(--tilt-x, 0deg)) rotateY(var(--tilt-y, 0deg)); transition: box-shadow .5s var(--ease), translate .5s var(--ease), transform .6s var(--ease); }
@@ -185,6 +187,8 @@ h1 span { color: var(--brass); }
 .card-author { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .card-source { display: inline-flex; align-items: center; gap: 6px; flex-shrink: 0; }
 .card-source::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: var(--art); transition: background .6s; }
+/* Touch has no hover, so the captions stay on wherever the cells are large enough to carry them. */
+@media (hover: none) { .hall-caption { opacity: 1; translate: 0 0; } }
 @media (hover: hover) and (pointer: fine) { .art-button:hover { translate: 0 -4px; box-shadow: 0 26px 44px -22px var(--art); } .art-button:hover::after { --shade: 1; } .art-button:hover img { transform: scale(1.04); } }
 .empty-state { text-align: center; padding: 60px 20px; }
 .empty-state > svg { width: 44px; height: 44px; fill: none; stroke: var(--muted); stroke-width: 1.5; stroke-linecap: round; }
@@ -279,7 +283,9 @@ dialog[open] { animation: enter .22s var(--ease); }
 @media (max-width: 760px) {
   html { scroll-padding-top: 16px; }
   main { padding: 24px 16px 0; }
-  .collection-heading { gap: 10px; margin-bottom: 12px; }
+  .collection-heading { flex-wrap: wrap; gap: 0 10px; margin-bottom: 12px; }
+  /* The filter chip below already clears it. */
+  #reset { display: none; }
   .collection-heading h1 { font-size: 26px; }
   .sort-note { display: none; }
   .collection-heading #browse-tags { margin-left: auto; }
@@ -308,7 +314,8 @@ dialog[open] { animation: enter .22s var(--ease); }
   .hall-item.lead .hall-caption { display: block; padding: 70px 16px 14px; }
   .pager { gap: 10px; margin-top: 26px; }
   .page-list { order: -1; width: 100%; justify-content: center; }
-  .page-number { min-width: 34px; height: 34px; line-height: 34px; font-size: 15px; }
+  .page-number { min-width: 40px; height: 40px; line-height: 40px; font-size: 15px; }
+  .month-jump { font-size: 16px; }
   .featured { height: 58vw; min-height: 210px; margin-bottom: 24px; border-radius: 14px; }
   .featured-caption { max-width: 72%; }
   .featured-title { font-size: 19px; }

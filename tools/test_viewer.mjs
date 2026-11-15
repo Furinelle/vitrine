@@ -117,7 +117,35 @@ function fixture() {
   assert.deepEqual(f.preloaded.map(url => new URL(url).pathname), ['/media/x/one/2.jpg', '/media/x/one/0.jpg']);
   assert.ok(f.preloaded.every(url => new URL(url).searchParams.get('width') === '1280'), 'neighbours use the viewer size');
 }
-console.log('PASS: instant card preview, mobile sizing, same-URL reuse, bounded error/retry and neighbour preloading');
+{
+  // A 2x desktop stage: a landscape picture fills its width and needs the largest thumbnail, a portrait is bound by height.
+  const f = fixture();
+  Object.assign(f.element('lb-stage'), { clientWidth: 956, clientHeight: 648 });
+  f.context.window.devicePixelRatio = 2;
+  assert.equal(f.context.viewerWidth({ width: 4500, height: 2484 }), 1920);
+  assert.equal(f.context.viewerWidth({ width: 1539, height: 2251 }), 1280);
+  assert.equal(f.context.viewerWidth({}), 1920, 'unknown proportions are sized by the stage width');
+}
+{
+  // Past a work's last picture, the arrows move on to the work beside it in the hall and stop at the page's end.
+  const f = fixture();
+  f.state.works = [{ id: 'x:zero' }, { id: 'x:one' }, { id: 'x:two' }];
+  f.context.CSS = { escape: value => value };
+  f.element('grid').querySelector = () => null;
+  f.context.showImage(1, false);
+  assert.equal(f.element('lb-next').disabled, false, 'the last picture still leads to the next work');
+  f.context.stepViewer(-1);
+  assert.equal(f.state.imageIndex, 0, 'inside a work the arrows turn its pictures');
+  f.context.showImage(1, false);
+  f.context.stepViewer(1);
+  assert.equal(f.state.viewing.id, 'x:two');
+  assert.equal(f.location.search, '?work=x%3Atwo');
+  f.context.stepViewer(1);
+  assert.equal(f.state.viewing.id, 'x:two', 'the last work on the page has nowhere further to go');
+  f.context.stepViewer(-1);
+  assert.equal(f.state.viewing.id, 'x:one');
+}
+console.log('PASS: instant card preview, mobile sizing, same-URL reuse, bounded error/retry, neighbour preloading, stage-fit sizes and stepping between works');
 
 {
   const f = fixture(), full = f.element('lb-img'), decoding = deferred();

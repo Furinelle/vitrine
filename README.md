@@ -196,7 +196,7 @@ Cookie。只软删除作品并保留图片。已下线返回 `replayed: true`。
 
 ### `GET /media/<r2_key>`
 
-可加 `?width=160|640|1280` 读取预设缩略图。原图与缩略图都先检查 D1 在线状态，再用 `private, no-cache` 和 ETag 重验证。浏览器不再直接请求 `/cdn-cgi/image/`；gallery 域名已拦截旧裸变换入口（规则 `e41a69a481324622bd194a9c1eeedd12`），以免旧缓存绕开 Worker。`npm run test:public` 只读验收正式站，包括真实缩图尺寸，避免将返回原图的 200 误认为优化成功。
+可加 `?width=160|640|1280|1920` 读取预设缩略图。原图与缩略图都先检查 D1 在线状态。原图在浏览器缓存 1 小时；缩略图在浏览器缓存 7 天，并由 Worker 用 Cache API 在边缘保存成品（响应头 `X-Thumb-Cache: HIT|MISS`），命中时不再经过图片转换和 R2。浏览器不再直接请求 `/cdn-cgi/image/`；gallery 域名已拦截旧裸变换入口（规则 `e41a69a481324622bd194a9c1eeedd12`），以免旧缓存绕开 Worker。`npm run test:public` 只读验收正式站，包括真实缩图尺寸，避免将返回原图的 200 误认为优化成功。
 
 ### R2 冷存（Oracle）
 

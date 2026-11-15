@@ -3,8 +3,8 @@ function setTheme(theme) {
   document.getElementById("theme-toggle").setAttribute("aria-label", `切换到${theme === "dark" ? "浅" : "深"}色外观`);
   document.querySelector('meta[name="theme-color"]').content = theme === "dark" ? "#050f2c" : "#eef3f9";
 }
-let theme = "light";
-try { if (localStorage.getItem("vitrine-theme") === "dark") theme = "dark"; } catch { /* Storage can be unavailable in private browsing. */ }
+// theme-init.js has already chosen the scheme (saved choice, else the system's) before first paint.
+let theme = document.documentElement.style.colorScheme === "dark" ? "dark" : "light";
 setTheme(theme);
 document.getElementById("theme-toggle").addEventListener("click", () => {
   theme = theme === "dark" ? "light" : "dark";
