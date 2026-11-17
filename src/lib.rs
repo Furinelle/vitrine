@@ -94,26 +94,28 @@ async fn handle_request(req: Request, env: Env) -> Result<Response> {
         }
     }
 
-    // Reject unauthenticated writes before reading their body. Handler-level
-    // checks remain the authority for each route's cookie/Bearer contract.
-    if admin::is_mutating_method(req.method()) {
-        let rejection = if path.starts_with("/api/catalog/") {
-            if path == "/api/catalog/image-review" {
-                require_catalog_or_admin_cookie(&req, &env)?
-            } else {
-                require_catalog_auth(&req, &env)?
-            }
-        } else if path.starts_with("/api/admin/")
-            && path != "/api/admin/login"
-            && path != "/api/admin/logout"
-        {
-            admin::require_admin_cookie(&req, &env)?
+    // Every /api/admin route except the session endpoints needs the cookie, checked here so
+    // a new route cannot forget it. Catalog writes are rejected before their body is read;
+    // their handlers remain the authority for each route's Bearer contract.
+    let rejection = if path.starts_with("/api/admin/")
+        && !matches!(
+            path.as_str(),
+            "/api/admin/login" | "/api/admin/logout" | "/api/admin/session"
+        )
+        && method != Method::Options
+    {
+        admin::require_admin_cookie(&req, &env)?
+    } else if admin::is_mutating_method(req.method()) && path.starts_with("/api/catalog/") {
+        if path == "/api/catalog/image-review" {
+            require_catalog_or_admin_cookie(&req, &env)?
         } else {
-            None
-        };
-        if let Some(response) = rejection {
-            return Ok(response);
+            require_catalog_auth(&req, &env)?
         }
+    } else {
+        None
+    };
+    if let Some(response) = rejection {
+        return Ok(response);
     }
 
     // Bound every JSON mutation, including handlers in the review modules.
@@ -190,27 +192,15 @@ async fn handle_request(req: Request, env: Env) -> Result<Response> {
         return tag_admin::handle_block(req, env).await;
     }
     if path == "/api/admin/fingerprints/status" && method == Method::Get {
-        if let Some(response) = admin::require_admin_cookie(&req, &env)? {
-            return Ok(response);
-        }
         return similar::handle_status(req, env).await;
     }
     if path == "/api/admin/similar" && method == Method::Get {
-        if let Some(response) = admin::require_admin_cookie(&req, &env)? {
-            return Ok(response);
-        }
         return similar::handle_list(req, env).await;
     }
     if path == "/api/admin/similar/delete" && method == Method::Post {
-        if let Some(response) = admin::require_admin_cookie(&req, &env)? {
-            return Ok(response);
-        }
         return similar::handle_delete(req, env).await;
     }
     if path == "/api/admin/similar/skip" && method == Method::Post {
-        if let Some(response) = admin::require_admin_cookie(&req, &env)? {
-            return Ok(response);
-        }
         return similar::handle_skip(req, env).await;
     }
     if let Some(rest) = path.strip_prefix("/api/admin/works/") {

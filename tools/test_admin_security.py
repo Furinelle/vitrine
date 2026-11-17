@@ -92,7 +92,8 @@ def main():
         if current["result_fresh"]:
             return None
         current = snapshot(counts=True)
-        data = {"generation": current["generation"], "algorithm": current["algorithm"]}
+        data = {"generation": current["generation"], "algorithm": current["algorithm"],
+                "last_skip": current["last_skip"]}
         for kind, count in (("fingerprints", "fingerprint_count"), ("clip", "clip_count")):
             data[kind] = []
             after = ""
@@ -205,8 +206,9 @@ def main():
     delete([first, first], expected=400)
     delete([{**first, "decision_id": "sim-../secret"}], expected=400)
     delete([{**first, "keep_r2_keys": [first["r2_key"]]}], expected=400)
-    no_keeper = delete([item(images[1], [])])
-    assert not no_keeper["deleted"] and no_keeper["failed"]
+    # A group ticked in full is deleted in full; only a partial delete needs a keeper alive.
+    whole_group = delete([item(images[1], [])])
+    assert whole_group["deleted"] == [images[1]["r2_key"]] and not whole_group["failed"]
 
     # Sibling deletion invalidates the image-count preflight, but a deleted receipt
     # still confirms this item's gallery result and retains its exact old targets.
@@ -225,6 +227,22 @@ def main():
     assert replayed["telegram_pending"][0]["decision_id"] == selected["decision_id"]
     assert not replayed["telegram_failed"]
     print("PASS: admin partial deletion, stable replay, ID conflicts, undo protection, retained Telegram targets")
+
+    # A kept group travels with the export and makes the result stale, so the next Oracle
+    # run refills the slot it frees under the cap.
+    ensure_fresh()
+    kept = local.request("/api/admin/similar/skip", {"keys": ["pixiv/kept/1.png", "pixiv/kept/0.png"]},
+                         auth=False, headers={"Origin": origin, "Cookie": cookie})
+    assert not snapshot()["result_fresh"]
+    query = urllib.parse.urlencode({"generation": snapshot()["generation"], "kind": "skips", "limit": 1})
+    page = local.request("/api/catalog/similar/input?" + query)
+    assert page["items"] == [{"group_id": kept["id"], "members": "pixiv/kept/0.png\npixiv/kept/1.png"}]
+    assert page["next_cursor"] == kept["id"]
+    stale = ensure_fresh()
+    assert stale and snapshot()["result_fresh"]
+    # A result computed before the latest keep must not be published over it.
+    local.request("/api/catalog/similar/result", {**stale, "last_skip": None}, expected=409)
+    print("PASS: kept groups are exported by cursor, invalidate the published result and refuse one computed without them")
 
     def fingerprint(image, sha, bits="0000000000000000", width=200):
         return {"r2_key": image["r2_key"], "solid_color": False, "content_sha256": sha,

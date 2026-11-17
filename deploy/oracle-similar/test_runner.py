@@ -62,17 +62,20 @@ class RunnerTests(unittest.TestCase):
                 "d=json.load(sys.stdin)\n"
                 "assert [r['r2_key'] for r in d['fingerprints']]==['a','b']\n"
                 "assert [r['r2_key'] for r in d['clip']]==['a']\n"
+                "assert d['skips']==[{'group_id':'kept','members':''}]\n"
                 "json.dump({'generation':d['generation'],'algorithm':d['algorithm'],"
                 "'hash_count':len(d['fingerprints']),'clip_count':len(d['clip']),"
                 "'response':{'ok':True,'groups':[],'auto_pairs':[]}},sys.stdout)\n"
             )
             binary.chmod(0o700)
             replies = [snapshot(), snapshot(), page([{"r2_key": "a"}], "a"), page([{"r2_key": "b"}]),
-                       page([{"r2_key": "a", "embedding": "00"}]), {"ok": True}]
+                       page([{"r2_key": "a", "embedding": "00"}]),
+                       page([{"group_id": "kept", "members": ""}]), {"ok": True}]
             with patch.object(runner, "api", side_effect=replies) as api:
                 runner.compute("test", "https://invalid.example", str(binary), state)
             self.assertIn("after=a", api.call_args_list[3].args[3])
             self.assertIn("kind=clip", api.call_args_list[4].args[3])
+            self.assertIn("kind=skips", api.call_args_list[5].args[3])
             self.assertEqual(api.call_args.args[2:4], ("POST", "/api/catalog/similar/result"))
             self.assertEqual(api.call_args.args[4]["generation"], 7)
             self.assertEqual(list(state.iterdir()), [binary])
@@ -94,7 +97,7 @@ class RunnerTests(unittest.TestCase):
                         runner.export_input("test", "https://invalid.example", snapshot())
 
     def test_native_failure_never_publishes(self):
-        replies = [snapshot(fingerprint_count=0, clip_count=0), snapshot(fingerprint_count=0, clip_count=0), page([]), page([])]
+        replies = [snapshot(fingerprint_count=0, clip_count=0), snapshot(fingerprint_count=0, clip_count=0), page([]), page([]), page([])]
         with tempfile.TemporaryDirectory() as temporary:
             with patch.object(runner, "api", side_effect=replies) as api:
                 with patch.object(runner, "run_native", side_effect=RuntimeError("failed")):
@@ -127,7 +130,7 @@ class RunnerTests(unittest.TestCase):
             self.assertIn("another computation is running", result.stdout)
 
     def test_stale_publication_cleans_files_and_keeps_old_result(self):
-        replies = [snapshot(fingerprint_count=0, clip_count=0), snapshot(fingerprint_count=0, clip_count=0), page([]), page([]), runner.StaleSnapshot()]
+        replies = [snapshot(fingerprint_count=0, clip_count=0), snapshot(fingerprint_count=0, clip_count=0), page([]), page([]), page([]), runner.StaleSnapshot()]
         result = {"generation": 7, "algorithm": runner.ALGORITHM,
                   "hash_count": 0, "clip_count": 0, "response": {"ok": True}}
         with tempfile.TemporaryDirectory() as temporary:

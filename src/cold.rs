@@ -41,6 +41,10 @@ async fn send(env: &Env, method: Method, url: &str, body: Option<String>) -> Res
 
 /// The cold copy of `key`, or None when the cold store does not have it.
 pub async fn get(env: &Env, key: &str, method: Method) -> Result<Option<Response>> {
+    // Without a cold store nothing was archived, so an R2 miss is a plain miss.
+    if env.var("COLD_STORE_URL").is_err() {
+        return Ok(None);
+    }
     let response = send(env, method, &object_url(env, key)?, None).await?;
     match response.status_code() {
         200 => Ok(Some(response)),

@@ -54,6 +54,13 @@ function thumbUrl(value, width = 320) {
   }
 }
 
+// A 640px thumbnail instead of the multi-megabyte original, which stays the fallback.
+function showThumb(img, key) {
+  img.loading = "lazy";
+  img.src = thumbUrl(mediaUrl(key), 640);
+  img.addEventListener("error", () => { img.src = mediaUrl(key); }, { once: true });
+}
+
 async function send(url, options = {}) {
   const response = await fetch(url, { credentials: "same-origin", cache: "no-store", ...options });
   const data = await response.json().catch(() => ({ ok: false, error: response.status === 429 ? "请求太频繁，请稍后再试。" : "暂时无法加载，请稍后重试。" }));
@@ -89,6 +96,12 @@ const state = {
   similarRetry: readSimilarRetry(),
   similarDeleting: false,
 };
+
+// Auto-paging; the button stays as the fallback. loadWorks re-observes it so the callback
+// fires again when the next page leaves the button in view.
+const pager = new IntersectionObserver((entries) => {
+  if (state.view === "works" && entries.some((entry) => entry.isIntersecting)) loadWorks();
+}, { rootMargin: "600px" });
 
 function readSimilarRetry() {
   try {
@@ -259,6 +272,10 @@ function renderList(works, append) {
   $("grid").append(fragment);
 }
 
+function showListCount() {
+  $("list-status").textContent = state.works.length ? `已载入 ${state.works.length} 件${state.workStatus === "hidden" ? "下线作品" : "在线作品"}` : state.workStatus === "hidden" ? "没有已下线作品" : "没有在线作品";
+}
+
 async function loadWorks(reset = false) {
   if (!reset && (state.loading || state.done)) return;
   if (reset) {
@@ -284,11 +301,10 @@ async function loadWorks(reset = false) {
     renderList(works, !reset);
     state.offset += works.length;
     state.done = works.length < state.limit;
-    $("list-status").textContent = state.works.length ? `已载入 ${state.works.length} 件${state.workStatus === "hidden" ? "下线作品" : "在线作品"}` : state.workStatus === "hidden" ? "没有已下线作品" : "没有在线作品";
-    if ($("nav-works-count")) {
-      $("nav-works-count").textContent = state.works.length ? String(state.works.length) : "";
-    }
+    showListCount();
     $("more").hidden = state.done;
+    pager.unobserve($("more"));
+    pager.observe($("more"));
   } catch (error) {
     if (error.status === 401 || generation !== state.listGeneration) return;
     $("list-status").textContent = error.message;
@@ -303,16 +319,7 @@ async function loadSources() {
   try {
     const data = await api("/api/sources");
     const sources = data.sources || [];
-
-    // 更新下拉选择
-    const select = $("source");
-    if (select) {
-      select.replaceChildren(new Option("全部来源", ""));
-      for (const row of sources) {
-        select.append(new Option(names[row.source] || row.source, row.source));
-      }
-      select.value = state.source;
-    }
+    $("nav-works-count").textContent = String(sources.reduce((sum, row) => sum + (row.cnt || 0), 0) || "");
 
     // 更新侧边栏来源按钮组
     const nav = $("admin-sources");
@@ -349,12 +356,8 @@ async function loadSources() {
 }
 
 function selectSource(sourceVal) {
-  if (!closeEditor()) {
-    $("source").value = state.source;
-    return;
-  }
+  if (!closeEditor()) return;
   state.source = sourceVal;
-  if ($("source")) $("source").value = sourceVal;
   const nav = $("admin-sources");
   if (nav) {
     nav.querySelectorAll(".source-link").forEach((btn) => {
@@ -482,7 +485,7 @@ function renderImages() {
     const thumbWrap = node("div", "admin-image-thumb");
     const img = node("img");
     img.alt = `第 ${image.page_index + 1} 张`;
-    img.src = mediaUrl(image.r2_key);
+    showThumb(img, image.r2_key);
     thumbWrap.append(img);
 
     const meta = node("div", "admin-image-meta");
@@ -599,12 +602,9 @@ function setView(view, updateHistory = true) {
       nav.classList.toggle("active", active);
       nav.setAttribute("aria-current", active ? "page" : "false");
     }
-    $("mobile-" + info.nav)?.classList.toggle("active", active);
     $(info.section).hidden = !active;
   }
   document.title = `Vitrine · ${VIEWS[view].title}`;
-  const crumb = $("current-view-title");
-  if (crumb) crumb.textContent = VIEWS[view].title;
 
   // 来源筛选和顶栏作品搜索只属于作品管理
   const sourcesSec = $("sidebar-sources-section");
@@ -708,8 +708,7 @@ function renderSimilar(groups, preserveSelection = false) {
       const thumb = node("div", "similar-thumb");
       const img = node("img");
       img.alt = item.title || item.r2_key;
-      img.loading = "lazy";
-      img.src = mediaUrl(item.r2_key);
+      showThumb(img, item.r2_key);
       thumb.append(img);
       thumb.append(node("span", "similar-source", item.source === "x" ? "X" : names[item.source] || "未知来源"));
 
@@ -820,6 +819,14 @@ async function deleteGroup(group, box) {
   for (const item of items) similarGroupOf.set(item.r2_key, group.id);
   hideGroup(group.id, box);
   deleteSimilarItems(items);
+  // Images kept on purpose are not duplicates of each other; the next scan must not regroup them.
+  if (keepers.length > 1) {
+    api("/api/admin/similar/skip", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ keys: keepers }),
+    }).catch(() => {});
+  }
 }
 
 let similarRefreshTimer;
@@ -957,7 +964,7 @@ $("login-form")?.addEventListener("submit", async (event) => {
     });
     $("login-token").value = "";
     showConsole();
-    await loadSources();
+    loadSources();
     syncRoute();
   } catch (error) {
     $("login-status").textContent = error.message === "unauthorized" ? "管理密钥不正确。" : error.message;
@@ -1130,14 +1137,6 @@ $("nav-curation")?.addEventListener("click", (e) => {
   e.preventDefault();
   setView("furina");
 });
-$("mobile-nav-works")?.addEventListener("click", (e) => {
-  e.preventDefault();
-  setView("works");
-});
-$("mobile-nav-similar")?.addEventListener("click", (e) => {
-  e.preventDefault();
-  setView("similar");
-});
 
 $("editor-close")?.addEventListener("click", () => {
   const card = document.querySelector(".admin-card.active");
@@ -1162,17 +1161,12 @@ async function doLogout() {
 }
 
 $("logout")?.addEventListener("click", doLogout);
-$("topbar-logout")?.addEventListener("click", doLogout);
 
 $("search-form")?.addEventListener("submit", (event) => {
   event.preventDefault();
   if (!closeEditor()) return;
   state.q = $("q").value.trim();
   loadWorks(true);
-});
-
-$("source")?.addEventListener("change", () => {
-  selectSource($("source").value);
 });
 
 $("more")?.addEventListener("click", () => loadWorks());
@@ -1211,7 +1205,11 @@ $("edit-form")?.addEventListener("submit", async (event) => {
     Object.assign(work, patch);
     Object.assign(state.works.find((item) => item.id === work.id) || {}, patch);
     fillEditor(work);
-    renderList(state.works, false);
+    const card = document.querySelector(".admin-card.active");
+    if (card) {
+      card.querySelector(".admin-card-title").textContent = card.querySelector("img").alt = work.title || work.source_id;
+      card.querySelector(".admin-card-author").textContent = work.author_name || "未署名";
+    }
     $("edit-status").textContent = "修改已保存。";
   } catch (error) {
     if (error.status === 401) return;
@@ -1243,9 +1241,20 @@ async function changeWorkVisibility(restore) {
     fillEditor(work);
     state.images = data.images || [];
     renderImages();
-    state.workStatus = work.deleted_at ? "hidden" : "active";
-    $("work-status").value = state.workStatus;
-    await loadWorks(true);
+    // Stay on the current list: only the card that left it goes, so several works can be
+    // hidden in a row. Undoing from the still-open editor brings the list back.
+    const listed = state.works.some((item) => item.id === work.id);
+    if ((work.deleted_at ? "hidden" : "active") !== state.workStatus) {
+      if (listed) {
+        state.works = state.works.filter((item) => item.id !== work.id);
+        state.offset -= 1;
+        document.querySelector(".admin-card.active")?.remove();
+        showListCount();
+      }
+    } else if (!listed) {
+      await loadWorks(true);
+    }
+    loadSources();
     $("edit-status").textContent = Boolean(work.deleted_at) === !restore
       ? restore ? "已恢复公开，原有元数据和当前图片已保留。" : "已下线，可在已下线列表找到并恢复。"
       : `作品状态已被其他操作更新，当前${work.deleted_at ? "已下线" : "在线"}，请核实。`;
@@ -1453,7 +1462,7 @@ $("tag-block").addEventListener("click", () => {
     const session = await send("/api/admin/session");
     if (session.authenticated) {
       showConsole();
-      await loadSources();
+      loadSources();
       syncRoute();
       return;
     }

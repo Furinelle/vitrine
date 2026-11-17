@@ -27,7 +27,7 @@ assert.doesNotMatch(html, /id="(?:admin-sidebar|mobile-nav-works|mobile-nav-simi
 for (const script of ['theme', 'admin']) {
   assert.match(html, new RegExp(`<script src="/${script}\\.js[^>]* defer>`));
 }
-for (const id of ['login', 'login-form', 'login-token', 'console', 'search-form', 'q', 'source',
+for (const id of ['login', 'login-form', 'login-token', 'console', 'search-form', 'q',
   'work-status', 'grid', 'editor', 'edit-form', 'hide-work', 'restore-work', 'image-strip',
   'similar-groups', 'similar-refresh', 'similar-clean-dup', 'nav-works', 'nav-similar',
   'nav-works-count', 'nav-similar-count', 'admin-sources', 'sidebar-sources-section', 'logout']) {
@@ -62,6 +62,7 @@ const state = { viewing: { deleted_at: null }, workBusy: false, editorLoading: f
 const context = vm.createContext({
   state, $: id => elements.get(id), hasUnsavedEdit: () => dirty,
   document: { createElement: element }, mediaUrl: key => '/media/' + key,
+  showThumb(img, key) { img.src = '/media/' + key + '?width=640'; },
   node(tag, className, text) { const el = element(tag); el.className = className; el.textContent = text || ''; return el; },
 });
 vm.runInContext(source.slice(source.indexOf('function updateEditState('), source.indexOf('function fillEditor(')), context);

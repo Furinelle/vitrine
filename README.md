@@ -120,11 +120,11 @@ Oracle / Hanabi 指纹同步写入感知哈希（hex，最多 50 条）。相同
 
 ### `GET /api/admin/similar` · `POST /api/admin/similar/delete`
 
-Cookie。读取 Oracle 预先计算的相似结果；Worker 不再现场计算或聚类。目录变化后，Worker 只按缓存候选的 key 核验当前在线成员、特征与保留项；仍有效的旧候选可继续审批，无法核验的候选暂不显示。新增候选由下一轮 Oracle 扫描发现；尚无可用结果时返回 `pending: true`。相似页按张去重。删除请求必须包含 `items: [{r2_key, decision_id}]`，每项 `decision_id` 为稳定的 `sim-UUID`，重试复用原 ID，并携带该组未选择删除的 `keep_r2_keys`。删除事务校验保留图片的 key、作品和版本，避免并发/迟到计划把最后一张也删掉。响应逐项返回 `results` 与 `partial/deleted/failed`，客户端保留未完成批次。Telegram 失败或无法确认时返回精确 targets，不将其报告为已删除。删除走 `image-review` 回收站；有频道 mapping 时 Worker 用 `TELEGRAM_BOT_TOKEN` 调 `deleteMessage`。Bot 失败不回滚图库删除。`GET /api/admin/fingerprints/status` 看覆盖率。
+Cookie。读取 Oracle 预先计算的相似结果；Worker 不再现场计算或聚类。目录变化后，Worker 只按缓存候选的 key 核验当前在线成员、特征与保留项；仍有效的旧候选可继续审批，无法核验的候选暂不显示。新增候选由下一轮 Oracle 扫描发现；尚无可用结果时返回 `pending: true`。相似页按张去重。候选按与保留图的接近程度排序，最接近的在前，最多 100 组；用「保留整组」跳过的组在截断前剔除，不占名额。只删一部分时，留下的两张及以上图片记为已跳过，下一轮不再成组。删除请求必须包含 `items: [{r2_key, decision_id}]`，每项 `decision_id` 为稳定的 `sim-UUID`，重试复用原 ID，并携带该组未选择删除的 `keep_r2_keys`。删除事务校验保留图片的 key、作品和版本，避免并发/迟到计划把最后一张也删掉。响应逐项返回 `results` 与 `partial/deleted/failed`，客户端保留未完成批次。Telegram 失败或无法确认时返回精确 targets，不将其报告为已删除。删除走 `image-review` 回收站；有频道 mapping 时 Worker 用 `TELEGRAM_BOT_TOKEN` 调 `deleteMessage`。Bot 失败不回滚图库删除。`GET /api/admin/fingerprints/status` 看覆盖率。
 
 ### Oracle 相似图计算
 
-`GET /api/catalog/similar/snapshot` 默认只读取版本和结果是否最新，`?counts=1` 才读取按版本缓存的输入数量；`GET /api/catalog/similar/input` 用 `after` / `next_cursor` 游标按版本分页导出 fingerprints / clip；`POST /api/catalog/similar/result` 原子接收该版本的完整结果，过期返回 409。三个接口都只接受已有 catalog Bearer 凭据，不对访客公开。结果请求上限 4 MiB。
+`GET /api/catalog/similar/snapshot` 默认只读取版本和结果是否最新，`?counts=1` 才读取按版本缓存的输入数量；`GET /api/catalog/similar/input` 用 `after` / `next_cursor` 游标按版本分页导出 fingerprints / clip / skips（跳过记录没有声明数量，也不改变版本）；上次结果之后有新的跳过记录时 `result_fresh` 为 false，下一轮重算补位；`POST /api/catalog/similar/result` 原子接收该版本的完整结果，过期返回 409。三个接口都只接受已有 catalog Bearer 凭据，不对访客公开。结果请求上限 4 MiB。
 
 `cargo build --release --locked --bin vitrine-similar` 构建原生计算程序，复用与 Worker 旧实现相同的严格去重和相似聚类算法。Oracle 的 `tools/similar_compute.py` 每天北京时间 08:15 运行，先检查版本；没有变化且已完成扫描时直接结束。有变化时补齐缺失 CLIP（Oracle 四核），再读取输入并计算分组。后台统计按数据版本缓存，等待结果每 5 分钟检查一次；D1 日额度耗尽时停止自动重试。部署、资源上限和回滚见 [Oracle runner](deploy/oracle-similar/README.md)。
 

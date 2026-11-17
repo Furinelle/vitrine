@@ -103,7 +103,7 @@ def main():
     assert catalog(work_id) == images
     detail = public_images(work_id)['images']
     assert [i['r2_key'] for i in detail] == [i['r2_key'] for i in images]
-    assert set(detail[0]) == {'r2_key', 'content_type', 'page_index', 'byte_size'}
+    assert set(detail[0]) == {'r2_key', 'content_type', 'page_index', 'byte_size', 'width', 'height'}
     _, original, headers = fetch('/media/' + key, auth=False)
     assert headers['Cache-Control'] == 'private, max-age=3600'
     assert original.startswith(b'\x89PNG')

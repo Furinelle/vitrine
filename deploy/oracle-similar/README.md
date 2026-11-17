@@ -1,7 +1,7 @@
 # Oracle similarity runner
 
 The Worker serves cached results. Oracle exports versioned fingerprint and CLIP
-pages, runs the same Rust similarity algorithms natively, then publishes the
+pages plus the groups the operator kept, runs the same Rust similarity algorithms natively, then publishes the
 complete result only while that catalog generation is still current.
 
 Run local checks without network access:
@@ -25,6 +25,11 @@ Deployment layout (production installation and activation are separate):
 | `vitrine-similar.service` | `/etc/systemd/system/vitrine-similar.service` |
 | `vitrine-similar.timer` | `/etc/systemd/system/vitrine-similar.timer` |
 
+The runner and the binary carry the algorithm name (`score-ranked-v3`) and refuse
+a Worker that reports another one, so `similar_compute.py`, the binary and the
+Worker are updated together. Between the Worker deploy and the first run of the
+matching runner the admin page reports results as pending.
+
 The service runs as `ubuntu` and reads the existing
 `/opt/hanabi-container/hanabi.env` directly. It does not copy the token or use an
 `EnvironmentFile`, so credentials are absent from arguments and process
@@ -34,7 +39,8 @@ the next locked run also removes files left by an interrupted process.
 
 The service first checks the catalog generation. If the previous successful scan
 checked that generation and its similarity result is current, it makes no further
-requests. Otherwise it runs the existing OpenCLIP ViT-B-32/openai scanner for missing images, then computes groups. Completed upload batches survive interruption and are skipped on retry. The scanner uses the existing virtualenv and cached model with four Torch threads and up to four prefetched downloads; no missing images means no model load. A partial scan still publishes completed work and marks the service failed so the next scheduled run retries missing keys.
+requests; a group kept since that result makes it stale, so the freed slot is
+refilled. Otherwise it runs the existing OpenCLIP ViT-B-32/openai scanner for missing images, then computes groups. Completed upload batches survive interruption and are skipped on retry. The scanner uses the existing virtualenv and cached model with four Torch threads and up to four prefetched downloads; no missing images means no model load. A partial scan still publishes completed work and marks the service failed so the next scheduled run retries missing keys.
 
 The timer runs once daily at 00:15 UTC (08:15 Beijing/Singapore), with up to
 15 seconds jitter and a persistent missed-run catch-up. New works enter similarity

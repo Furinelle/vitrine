@@ -18,7 +18,7 @@ from pathlib import Path
 
 
 ENDPOINT = "https://gallery.fontaine.blue"
-ALGORITHM = "strict-only-v2"
+ALGORITHM = "score-ranked-v3"
 MAX_RESPONSE_BYTES = 8 * 1024 * 1024
 MAX_RESULT_BYTES = 4 * 1024 * 1024
 MAX_SNAPSHOT_BYTES = 128 * 1024 * 1024
@@ -90,9 +90,15 @@ def api(token: str, endpoint: str, method: str, path: str, data=None):
 
 def export_input(token: str, endpoint: str, snapshot: dict) -> dict:
     generation = snapshot["generation"]
-    data = {"generation": generation, "algorithm": ALGORITHM}
+    # The Worker refuses the result if a group is kept after this point.
+    data = {"generation": generation, "algorithm": ALGORITHM, "last_skip": snapshot.get("last_skip")}
     size = 0
-    for kind, count_key in (("fingerprints", "fingerprint_count"), ("clip", "clip_count")):
+    # Skips carry no declared count: keeping a group does not change the snapshot version.
+    for kind, count_key, cursor_key in (
+        ("fingerprints", "fingerprint_count", "r2_key"),
+        ("clip", "clip_count", "r2_key"),
+        ("skips", None, "group_id"),
+    ):
         items = []
         cursor = ""
         while True:
@@ -108,13 +114,13 @@ def export_input(token: str, endpoint: str, snapshot: dict) -> dict:
             size += len(json.dumps(chunk, separators=(",", ":")).encode())
             if size > MAX_SNAPSHOT_BYTES:
                 raise RuntimeError("snapshot exceeds 128 MiB")
-            keys = [row.get("r2_key") if isinstance(row, dict) else None for row in chunk]
+            keys = [row.get(cursor_key) if isinstance(row, dict) else None for row in chunk]
             if any(not isinstance(key, str) or not key or len(key) > 1024 for key in keys):
                 raise RuntimeError("invalid snapshot image key")
             if keys and (keys[0] <= cursor or any(a >= b for a, b in zip(keys, keys[1:]))):
                 raise RuntimeError("snapshot keys are not strictly ordered")
             items.extend(chunk)
-            if len(items) > snapshot[count_key]:
+            if count_key and len(items) > snapshot[count_key]:
                 raise RuntimeError("snapshot exceeds declared count")
             if "next_cursor" not in page:
                 raise RuntimeError("snapshot cursor missing")
@@ -124,7 +130,7 @@ def export_input(token: str, endpoint: str, snapshot: dict) -> dict:
             if not keys or next_cursor != keys[-1]:
                 raise RuntimeError("invalid snapshot pagination")
             cursor = next_cursor
-        if len(items) != snapshot[count_key]:
+        if count_key and len(items) != snapshot[count_key]:
             raise RuntimeError("snapshot count mismatch")
         data[kind] = items
     return data

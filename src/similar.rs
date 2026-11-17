@@ -15,7 +15,7 @@ pub const CLIP_DIM: usize = 512;
 pub const CLIP_SIMILAR: f32 = 0.93;
 // Every reviewed pair at or above this score was the same picture.
 const CLIP_DUPLICATE: f32 = 0.995;
-const SIMILAR_CACHE_VERSION: &str = "strict-only-v2";
+const SIMILAR_CACHE_VERSION: &str = "score-ranked-v3";
 pub const SIMILAR_ALGORITHM: &str = SIMILAR_CACHE_VERSION;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -312,6 +312,11 @@ pub struct SimilarInput {
     algorithm: String,
     fingerprints: Vec<FingerprintRow>,
     clip: Vec<ClipRow>,
+    #[serde(default)]
+    skips: Vec<SkipRow>,
+    /// Newest skip when the export began; a publish is refused once a later one exists.
+    #[serde(default)]
+    last_skip: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -328,6 +333,8 @@ pub struct SimilarResult {
     algorithm: String,
     hash_count: usize,
     clip_count: usize,
+    #[serde(default)]
+    last_skip: Option<String>,
     response: SimilarResponse,
 }
 
@@ -348,12 +355,13 @@ pub fn compute_offline(input: SimilarInput) -> std::result::Result<SimilarResult
         .into_iter()
         .filter_map(|row| Some((row.r2_key, parse_clip_embedding(&row.embedding)?)))
         .collect();
-    let (groups, auto_pairs) = similar_view(&images, &embeddings);
+    let (groups, auto_pairs) = similar_view(&images, &embeddings, &input.skips);
     Ok(SimilarResult {
         generation: input.generation,
         algorithm: input.algorithm,
         hash_count: images.len(),
         clip_count: embeddings.len(),
+        last_skip: input.last_skip,
         response: SimilarResponse {
             ok: true,
             engine: if has_clip_coverage(embeddings.len(), images.len()) {
@@ -615,7 +623,6 @@ fn groups_from_sets(images: &[ImageFingerprint], mut sets: DisjointSet) -> Vec<S
             .cmp(&left.items.len())
             .then_with(|| left.id.cmp(&right.id))
     });
-    groups.truncate(MAX_SIMILAR_GROUPS);
     groups
 }
 
@@ -768,7 +775,6 @@ pub fn cluster_clip(
             .cmp(&left.items.len())
             .then_with(|| left.id.cmp(&right.id))
     });
-    groups.truncate(MAX_SIMILAR_GROUPS);
     groups
 }
 
@@ -822,6 +828,7 @@ fn has_clip_coverage(clip_count: usize, image_count: usize) -> bool {
 fn similar_view(
     images: &[ImageFingerprint],
     embeddings: &std::collections::HashMap<String, Vec<f32>>,
+    skips: &[SkipRow],
 ) -> (Vec<SimilarGroup>, Vec<AutoPair>) {
     let (mut review, mut auto_pairs) = split_auto_pairs(cluster_similar(images), images);
     if has_clip_coverage(embeddings.len(), images.len()) {
@@ -831,6 +838,20 @@ fn similar_view(
         auto_pairs.sort_by(|left, right| left.remove.r2_key.cmp(&right.remove.r2_key));
         auto_pairs.dedup_by(|left, right| left.remove.r2_key == right.remove.r2_key);
     }
+    // Before the cap: a kept group must not hold a slot, and the closest matches must not
+    // be cut behind large loose groups.
+    review.retain(|group| !group_is_skipped(group, skips));
+    auto_pairs.retain(|pair| {
+        let items = vec![pair.keep.clone(), pair.remove.clone()];
+        let id = skip_key_from_items(&items);
+        !group_is_skipped(&SimilarGroup { id, items }, skips)
+    });
+    review.sort_by_cached_key(|group| {
+        let closest = group.items.iter().filter(|item| !item.keep);
+        (closest.map(|item| item.distance).min(), group.id.clone())
+    });
+    review.truncate(MAX_SIMILAR_GROUPS);
+    auto_pairs.truncate(MAX_SIMILAR_GROUPS * 2);
     (review, auto_pairs)
 }
 
@@ -1057,7 +1078,7 @@ struct SkipBody {
     keys: Vec<String>,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 struct SkipRow {
     group_id: String,
     #[serde(default)]
@@ -1382,6 +1403,8 @@ struct SnapshotRow {
     result_generation: Option<u64>,
     result_algorithm: Option<String>,
     result_ok: Option<i64>,
+    result_skip: Option<String>,
+    last_skip: Option<String>,
 }
 
 pub async fn handle_snapshot(req: Request, env: Env) -> Result<Response> {
@@ -1390,14 +1413,18 @@ pub async fn handle_snapshot(req: Request, env: Env) -> Result<Response> {
         SELECT g.generation,
           CASE WHEN json_valid(c.payload) THEN json_extract(c.payload,'$.generation') END AS result_generation,
           CASE WHEN json_valid(c.payload) THEN json_extract(c.payload,'$.algorithm') END AS result_algorithm,
-          CASE WHEN json_valid(c.payload) THEN json_extract(c.payload,'$.response.ok') END AS result_ok
+          CASE WHEN json_valid(c.payload) THEN json_extract(c.payload,'$.response.ok') END AS result_ok,
+          CASE WHEN json_valid(c.payload) THEN json_extract(c.payload,'$.last_skip') END AS result_skip,
+          (SELECT s.created_at FROM similar_skips s ORDER BY s.rowid DESC LIMIT 1) AS last_skip
         FROM similar_generation g LEFT JOIN similar_cache c ON c.id=g.id WHERE g.id=1
     "#).first::<SnapshotRow>(None).await?
         .ok_or_else(|| Error::RustError("similar generation missing".into()))?;
     let mut body = json!({
         "ok": true, "generation": row.generation, "algorithm": SIMILAR_ALGORITHM,
         "result_generation": row.result_generation,
-        "result_fresh": row.result_generation == Some(row.generation) && row.result_algorithm.as_deref() == Some(SIMILAR_ALGORITHM) && row.result_ok == Some(1),
+        // A group kept since the result was computed frees a slot under the cap, so recompute.
+        "result_fresh": row.result_generation == Some(row.generation) && row.result_algorithm.as_deref() == Some(SIMILAR_ALGORITHM) && row.result_ok == Some(1) && row.result_skip == row.last_skip,
+        "last_skip": row.last_skip,
     });
     let counts = req
         .url()?
@@ -1462,6 +1489,10 @@ pub async fn handle_input(req: Request, env: Env) -> Result<Response> {
             SELECT c.r2_key,c.embedding FROM image_clip c CROSS JOIN images i ON i.r2_key=c.r2_key CROSS JOIN works w ON w.id=i.work_id
             WHERE c.r2_key > ? AND w.deleted_at IS NULL ORDER BY c.r2_key LIMIT ?
         "#).bind(&bound)?.all().await?.results::<ClipRow>()?),
+        Some("skips") => serde_json::to_value(
+            db.prepare("SELECT group_id,members FROM similar_skips WHERE group_id > ? ORDER BY group_id LIMIT ?")
+                .bind(&bound)?.all().await?.results::<SkipRow>()?,
+        ),
         _ => return reject(400, "unknown similar input kind"),
     }.map_err(|error| Error::RustError(error.to_string()))?;
     if current_generation(&db).await? != generation {
@@ -1471,7 +1502,8 @@ pub async fn handle_input(req: Request, env: Env) -> Result<Response> {
         .as_array()
         .ok_or_else(|| Error::RustError("similar input rows missing".into()))?;
     let next_cursor = if rows.len() == limit as usize {
-        rows.last().and_then(|row| row["r2_key"].as_str())
+        rows.last()
+            .and_then(|row| row["r2_key"].as_str().or(row["group_id"].as_str()))
     } else {
         None
     };
@@ -1500,6 +1532,7 @@ pub async fn handle_publish(mut req: Request, env: Env) -> Result<Response> {
             r#"
         INSERT INTO similar_cache (id,clip_count,hash_count,payload,computed_at)
         SELECT 1,?,?,?,? FROM similar_generation WHERE id=1 AND generation=?
+          AND (SELECT s.created_at FROM similar_skips s ORDER BY s.rowid DESC LIMIT 1) IS ?
         ON CONFLICT(id) DO UPDATE SET clip_count=excluded.clip_count,hash_count=excluded.hash_count,
           payload=excluded.payload,computed_at=excluded.computed_at
     "#,
@@ -1510,6 +1543,10 @@ pub async fn handle_publish(mut req: Request, env: Env) -> Result<Response> {
             JsValue::from_str(&payload),
             JsValue::from_str(&crate::js_iso_now()),
             JsValue::from_f64(result.generation as f64),
+            result
+                .last_skip
+                .as_deref()
+                .map_or(JsValue::NULL, JsValue::from_str),
         ])?
         .run()
         .await?;
@@ -2242,8 +2279,8 @@ mod tests {
         ];
         let incomplete = std::collections::HashMap::from([("a".into(), vec![1.0; CLIP_DIM])]);
         assert_eq!(
-            similar_view(&images, &incomplete),
-            similar_view(&images, &std::collections::HashMap::new())
+            similar_view(&images, &incomplete, &[]),
+            similar_view(&images, &std::collections::HashMap::new(), &[])
         );
     }
 
@@ -2335,7 +2372,7 @@ mod tests {
         assert_eq!(cluster_clip(&images, &embeddings).len(), 1);
         images[0].solid_color = true;
         assert!(cluster_clip(&images, &embeddings).is_empty());
-        assert!(similar_view(&images, &embeddings).0.is_empty());
+        assert!(similar_view(&images, &embeddings, &[]).0.is_empty());
     }
 
     #[test]
@@ -2460,15 +2497,20 @@ mod tests {
         let reference = split_auto_pairs(all_pairs_reference(&images), &images);
         eprintln!("old hash view {:?}", started.elapsed());
         let started = std::time::Instant::now();
-        let (groups, pairs) = similar_view(&images, &hash_only);
+        let (groups, pairs) = similar_view(&images, &hash_only, &[]);
         eprintln!(
             "new hash view {:?}, {} groups, {} pairs",
             started.elapsed(),
             groups.len(),
             pairs.len()
         );
-        assert_eq!((groups.clone(), pairs), reference);
-        assert!(groups.len() <= MAX_SIMILAR_GROUPS);
+        // The view ranks and caps; the reference does neither.
+        let by_id = |mut groups: Vec<SimilarGroup>| {
+            groups.sort_by(|a, b| a.id.cmp(&b.id));
+            groups
+        };
+        assert!(reference.0.len() <= MAX_SIMILAR_GROUPS);
+        assert_eq!((by_id(groups), pairs), (by_id(reference.0), reference.1));
     }
 
     #[test]
@@ -2668,6 +2710,54 @@ mod tests {
     }
 
     #[test]
+    fn closest_pairs_and_unkept_groups_get_the_capped_slots() {
+        let direction = |slot: usize, x: f32| {
+            let mut vec = vec![0.0; CLIP_DIM];
+            vec[slot * 2] = x;
+            vec[slot * 2 + 1] = (1.0 - x * x).sqrt();
+            vec
+        };
+        let mut images = Vec::new();
+        let mut embeddings = std::collections::HashMap::new();
+        let mut add = |key: String, slot: usize, x: f32, hash: u64, side: u32| {
+            images.push(fp(&key, &key, &key, hash, side, side, 10));
+            embeddings.insert(key, direction(slot, x));
+        };
+        for slot in 0..MAX_SIMILAR_GROUPS {
+            add(format!("loose{slot}a"), slot, 1.0, 1, 20);
+            add(format!("loose{slot}b"), slot, 0.94, 1, 10);
+            add(format!("loose{slot}c"), slot, 0.94, 1, 10);
+        }
+        add("pair-a".into(), MAX_SIMILAR_GROUPS, 1.0, 0, 20);
+        add("pair-b".into(), MAX_SIMILAR_GROUPS, 0.999, u64::MAX, 10);
+        let (review, _) = similar_view(&images, &embeddings, &[]);
+        assert_eq!(review.len(), MAX_SIMILAR_GROUPS);
+        assert_eq!(review[0].items[0].r2_key, "pair-a");
+        let kept = SkipRow {
+            group_id: review[0].id.clone(),
+            members: String::new(),
+        };
+        let (review, _) = similar_view(&images, &embeddings, &[kept]);
+        assert_eq!(review.len(), MAX_SIMILAR_GROUPS);
+        assert!(review.iter().all(|group| group.items.len() == 3));
+    }
+
+    #[test]
+    fn a_kept_pair_is_never_cleaned_up_automatically() {
+        let images = vec![
+            fp("low", "pixiv:1", "same", 1, 10, 10, 10),
+            fp("high", "pixiv:2", "same", 1, 20, 20, 10),
+        ];
+        let none = std::collections::HashMap::new();
+        assert_eq!(similar_view(&images, &none, &[]).1.len(), 1);
+        let kept = SkipRow {
+            group_id: String::new(),
+            members: "high\nlow".into(),
+        };
+        assert!(similar_view(&images, &none, &[kept]).1.is_empty());
+    }
+
+    #[test]
     fn two_strict_images_become_auto_pairs() {
         let images = vec![
             fp("low", "pixiv:1", "same", 1, 10, 10, 10),
@@ -2694,7 +2784,7 @@ mod tests {
             ("a".into(), xy_emb(1.0, 0.0)),
             ("b".into(), xy_emb(1.0, 0.0)),
         ]);
-        let (review, auto_pairs) = similar_view(&images, &embeddings);
+        let (review, auto_pairs) = similar_view(&images, &embeddings, &[]);
         assert!(auto_pairs.is_empty());
         assert_eq!(review.len(), 1);
         assert_eq!(review[0].items[1].kind, "clip 1.000");
