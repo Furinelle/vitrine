@@ -241,3 +241,12 @@ npx wrangler rollback 1b7d8aac-80c2-4e3f-85d8-741ad6e4c104
 - `vitrine-media` 绑定了公开自定义域 `img.furina.ai`，供前端「复制图床链接」和 log.furina.ai 的 `bench/` 测评图使用。这条路径直接读 R2，不经过 D1 可见性校验：知道 key 的人仍能取到已下线作品的原图。
 - 同日清理 R2：删除 D1 未引用的旧媒体对象 1,131 个、`review-trash/` 撤销备份 361 个和 `healthcheck/` 测试对象 1 个，共约 1.61 GB；`orphan_objects` 中 483 条待清理记录标为已删除。保留在线图片 5,828 个（7.05 GB）和 `bench/` 103 个。此前删除的单图和相似图决策从此无法撤销；后台撤销本就只在删除时的浏览器会话内可用。
 - 同日按用户确认移除 R18：迁移 `0023` 删除 `works.is_r18`，入库忽略 Hanabi 传来的该字段（Worker `1476bddb-d2eb-4f56-8802-11c727207b69`）。
+
+## 2026-11-16 现状更正
+
+- 后台加上 Cloudflare Access：应用 `Vitrine 后台`（`ee911ac2-ffd2-4c0c-acac-e281174edb31`）覆盖 `/admin` 与 `/api/admin`，策略沿用 log.furina.ai 的「仅本人」，会话 720 小时。未登录访问这些路径返回 302 到 `furinelle.cloudflareaccess.com`，`/admin.html` 先 307 到 `/admin`；`/api/catalog`、`/api/ingest`、`/api/storage` 不受影响。登录后的后台操作未在本轮验收。撤销：删除该 Access 应用。
+- 新增 zone 限速规则 `vitrine_media_burst`（ruleset `05a8cc5f0c3449588e1e724a6d0f8139`）：`gallery.fontaine.blue/media/*` 每 IP 每 10 秒超过 200 次，拦 10 秒（错误 1015）。实测并发 320 次放行 212、拦截 108，API 和首页不受影响。免费版的限速表达式不能用请求头、查询串和 `cf.worker.upstream_zone`，所以无法排除缩略图转换的内部请求（zone 分析里来源为 `imageResizing` 和 `edgeWorkerFetch`，各自共用一个地址）；它们是否计入该规则未验证。若计入，单个节点 10 秒内超过 200 张未缓存缩略图时，新缩略图会回退成原图 10 秒。撤销：删除该 ruleset。
+- Worker `609cf88a-3367-46a2-93b2-3332c9eb4bcb`：`/media/*` 接入 `MEDIA_RATE_LIMITER`（600/分钟/IP），不带 `CF-Connecting-IP` 的转换回源请求不计；CSP 的 `script-src` 放行 `https://static.cloudflareinsights.com`，Web Analytics 自动注入的脚本不再被 CSP 拦。此前 14 天该站没有任何 RUM 数据。回滚：`npx wrangler rollback e5865172-7be9-47db-b9fd-0f4da29a746b`。
+- Worker 限速绑定按机器本地计数：复用一条连接时，公开 API 在第 90 次左右开始 429；每个请求新开连接时，2,000 次图片请求和 220 次 API 请求都没有触发。登录限速同理，后台不能只靠它，现由 Access 挡在前面。
+- R2 实际用量 7.58 GB（7,235 个对象）。冷存归档每 6 小时运行，超过 8 GB 时把最旧的原图移到 Oracle，压回 7.5 GB。D1 里 `SUM(byte_size)` 的 9.75 GB 含已归档的原图。
+- 同日修掉深 offset 读取（Worker `a6ab3653-20be-4595-b777-8c620c006816`）。横幅不再用随机 offset，改为按各月作品数估出一个随机时间点，用它当游标取 30 部：198 行，原来平均约 9,000 行。列表在 offset 不小于 45 时先分页取 ID 再取详情：offset 3000 从 9,220 行降到 3,312 行，5700 从 17,286 行降到 5,978 行；更浅的页保持原写法（按 ID 回查自身要 90 行）。部署前后 11 种筛选组合的结果逐项一致。深页的读行数仍与 offset 成正比。回滚：`npx wrangler rollback 609cf88a-3367-46a2-93b2-3332c9eb4bcb`。

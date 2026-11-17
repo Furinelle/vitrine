@@ -45,7 +45,9 @@
   ],
   "ratelimits": [
     { "name": "LOGIN_RATE_LIMITER", "namespace_id": "1952401", "simple": { "limit": 5, "period": 60 } },
-    { "name": "PUBLIC_RATE_LIMITER", "namespace_id": "1952402", "simple": { "limit": 120, "period": 60 } }
+    { "name": "PUBLIC_RATE_LIMITER", "namespace_id": "1952402", "simple": { "limit": 120, "period": 60 } },
+    // A hall page is about 35 images, so one reader stays under 350 a minute; the rest is room for a shared address.
+    { "name": "MEDIA_RATE_LIMITER", "namespace_id": "1952403", "simple": { "limit": 600, "period": 60 } }
   ],
   "vars": {
     "PUBLIC_BASE_URL": "",

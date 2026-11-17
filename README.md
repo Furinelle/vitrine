@@ -152,7 +152,9 @@ Hanabi 拿到 targets 后删除对应频道消息，再调用 `POST /api/catalog
 
 同源管理页：改标题/作者/标签，删/恢复单图，下线整部作品（只写 `works.deleted_at`，不动频道），以及「相似图」按张去重。登录用现有 `INGEST_TOKEN`，Worker 发 HttpOnly cookie。频道删帖另需 `npx wrangler secret put TELEGRAM_BOT_TOKEN`。首次部署须按顺序应用迁移 `0001`–`0023`；已有实例先核对实际迁移状态，保留 D1 备份与回滚方案，再由操作者执行 `npm run db:remote`。
 
-后台没有 WAF Challenge（原规则已删除），靠 token 登录、登录限速、签名 cookie 与 CSRF 保护。zone `fontaine.blue` 只保留一条自定义规则：拦截 `gallery.fontaine.blue/cdn-cgi/image/*`，让缩图都走 `/media` 的可见性校验。Worker 的 workers.dev / preview 入口已关闭，生产只用自定义域。
+后台在 Cloudflare Access 后面：应用「Vitrine 后台」覆盖 `gallery.fontaine.blue/admin` 和 `/api/admin`，策略为仅本人（邮箱验证码，会话 720 小时）。过了 Access 仍要用 token 登录，另有登录限速、签名 cookie 与 CSRF。采集和运维脚本走 `/api/catalog`、`/api/ingest`、`/api/storage`（Bearer），不经过 Access。
+
+zone `fontaine.blue` 有一条自定义规则（拦截 `gallery.fontaine.blue/cdn-cgi/image/*`，让缩图都走 `/media` 的可见性校验）和一条限速规则（`gallery.fontaine.blue/media/*` 每 IP 每 10 秒超过 200 次即拦 10 秒；免费版只有这一条，且在 Worker 之前生效）。Worker 内另有三个限速绑定：登录 5、公开 API 120、图片 600，均为每分钟每 IP。它们按机器本地计数，只对复用连接的客户端可靠，逐请求新开连接可以绕过。Worker 的 workers.dev / preview 入口已关闭，生产只用自定义域。
 
 R2 桶 `vitrine-media` 另有公开自定义域 `img.furina.ai`（图床直链、log.furina.ai 的 `bench/` 图片），它直接读 R2，不经过 D1 可见性校验。清理桶内对象时保留 `bench/` 和 `images.r2_key` 引用的对象。
 

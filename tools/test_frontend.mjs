@@ -496,3 +496,14 @@ requestFailure.fetch = async () => ({ ok: false, status: 503, headers: new Heade
 await assert.rejects(requestFailure.send('/api/admin/similar'), error => error.status === 503 &&
   error.code === 'database_daily_limit' && error.retryAfter === 3600 && error.message === '数据库今日访问额度已用完。');
 console.log('PASS: non-JSON errors stay readable, auth expires and daily quota metadata survives');
+
+// The banner asks for works older than a moment inside the collection instead of skipping to a random offset.
+const banner = vm.createContext({ PAGE_SIZE: 30 });
+vm.runInContext(source.slice(source.indexOf('function featuredCursor('), source.indexOf('function renderFeatured(')), banner);
+const bannerMonths = [{ month: '2026-11', cnt: 100 }, { month: '2026-10', cnt: 300 }];
+const bannerNow = Date.UTC(2026, 10, 16);
+assert.equal(banner.featuredCursor(bannerMonths, 400, 0, bannerNow), '["2026-11-11T12:00:00.000Z","x:0"]');
+const [oldest] = JSON.parse(banner.featuredCursor(bannerMonths, 400, 1, bannerNow));
+assert.ok(oldest > '2026-10-01' && oldest < '2026-10-03', oldest);
+assert.equal(banner.featuredCursor([], 0, 0.5, bannerNow), `["${new Date(bannerNow).toISOString()}","x:0"]`);
+console.log('PASS: banner cursor lands past the first page, inside the month its draw falls in');

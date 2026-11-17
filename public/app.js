@@ -1032,14 +1032,27 @@ function rotateFeatured(run) {
     featured.timer = setInterval(() => showFeatured(featured.index + 1), 7000);
   }
 }
+// Where a random work past the first page would sit if each month's works were evenly spread, as a list cursor:
+// one index seek, where a random offset read every work it skipped.
+function featuredCursor(months, total, random = Math.random(), now = Date.now()) {
+  let k = PAGE_SIZE + random * Math.max(total - 45, 0), at = now;
+  for (const { month, cnt } of months) {
+    const [year, m] = month.split("-").map(Number);
+    const until = Math.min(Date.UTC(year, m, 1), now);
+    at = until - (until - Date.UTC(year, m - 1, 1)) * Math.min(k / cnt, 1);
+    if (k < cnt) break;
+    k -= cnt;
+  }
+  return JSON.stringify([new Date(at).toISOString(), "x:0"]);
+}
 function renderFeatured() {
   const visible = !state.source && !state.tag && !state.q && state.total > 0 && (!featured.ready || featured.works.length > 0);
   $("featured").hidden = !visible;
   if (visible && !featured.ready && !featured.loading) {
     featured.loading = true;
-    // Thirty works from a random place past the first page, so the banner does not repeat the hall below it.
-    const offset = state.total > 45 ? PAGE_SIZE + Math.floor(Math.random() * (state.total - 45)) : 0;
-    getJson(`/api/works?limit=30&offset=${offset}`).then((data) => data.works || [], () => state.works).then(fillFeatured);
+    // Thirty works from a random moment past the first page, so the banner does not repeat the hall below it.
+    const cursor = encodeURIComponent(featuredCursor(state.months, state.total));
+    getJson(`/api/works?limit=30&cursor=${cursor}`).then((data) => (data.works?.length ? data.works : state.works), () => state.works).then(fillFeatured);
   }
   stageColor();
   rotateFeatured(visible);

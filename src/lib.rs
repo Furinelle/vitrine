@@ -70,6 +70,14 @@ async fn handle_request(req: Request, env: Env) -> Result<Response> {
             || path.starts_with("/api/curation/"))
     {
         Some("PUBLIC_RATE_LIMITER")
+    } else if (method == Method::Get || method == Method::Head)
+        && path.starts_with("/media/")
+        // The resizer fetches originals with no client address (seen live 2026-11-16);
+        // counting those would put every visitor's thumbnails on one shared key.
+        && req.headers().get("CF-Connecting-IP")?.is_some()
+    {
+        // Each image costs a D1 visibility read and, uncached, an image transformation.
+        Some("MEDIA_RATE_LIMITER")
     } else {
         None
     };
@@ -404,7 +412,7 @@ pub(crate) fn with_security_headers(res: Response) -> Result<Response> {
         "Permissions-Policy",
         "camera=(), microphone=(), geolocation=(), payment=(), usb=()",
     )?;
-    headers.set("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'")?;
+    headers.set("Content-Security-Policy", "default-src 'self'; script-src 'self' https://static.cloudflareinsights.com; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'")?;
     Ok(res.with_headers(headers))
 }
 
@@ -858,16 +866,35 @@ async fn handle_list_works(url: &Url, env: &Env) -> Result<Response> {
         Ok(filter) => filter,
         Err(response) => return Ok(response),
     };
-    let work_select = WORK_SELECT.replace("FROM works w", &filter.from_sql);
+    let from_sql = filter.from_sql;
     let where_sql = filter.where_sql;
-    let sql = format!(
-        r#"
-        {work_select}
-        {where_sql}
-        ORDER BY w.created_at DESC, w.id DESC
-        LIMIT ? OFFSET ?
-        "#
-    );
+    let sql = if offset < 45 {
+        let work_select = WORK_SELECT.replace("FROM works w", &from_sql);
+        format!(
+            r#"
+            {work_select}
+            {where_sql}
+            ORDER BY w.created_at DESC, w.id DESC
+            LIMIT ? OFFSET ?
+            "#
+        )
+    } else {
+        // Page the ids first: a skipped work then costs one index entry, not its cover and
+        // tag lookups as well (offset 3000: 3,312 rows read, 9,220 without). The lookup by
+        // id costs 90 rows of its own, so the first pages are cheaper without it.
+        format!(
+            r#"
+            {WORK_SELECT}
+            WHERE w.id IN (
+              SELECT w.id {from_sql}
+              {where_sql}
+              ORDER BY w.created_at DESC, w.id DESC
+              LIMIT ? OFFSET ?
+            )
+            ORDER BY w.created_at DESC, w.id DESC
+            "#
+        )
+    };
     let mut values = filter.values;
     values.push(JsValue::from_f64(f64::from(limit)));
     values.push(JsValue::from_f64(f64::from(offset)));

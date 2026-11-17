@@ -57,6 +57,7 @@ const mf = new Miniflare(convertV4MiniflareOptions({
   compatibilityDate: '2026-07-01',
   d1Databases: { DB: 'local-commit-recovery' },
   r2Buckets: { MEDIA: 'local-commit-recovery' },
+  ratelimits: { MEDIA_RATE_LIMITER: { namespace_id: '1952403', simple: { limit: 600, period: 60 } } },
   bindings: { INGEST_TOKEN: token, TELEGRAM_BOT_TOKEN: '' },
   resourcePersistencePath: path.join(temp, 'state'),
   telemetry: { enabled: false },
