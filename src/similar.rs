@@ -1376,7 +1376,7 @@ async fn review_result(req: &Request, db: &D1Database) -> Result<Option<ReviewRe
         if let Some(response) = cached {
             result.response = response;
         } else {
-            let keys: std::collections::HashSet<_> = result
+            let group_keys: std::collections::HashSet<_> = result
                 .response
                 .groups
                 .iter()
@@ -1389,10 +1389,25 @@ async fn review_result(req: &Request, db: &D1Database) -> Result<Option<ReviewRe
                         .flat_map(|pair| [&pair.keep, &pair.remove]),
                 )
                 .map(|item| &item.r2_key)
-                .chain(result.response.junk.iter().map(|item| &item.r2_key))
                 .collect();
-            let keys = serde_json::to_string(&keys)
-                .map_err(|error| Error::RustError(error.to_string()))?;
+            let junk_keys: Vec<&String> = result
+                .response
+                .junk
+                .iter()
+                .map(|item| &item.r2_key)
+                .collect();
+            let to_json = |keys: Vec<&String>| {
+                serde_json::to_string(&keys).map_err(|error| Error::RustError(error.to_string()))
+            };
+            let clip_keys = to_json(group_keys.iter().copied().collect())?;
+            let keys = to_json(
+                group_keys
+                    .iter()
+                    .copied()
+                    .chain(junk_keys.iter().copied())
+                    .collect(),
+            )?;
+            let junk_keys = to_json(junk_keys)?;
             let rows = db
                 .prepare(
                     r#"
@@ -1415,12 +1430,27 @@ async fn review_result(req: &Request, db: &D1Database) -> Result<Option<ReviewRe
                 .map(|image| (image.r2_key.clone(), image))
                 .collect();
             let clips = db.prepare("SELECT r2_key,embedding FROM image_clip WHERE r2_key IN (SELECT value FROM json_each(?))")
-                .bind(&[JsValue::from_str(&keys)])?.all().await?.results::<ClipRow>()?;
+                .bind(&[JsValue::from_str(&clip_keys)])?.all().await?.results::<ClipRow>()?;
+            // A junk score stands while the embedding it came from is current: an embedding
+            // written after this result would have changed the generation it was computed for.
+            let unchanged: std::collections::HashSet<String> = db
+                .prepare("SELECT r2_key FROM image_clip WHERE r2_key IN (SELECT value FROM json_each(?)) AND updated_at <= ?")
+                .bind(&[JsValue::from_str(&junk_keys), JsValue::from_str(&row.computed_at)])?
+                .all()
+                .await?
+                .results::<KeyRow>()?
+                .into_iter()
+                .map(|row| row.r2_key)
+                .collect();
             let embeddings = clips
                 .into_iter()
                 .filter_map(|row| Some((row.r2_key, parse_clip_embedding(&row.embedding)?)))
                 .collect();
             result.response = revalidate_candidates(result.response, &images, &embeddings);
+            result
+                .response
+                .junk
+                .retain(|item| unchanged.contains(&item.r2_key));
             if current_generation(db).await? != row.generation {
                 return Err(Error::RustError(
                     "similar snapshot changed; refresh before reviewing".into(),
@@ -1559,18 +1589,12 @@ fn revalidate_candidates(
             })
         })
         .collect();
-    // Like groups, a listed image must still read as junk from its current embedding.
-    let current: Vec<ImageFingerprint> = response
-        .junk
-        .iter()
-        .filter_map(|item| {
-            images
-                .get(&item.r2_key)
-                .filter(|image| image.work_id == item.work_id)
-                .cloned()
-        })
-        .collect();
-    response.junk = score_junk(&current, embeddings);
+    // Whether the embedding behind a junk score is still current is checked by the caller.
+    response.junk.retain(|item| {
+        images
+            .get(&item.r2_key)
+            .is_some_and(|image| image.work_id == item.work_id)
+    });
     response
 }
 
@@ -3093,9 +3117,9 @@ mod tests {
         };
         assert!(junk_is_kept(&junk[0], std::slice::from_ref(&kept)));
         assert!(!junk_is_kept(&junk[1], &[kept]));
-        // Reads recheck the current embedding: an image that no longer reads as junk drops out.
+        // Reads keep a listed image only while it is online in the same work.
         let first = junk[0].r2_key.clone();
-        let by_key = images
+        let mut by_key: std::collections::HashMap<_, _> = images
             .into_iter()
             .map(|image| (image.r2_key.clone(), image))
             .collect();
@@ -3110,7 +3134,7 @@ mod tests {
             revalidate_candidates(response.clone(), &by_key, &embeddings).junk,
             junk
         );
-        embeddings.insert(first.clone(), xy_emb(0.0, 1.0));
+        by_key.remove(&first);
         let checked = revalidate_candidates(response, &by_key, &embeddings).junk;
         assert_eq!(checked.len(), junk.len() - 1);
         assert!(checked.iter().all(|item| item.r2_key != first));
