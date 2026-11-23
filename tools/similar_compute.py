@@ -18,7 +18,7 @@ from pathlib import Path
 
 
 ENDPOINT = "https://gallery.fontaine.blue"
-ALGORITHM = "score-ranked-v3"
+ALGORITHM = "crop-junk-v4"
 MAX_RESPONSE_BYTES = 8 * 1024 * 1024
 MAX_RESULT_BYTES = 4 * 1024 * 1024
 MAX_SNAPSHOT_BYTES = 128 * 1024 * 1024
@@ -165,13 +165,43 @@ def run_native(binary: str, data: dict, directory: Path) -> dict:
     return result
 
 
-def compute(token: str, endpoint: str, binary: str, state_dir: Path) -> None:
+def match_crops(args, data: dict, directory: Path) -> tuple[list, bool]:
+    """Pixel-verified crops for this snapshot, and whether every candidate pair was checked."""
+    source = directory / "crop-input.json"
+    output = directory / "crops.json"
+    source.write_text(json.dumps({"fingerprints": data["fingerprints"], "clip": data["clip"]}, separators=(",", ":")))
+    command = [
+        args.clip_python, args.crop_matcher, "--input", str(source), "--output", str(output),
+        "--cache", str(args.state_dir / "crops"), "--minutes", str(args.crop_minutes),
+    ]
+    try:
+        run = subprocess.run(command, timeout=args.crop_minutes * 60 + 300)
+        crops = json.loads(output.read_text())
+    except (subprocess.TimeoutExpired, OSError, ValueError):
+        print("crop matching failed; publishing without crops", flush=True)
+        return [], False
+    finally:
+        source.unlink(missing_ok=True)
+    valid = isinstance(crops, list) and all(
+        isinstance(row, dict) and isinstance(row.get("crop"), str) and isinstance(row.get("full"), str)
+        and type(row.get("score")) in (int, float) for row in crops
+    )
+    if not valid:
+        print("crop matcher returned malformed rows; publishing without crops", flush=True)
+        return [], False
+    return crops, run.returncode == 0
+
+
+def compute(token: str, endpoint: str, binary: str, state_dir: Path, crops=None) -> bool:
+    """Publish a current result; False when crop matching left pairs for the next run."""
     snapshot = api(token, endpoint, "GET", "/api/catalog/similar/snapshot")
     if snapshot.get("algorithm") != ALGORITHM:
         raise RuntimeError("unsupported similarity algorithm")
-    if snapshot.get("result_fresh") is True:
+    # A result published while crop pairs were still unchecked is current but not finished.
+    pending = state_dir / "crops-pending"
+    if snapshot.get("result_fresh") is True and not (crops and pending.exists()):
         print(f"generation={snapshot['generation']} current", flush=True)
-        return
+        return True
     snapshot = api(token, endpoint, "GET", "/api/catalog/similar/snapshot?counts=1")
     if snapshot.get("algorithm") != ALGORITHM:
         raise RuntimeError("unsupported similarity algorithm")
@@ -184,10 +214,18 @@ def compute(token: str, endpoint: str, binary: str, state_dir: Path) -> None:
         f"generation={snapshot['generation']} fingerprints={len(data['fingerprints'])} clip={len(data['clip'])}",
         flush=True,
     )
+    complete = True
     with tempfile.TemporaryDirectory(prefix="compute-", dir=state_dir) as directory:
+        if crops:
+            data["crops"], complete = crops(data, Path(directory))
         result = run_native(binary, data, Path(directory))
         api(token, endpoint, "POST", "/api/catalog/similar/result", result)
     print(f"generation={snapshot['generation']} published", flush=True)
+    if crops and not complete:
+        pending.touch()
+    else:
+        pending.unlink(missing_ok=True)
+    return complete
 
 
 def scan_and_compute(token: str, args) -> None:
@@ -217,9 +255,12 @@ def scan_and_compute(token: str, args) -> None:
             scan_failed = True
             print("CLIP scan timed out; uploaded progress is retained", flush=True)
     # Publish completed scan batches even if another image failed; the next run retries missing keys.
-    compute(token, endpoint, args.binary, args.state_dir)
+    crops = (lambda data, directory: match_crops(args, data, directory)) if getattr(args, "crop_matcher", None) else None
+    crops_complete = compute(token, endpoint, args.binary, args.state_dir, crops)
     if scan_failed:
         raise RuntimeError("CLIP scan incomplete; missing images will be retried")
+    if crops_complete is False:
+        raise RuntimeError("crop matching incomplete; remaining pairs will be checked next run")
     if args.clip_scanner:
         # Record the pre-scan version: writes during scanning must trigger another check.
         temporary = marker.with_suffix(".tmp")
@@ -237,9 +278,13 @@ def main() -> int:
     parser.add_argument("--clip-scanner")
     parser.add_argument("--clip-limit", type=int, default=0)
     parser.add_argument("--clip-threads", type=int, default=1)
+    parser.add_argument("--crop-matcher")
+    parser.add_argument("--crop-minutes", type=float, default=8.0)
     args = parser.parse_args()
     if bool(args.clip_python) != bool(args.clip_scanner) or args.clip_limit < 0 or args.clip_threads < 1:
         parser.error("provide both CLIP paths and a nonnegative limit")
+    if args.crop_matcher and not args.clip_python or args.crop_minutes <= 0:
+        parser.error("--crop-matcher needs the CLIP python and a positive time limit")
     if urllib.parse.urlsplit(args.endpoint).scheme != "https":
         parser.error("--endpoint must use HTTPS")
     try:

@@ -80,6 +80,72 @@ class RunnerTests(unittest.TestCase):
             self.assertEqual(api.call_args.args[4]["generation"], 7)
             self.assertEqual(list(state.iterdir()), [binary])
 
+    def test_crops_reach_native_and_incomplete_matching_is_reported(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            state = Path(temporary)
+            binary = state / "native"
+            binary.write_text(
+                "#!/usr/bin/env python3\n"
+                "import json,sys\n"
+                "d=json.load(sys.stdin)\n"
+                "assert d['crops']==[{'crop':'b','full':'a','score':0.9}]\n"
+                "json.dump({'generation':d['generation'],'algorithm':d['algorithm'],"
+                "'hash_count':len(d['fingerprints']),'clip_count':len(d['clip']),"
+                "'response':{'ok':True,'groups':[],'auto_pairs':[]}},sys.stdout)\n"
+            )
+            binary.chmod(0o700)
+            replies = [snapshot(), snapshot(), page([{"r2_key": "a"}, {"r2_key": "b"}]),
+                       page([{"r2_key": "a", "embedding": "00"}]), page([]), {"ok": True}]
+            crops = lambda data, directory: ([{"crop": "b", "full": "a", "score": 0.9}], False)
+            with patch.object(runner, "api", side_effect=replies) as api:
+                self.assertIs(runner.compute("test", "https://invalid.example", str(binary), state, crops), False)
+            self.assertEqual(api.call_args.args[2:4], ("POST", "/api/catalog/similar/result"))
+
+    def test_unfinished_crop_matching_reopens_a_current_result(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            state = Path(temporary)
+            calls = []
+            crops = lambda data, directory: calls.append(1) or ([], True)
+            with patch.object(runner, "api", return_value=snapshot(result_fresh=True)):
+                self.assertTrue(runner.compute("test", "https://invalid.example", "/unused", state, crops))
+            self.assertEqual(calls, [])
+            (state / "crops-pending").touch()
+            replies = [snapshot(result_fresh=True), snapshot(), {"ok": True}]
+            with patch.object(runner, "api", side_effect=replies), \
+                    patch.object(runner, "export_input", return_value={"generation": 7, "fingerprints": [], "clip": []}), \
+                    patch.object(runner, "run_native", return_value={}):
+                self.assertTrue(runner.compute("test", "https://invalid.example", "/unused", state, crops))
+            self.assertEqual(calls, [1])
+            self.assertFalse((state / "crops-pending").exists())
+
+    def test_match_crops_runs_matcher_and_rejects_malformed_rows(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            state = Path(temporary)
+            matcher = state / "matcher.py"
+            args = SimpleNamespace(clip_python=sys.executable, crop_matcher=str(matcher), state_dir=state, crop_minutes=1)
+            data = {"fingerprints": [{"r2_key": "a"}], "clip": [], "skips": [{"group_id": "x"}]}
+            for rows, code, expected in (
+                ([{"crop": "b", "full": "a", "score": 0.91}], 3, ([{"crop": "b", "full": "a", "score": 0.91}], False)),
+                ([{"crop": "b", "full": "a", "score": 0.91}], 0, ([{"crop": "b", "full": "a", "score": 0.91}], True)),
+                ([{"crop": "b", "score": "high"}], 0, ([], False)),
+            ):
+                with self.subTest(rows=rows, code=code):
+                    matcher.write_text(
+                        "import json,sys\n"
+                        "a=dict(zip(sys.argv[1::2],sys.argv[2::2]))\n"
+                        "d=json.load(open(a['--input']))\n"
+                        "assert set(d)=={'fingerprints','clip'} and a['--cache'].endswith('crops')\n"
+                        f"json.dump({rows!r},open(a['--output'],'w'))\n"
+                        f"sys.exit({code})\n"
+                    )
+                    work = state / "work"
+                    work.mkdir()
+                    self.assertEqual(runner.match_crops(args, data, work), expected)
+                    self.assertFalse((work / "crop-input.json").exists())
+                    for leftover in work.iterdir():
+                        leftover.unlink()
+                    work.rmdir()
+
     def test_changed_generation_never_computes_or_publishes(self):
         replies = [snapshot(), snapshot(), page([{"r2_key": "a"}], "a"), runner.StaleSnapshot()]
         with patch.object(runner, "api", side_effect=replies) as api:
@@ -171,6 +237,16 @@ class PipelineTests(unittest.TestCase):
                         with self.assertRaisesRegex(RuntimeError, "CLIP scan incomplete"):
                             runner.scan_and_compute("test", self.args())
                         compute.assert_called_once()
+
+    def test_incomplete_crop_matching_publishes_then_reports_failure(self):
+        args = self.args()
+        args.crop_matcher = "/crop.py"
+        with patch.object(runner.subprocess, "run", return_value=SimpleNamespace(returncode=0)):
+            with patch.object(runner, "compute", return_value=False) as compute:
+                with self.assertRaisesRegex(RuntimeError, "crop matching incomplete"):
+                    runner.scan_and_compute("test", args)
+        self.assertTrue(callable(compute.call_args.args[4]))
+        self.assertFalse((self.state_dir / "last-scan.json").exists())
 
     def test_existing_compute_only_mode(self):
         with patch.object(runner.subprocess, "run") as scan, patch.object(runner, "compute") as compute:

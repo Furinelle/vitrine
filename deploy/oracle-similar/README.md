@@ -21,11 +21,12 @@ Deployment layout (production installation and activation are separate):
 | --- | --- |
 | `tools/clip_embed.py` | `/home/ubuntu/vitrine-similar/clip_embed.py` |
 | `tools/similar_compute.py` | `/home/ubuntu/vitrine-similar/similar_compute.py` |
+| `tools/crop_match.py` | `/home/ubuntu/vitrine-similar/crop_match.py` |
 | Linux aarch64 `target/release/vitrine-similar` | `/home/ubuntu/vitrine-similar/vitrine-similar` |
 | `vitrine-similar.service` | `/etc/systemd/system/vitrine-similar.service` |
 | `vitrine-similar.timer` | `/etc/systemd/system/vitrine-similar.timer` |
 
-The runner and the binary carry the algorithm name (`score-ranked-v3`) and refuse
+The runner and the binary carry the algorithm name (`crop-junk-v4`) and refuse
 a Worker that reports another one, so `similar_compute.py`, the binary and the
 Worker are updated together. Between the Worker deploy and the first run of the
 matching runner the admin page reports results as pending.
@@ -42,6 +43,15 @@ checked that generation and its similarity result is current, it makes no furthe
 requests; a group kept since that result makes it stale, so the freed slot is
 refilled. Otherwise it runs the existing OpenCLIP ViT-B-32/openai scanner for missing images, then computes groups. Completed upload batches survive interruption and are skipped on retry. The scanner uses the existing virtualenv and cached model with four Torch threads and up to four prefetched downloads; no missing images means no model load. A partial scan still publishes completed work and marks the service failed so the next scheduled run retries missing keys.
 
+After the export, `crop_match.py` runs in the same virtualenv and checks candidate
+crop pairs on pixels. It keeps 192 px grayscale copies of the originals it needed
+and every pair's score under `/var/lib/vitrine-similar/crops/`, so a daily run only
+downloads and checks pairs involving new images. It downloads originals, not
+`?width=` thumbnails, so it spends no Cloudflare image-resizing quota. It stops
+after eight minutes; the result is still published with the crops verified so far,
+the service is marked failed, and the next run continues with the remaining pairs.
+Crop matching failures publish the result without crops.
+
 The timer runs once daily at 00:15 UTC (08:15 Beijing/Singapore), with up to
 15 seconds jitter and a persistent missed-run catch-up. New works enter similarity
 review after the next scheduled run. Unchanged catalogs require only one small
@@ -51,7 +61,7 @@ The runner records the pre-scan generation, so writes during scanning still caus
 a check on the next run. HTTP operations have a 30-second timeout and at most
 three attempts; a 409 discards that run and waits for the next timer. D1 daily
 quota responses stop retries and persist a cooldown until the stated reset. Native computation has a 20-minute timeout. Systemd
-bounds the whole run to 30 minutes, four CPUs, and 2 GiB RAM. A failed calculation
+bounds the whole run to 45 minutes, four CPUs, and 2 GiB RAM. A failed calculation
 or stale publication preserves the previous successful cache.
 
 After installation, verify unit syntax and the next calendar trigger. Verify

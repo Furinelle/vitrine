@@ -169,7 +169,7 @@ async function deleteSimilarItems(items) {
       const batch = state.similarRetry.filter((item) => !attempted.has(item.r2_key)).slice(0, 100);
       if (!batch.length) break;
       for (const item of batch) attempted.add(item.r2_key);
-      $("similar-status").textContent = `后台删除中，剩余 ${state.similarRetry.filter((item) => !attempted.has(item.r2_key)).length + batch.length} 张…`;
+      $(reviewStatusId()).textContent = `后台删除中，剩余 ${state.similarRetry.filter((item) => !attempted.has(item.r2_key)).length + batch.length} 张…`;
       const data = await api("/api/admin/similar/delete", {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ items: batch }),
@@ -195,9 +195,14 @@ async function deleteSimilarItems(items) {
   }
   // Groups whose deletion did not finish come back so they can be reviewed again.
   for (const item of state.similarRetry) similarHidden.delete(similarGroupOf.get(item.r2_key));
-  await loadSimilar(true);
-  $("similar-status").textContent = message;
+  for (const item of state.similarRetry) junkHidden.delete(item.r2_key);
+  await (state.view === "junk" ? loadJunk() : loadSimilar(true));
+  $(reviewStatusId()).textContent = message;
 }
+
+const reviewStatusId = () => state.view === "junk" ? "junk-status" : "similar-status";
+// Junk images sent for deletion or kept stay off the page until the next scan drops them.
+const junkHidden = new Set();
 
 function showLogin(message = "") {
   $("login").hidden = false;
@@ -584,6 +589,7 @@ async function restoreImage(image) {
 const VIEWS = {
   works: { path: "/admin", title: "作品管理", section: "view-works-section", nav: "nav-works" },
   similar: { path: "/admin/similar", title: "相似图审批", section: "similar", nav: "nav-similar" },
+  junk: { path: "/admin/junk", title: "杂图审批", section: "junk-view", nav: "nav-junk" },
   tags: { path: "/admin/tags", title: "标签管理", section: "tags-view", nav: "nav-tags" },
   furina: { path: "/admin/furina", title: "芙宁娜图片", section: "curation-view", nav: "nav-curation" },
 };
@@ -613,6 +619,7 @@ function setView(view, updateHistory = true) {
   if (searchForm) searchForm.hidden = view !== "works";
 
   if (view === "similar") loadSimilar();
+  else if (view === "junk") loadJunk();
   else if (view === "tags") loadTagsAdmin();
   else if (view === "furina") loadCuration();
   else if (state.works.length === 0 && !state.loading) loadWorks(true);
@@ -621,6 +628,7 @@ function setView(view, updateHistory = true) {
 function syncRoute() {
   const path = window.location.pathname;
   const view = path.startsWith("/admin/similar") ? "similar"
+    : path.startsWith("/admin/junk") ? "junk"
     : path.startsWith("/admin/tags") ? "tags"
     : path.startsWith("/admin/furina") ? "furina"
     : "works";
@@ -945,6 +953,95 @@ async function loadSimilar(automatic = false) {
     if (wasWaiting) scheduleSimilarRefresh();
   }
 }
+
+/* =====================================================================
+   杂图审批 (/admin/junk)：CLIP 判断像截图、文字图、空白图的图片，随相似图结果一起更新
+   ===================================================================== */
+// At or above this score the reviewed samples were all junk, so those start ticked.
+const JUNK_PRESELECT = 0.9;
+const junk = { items: [] };
+
+async function loadJunk() {
+  $("junk-status").textContent = "正在加载…";
+  try {
+    const similar = await api("/api/admin/similar");
+    if (state.view !== "junk") return;
+    junk.items = (similar.junk || []).filter((item) => !junkHidden.has(item.r2_key))
+      .map((item) => ({ ...item, selected: item.score >= JUNK_PRESELECT }));
+    renderJunk();
+    if (similar.pending) $("junk-status").textContent = "结果每天 08:15 更新（北京时间），等待下一次扫描…";
+  } catch (error) {
+    if (error.status !== 401 && state.view === "junk") $("junk-status").textContent = error.message;
+  }
+}
+
+function renderJunkCounts() {
+  const count = junk.items.length;
+  const chosen = junk.items.filter((item) => item.selected).length;
+  $("nav-junk-count").textContent = count ? String(count) : "";
+  $("junk-status").textContent = count ? `${count} 张疑似杂图，已勾选 ${chosen} 张` : "没有待审批的杂图。";
+  $("junk-delete").disabled = !chosen;
+  $("junk-delete").textContent = chosen ? `删除勾选的 ${chosen} 张` : "删除勾选的图片";
+  $("junk-keep-rest").disabled = chosen === count;
+}
+
+function renderJunk() {
+  renderJunkCounts();
+  $("junk-grid").replaceChildren(...junk.items.map(junkCard));
+}
+
+function junkCard(item) {
+  const card = node("figure", item.selected ? "curation-card to-delete" : "curation-card");
+  const link = node("a", "curation-thumb");
+  link.href = mediaUrl(item.r2_key);
+  link.target = "_blank";
+  link.rel = "noopener noreferrer";
+  const img = node("img");
+  img.alt = item.title || item.r2_key;
+  showThumb(img, item.r2_key);
+  link.append(img);
+  const caption = node("figcaption", "", item.title || item.work_id);
+  caption.title = `${item.title || item.work_id}｜${item.width}×${item.height}`;
+  caption.append(node("span", "curation-meta", `${item.label} · ${Math.round(item.score * 100)}%`));
+  const pick = node("label", "junk-pick");
+  const check = document.createElement("input");
+  check.type = "checkbox";
+  check.checked = item.selected;
+  check.addEventListener("change", () => {
+    item.selected = check.checked;
+    card.classList.toggle("to-delete", check.checked);
+    renderJunkCounts();
+  });
+  pick.append(check, node("span", "", "删除"));
+  card.append(link, caption, pick);
+  return card;
+}
+
+$("junk-delete")?.addEventListener("click", () => {
+  const chosen = junk.items.filter((item) => item.selected);
+  if (!chosen.length || !confirm(`确定从图库删除这 ${chosen.length} 张图片？`)) return;
+  for (const item of chosen) junkHidden.add(item.r2_key);
+  junk.items = junk.items.filter((item) => !item.selected);
+  renderJunk();
+  deleteSimilarItems(similarDeleteItems(chosen.map((item) => item.r2_key), () => []));
+});
+
+$("junk-keep-rest")?.addEventListener("click", async () => {
+  const rest = junk.items.filter((item) => !item.selected);
+  if (!rest.length || !confirm(`把没勾选的 ${rest.length} 张标为不是杂图？以后不再出现在这里。`)) return;
+  try {
+    await api("/api/admin/similar/skip", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ singles: rest.map((item) => item.r2_key) }),
+    });
+    for (const item of rest) junkHidden.add(item.r2_key);
+    junk.items = junk.items.filter((item) => item.selected);
+    renderJunk();
+  } catch (error) {
+    if (error.status !== 401) $("junk-status").textContent = `保存失败：${error.message}`;
+  }
+});
 
 document.addEventListener("visibilitychange", () => {
   if (!document.hidden && !similarQuotaBlocked && similarNeedsRefresh && state.view === "similar" && !$("console").hidden) scheduleSimilarRefresh(300000);

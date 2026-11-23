@@ -20,6 +20,7 @@
     <nav class="admin-nav" aria-label="管理导航">
       <a href="/admin" id="nav-works" class="source-link active" aria-current="page">作品管理 <span id="nav-works-count" class="source-count"></span></a>
       <a href="/admin/similar" id="nav-similar" class="source-link">相似图审批 <span id="nav-similar-count" class="source-count"></span></a>
+      <a href="/admin/junk" id="nav-junk" class="source-link">杂图审批 <span id="nav-junk-count" class="source-count"></span></a>
       <a href="/admin/tags" id="nav-tags" class="source-link">标签管理</a>
       <a href="/admin/furina" id="nav-curation" class="source-link">芙宁娜图片 <span id="nav-curation-count" class="source-count"></span></a>
     </nav>
@@ -154,6 +155,19 @@
 
           <p class="similar-selection-help">建议项需确认后处理。相似组请保留需要的图片；勾选为删除，未勾选为保留；整组全选会全部删除。</p>
           <div id="similar-groups" class="similar-groups-container"></div>
+        </section>
+
+        <section id="junk-view" class="admin-view" hidden aria-label="杂图审批">
+          <div class="collection-heading">
+            <h1>杂图审批</h1>
+            <p id="junk-status" class="collection-count status" role="status" aria-live="polite">正在加载…</p>
+          </div>
+          <div class="admin-filterbar curation-filterbar">
+            <button id="junk-delete" type="button" class="danger-button">删除勾选的图片</button>
+            <button id="junk-keep-rest" type="button" class="text-button">其余都不是杂图</button>
+          </div>
+          <p class="similar-selection-help">按 CLIP 判断像截图、文字图、空白图、梗图的程度从高到低排列，和相似图一起每天更新。把握较大的已默认勾选；勾选的图按相似图审批的方式删除，“其余都不是杂图”会让没勾选的图以后不再出现。</p>
+          <div id="junk-grid" class="curation-grid" aria-label="疑似杂图"></div>
         </section>
 
         <!-- 视图 3：标签管理 (/admin/tags) -->

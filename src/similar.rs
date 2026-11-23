@@ -15,7 +15,12 @@ pub const CLIP_DIM: usize = 512;
 pub const CLIP_SIMILAR: f32 = 0.93;
 // Every reviewed pair at or above this score was the same picture.
 const CLIP_DUPLICATE: f32 = 0.995;
-const SIMILAR_CACHE_VERSION: &str = "score-ranked-v3";
+pub const MAX_JUNK: usize = 300;
+/// Summed junk-prompt probability above which an image is offered for junk review. A
+/// picture that matches no prompt better than another scores the junk prompts' share of
+/// all prompts (15 of 29, about 0.52), so the line sits clearly above that.
+const JUNK_MIN: f32 = 0.6;
+const SIMILAR_CACHE_VERSION: &str = "crop-junk-v4";
 pub const SIMILAR_ALGORITHM: &str = SIMILAR_CACHE_VERSION;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -314,6 +319,9 @@ pub struct SimilarInput {
     clip: Vec<ClipRow>,
     #[serde(default)]
     skips: Vec<SkipRow>,
+    /// Crops verified on pixels by the Oracle runner (tools/crop_match.py).
+    #[serde(default)]
+    crops: Vec<CropPair>,
     /// Newest skip when the export began; a publish is refused once a later one exists.
     #[serde(default)]
     last_skip: Option<String>,
@@ -325,6 +333,8 @@ struct SimilarResponse {
     engine: String,
     groups: Vec<SimilarGroup>,
     auto_pairs: Vec<AutoPair>,
+    #[serde(default)]
+    junk: Vec<JunkItem>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -355,7 +365,10 @@ pub fn compute_offline(input: SimilarInput) -> std::result::Result<SimilarResult
         .into_iter()
         .filter_map(|row| Some((row.r2_key, parse_clip_embedding(&row.embedding)?)))
         .collect();
-    let (groups, auto_pairs) = similar_view(&images, &embeddings, &input.skips);
+    let (groups, auto_pairs) = similar_view(&images, &embeddings, &input.skips, &input.crops);
+    let mut junk = score_junk(&images, &embeddings);
+    junk.retain(|item| !junk_is_kept(item, &input.skips));
+    junk.truncate(MAX_JUNK);
     Ok(SimilarResult {
         generation: input.generation,
         algorithm: input.algorithm,
@@ -372,6 +385,7 @@ pub fn compute_offline(input: SimilarInput) -> std::result::Result<SimilarResult
             .into(),
             groups,
             auto_pairs,
+            junk,
         },
     })
 }
@@ -632,6 +646,161 @@ pub struct AutoPair {
     pub remove: SimilarItem,
 }
 
+/// `crop` is a region of `full`; `score` is their best normalized cross-correlation.
+#[derive(Debug, Clone, Deserialize)]
+pub struct CropPair {
+    pub crop: String,
+    pub full: String,
+    pub score: f32,
+}
+
+/// One group per source image holding the crops taken from it, best match first. A crop
+/// found in several images joins only the one it matches best.
+pub fn crop_groups(images: &[ImageFingerprint], crops: &[CropPair]) -> Vec<SimilarGroup> {
+    let by_key: std::collections::HashMap<&str, &ImageFingerprint> = images
+        .iter()
+        .filter(|image| !image.solid_color)
+        .map(|image| (image.r2_key.as_str(), image))
+        .collect();
+    let mut best: std::collections::HashMap<&str, &CropPair> = std::collections::HashMap::new();
+    for pair in crops {
+        if pair.crop == pair.full
+            || !(0.0..=1.0).contains(&pair.score)
+            || !by_key.contains_key(pair.crop.as_str())
+            || !by_key.contains_key(pair.full.as_str())
+        {
+            continue;
+        }
+        let slot = best.entry(pair.crop.as_str()).or_insert(pair);
+        if pair.score > slot.score {
+            *slot = pair;
+        }
+    }
+    let mut by_full: std::collections::BTreeMap<&str, Vec<&CropPair>> =
+        std::collections::BTreeMap::new();
+    for pair in best.into_values() {
+        by_full.entry(pair.full.as_str()).or_default().push(pair);
+    }
+    let item = |image: &ImageFingerprint, score: Option<f32>| {
+        let mut item = item_from(
+            image,
+            score.map_or(MatchKind::StrictSame, |score| MatchKind::Partial {
+                distance: ((1.0 - score) * 1000.0).round() as u32,
+            }),
+            score.is_none(),
+        );
+        item.kind = score.map_or_else(|| "keep".into(), |score| format!("crop {score:.3}"));
+        item
+    };
+    by_full
+        .into_iter()
+        .map(|(full, mut pairs)| {
+            pairs.sort_by(|left, right| {
+                right
+                    .score
+                    .total_cmp(&left.score)
+                    .then_with(|| left.crop.cmp(&right.crop))
+            });
+            pairs.truncate(MAX_GROUP_ITEMS - 1);
+            let mut items = vec![item(by_key[full], None)];
+            items.extend(
+                pairs
+                    .iter()
+                    .map(|pair| item(by_key[pair.crop.as_str()], Some(pair.score))),
+            );
+            SimilarGroup {
+                id: skip_key_from_items(&items),
+                items,
+            }
+        })
+        .collect()
+}
+
+/// An image whose CLIP embedding reads as a screenshot, text, a blank page or similar.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct JunkItem {
+    pub r2_key: String,
+    pub work_id: String,
+    pub source: String,
+    pub title: String,
+    pub width: u32,
+    pub height: u32,
+    pub score: f32,
+    pub label: String,
+}
+
+#[derive(Deserialize)]
+struct JunkPrompts {
+    keep: Vec<JunkPrompt>,
+    junk: Vec<JunkPrompt>,
+}
+
+#[derive(Deserialize)]
+struct JunkPrompt {
+    embedding: String,
+    #[serde(default)]
+    label: String,
+}
+
+/// Images scored as junk, most certain first. Each image's embedding is compared with the
+/// prompts in junk_prompts.json (tools/junk_prompts.py) as CLIP zero-shot classification
+/// does: softmax at CLIP's logit scale of 100, the score being the junk prompts' share.
+pub fn score_junk(
+    images: &[ImageFingerprint],
+    embeddings: &std::collections::HashMap<String, Vec<f32>>,
+) -> Vec<JunkItem> {
+    let prompts: JunkPrompts =
+        serde_json::from_str(include_str!("junk_prompts.json")).expect("junk_prompts.json");
+    let vector = |prompt: &JunkPrompt| parse_clip_embedding(&prompt.embedding).expect("prompt");
+    let keep: Vec<_> = prompts.keep.iter().map(vector).collect();
+    let junk: Vec<_> = prompts.junk.iter().map(vector).collect();
+    let mut items: Vec<JunkItem> = images
+        .iter()
+        .filter_map(|image| {
+            let embedding = embeddings.get(&image.r2_key)?;
+            let logit = |prompt: &Vec<f32>| 100.0 * cosine(embedding, prompt);
+            let keep_logits: Vec<f32> = keep.iter().map(logit).collect();
+            let junk_logits: Vec<f32> = junk.iter().map(logit).collect();
+            let top = keep_logits
+                .iter()
+                .chain(&junk_logits)
+                .copied()
+                .fold(f32::MIN, f32::max);
+            let mass = |logits: &[f32]| logits.iter().map(|value| (value - top).exp()).sum::<f32>();
+            let junk_mass = mass(&junk_logits);
+            let score = junk_mass / (junk_mass + mass(&keep_logits));
+            let label = junk_logits
+                .iter()
+                .zip(&prompts.junk)
+                .max_by(|left, right| left.0.total_cmp(right.0))
+                .map(|(_, prompt)| prompt.label.clone())?;
+            (score >= JUNK_MIN).then(|| JunkItem {
+                r2_key: image.r2_key.clone(),
+                work_id: image.work_id.clone(),
+                source: image.source.clone(),
+                title: image.title.clone(),
+                width: image.width,
+                height: image.height,
+                score: (score * 1000.0).round() / 1000.0,
+                label,
+            })
+        })
+        .collect();
+    items.sort_by(|left, right| {
+        right
+            .score
+            .total_cmp(&left.score)
+            .then_with(|| left.r2_key.cmp(&right.r2_key))
+    });
+    items
+}
+
+/// "Not junk" is recorded as a skip whose group is the single image.
+fn junk_is_kept(item: &JunkItem, skips: &[SkipRow]) -> bool {
+    let id = skip_key_from_r2(std::iter::once(item.r2_key.as_str()));
+    skips.iter().any(|skip| skip.group_id == id)
+}
+
 fn item_from(image: &ImageFingerprint, kind: MatchKind, keep: bool) -> SimilarItem {
     SimilarItem {
         r2_key: image.r2_key.clone(),
@@ -663,7 +832,8 @@ pub fn split_auto_pairs(
             let remove = by_key.get(group.items[1].r2_key.as_str());
             if let (Some(keep), Some(remove)) = (keep, remove) {
                 let hashed = classify_similarity(keep, remove);
-                if hashed == MatchKind::StrictSame {
+                // Pages of one work are reviewed by hand: a post may repeat a page on purpose.
+                if hashed == MatchKind::StrictSame && keep.work_id != remove.work_id {
                     auto_pairs.push(AutoPair {
                         keep: item_from(keep, MatchKind::StrictSame, true),
                         remove: item_from(remove, hashed, false),
@@ -730,8 +900,9 @@ pub fn cluster_clip(
             continue;
         };
         let mut members = vec![keep];
+        // Pages of the same work count too: posts repeat a picture or add its variants.
         for &index in &indexed {
-            if index == keep || used[index] || images[keep].work_id == images[index].work_id {
+            if index == keep || used[index] {
                 continue;
             }
             let Some(other) = embeddings.get(&images[index].r2_key) else {
@@ -829,6 +1000,7 @@ fn similar_view(
     images: &[ImageFingerprint],
     embeddings: &std::collections::HashMap<String, Vec<f32>>,
     skips: &[SkipRow],
+    crops: &[CropPair],
 ) -> (Vec<SimilarGroup>, Vec<AutoPair>) {
     let (mut review, mut auto_pairs) = split_auto_pairs(cluster_similar(images), images);
     if has_clip_coverage(embeddings.len(), images.len()) {
@@ -838,6 +1010,26 @@ fn similar_view(
         auto_pairs.sort_by(|left, right| left.remove.r2_key.cmp(&right.remove.r2_key));
         auto_pairs.dedup_by(|left, right| left.remove.r2_key == right.remove.r2_key);
     }
+    let grouped: std::collections::HashMap<&str, usize> = review
+        .iter()
+        .enumerate()
+        .flat_map(|(index, group)| {
+            group
+                .items
+                .iter()
+                .map(move |item| (item.r2_key.as_str(), index))
+        })
+        .collect();
+    // A crop already reviewed beside its source needs no second group.
+    let crops: Vec<CropPair> = crops
+        .iter()
+        .filter(|pair| {
+            !matches!((grouped.get(pair.crop.as_str()), grouped.get(pair.full.as_str())),
+                (Some(left), Some(right)) if left == right)
+        })
+        .cloned()
+        .collect();
+    review.extend(crop_groups(images, &crops));
     // Before the cap: a kept group must not hold a slot, and the closest matches must not
     // be cut behind large loose groups.
     review.retain(|group| !group_is_skipped(group, skips));
@@ -1076,6 +1268,9 @@ struct SkipBody {
     id: String,
     #[serde(default)]
     keys: Vec<String>,
+    /// Images marked "not junk", each kept as a group of one.
+    #[serde(default)]
+    singles: Vec<String>,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -1194,6 +1389,7 @@ async fn review_result(req: &Request, db: &D1Database) -> Result<Option<ReviewRe
                         .flat_map(|pair| [&pair.keep, &pair.remove]),
                 )
                 .map(|item| &item.r2_key)
+                .chain(result.response.junk.iter().map(|item| &item.r2_key))
                 .collect();
             let keys = serde_json::to_string(&keys)
                 .map_err(|error| Error::RustError(error.to_string()))?;
@@ -1206,7 +1402,7 @@ async fn review_result(req: &Request, db: &D1Database) -> Result<Option<ReviewRe
                 FROM image_fingerprints f CROSS JOIN images i ON i.r2_key=f.r2_key
                 CROSS JOIN works w ON w.id=i.work_id
                 WHERE f.r2_key IN (SELECT value FROM json_each(?))
-                  AND f.work_id=i.work_id AND f.solid_color=0 AND w.deleted_at IS NULL
+                  AND f.work_id=i.work_id AND w.deleted_at IS NULL
             "#,
                 )
                 .bind(&[JsValue::from_str(&keys)])?
@@ -1254,8 +1450,10 @@ fn clip_duplicate(
     remove: &ImageFingerprint,
     embeddings: &std::collections::HashMap<String, Vec<f32>>,
 ) -> bool {
-    // The aspect check keeps crops, which CLIP scores as the same scene, in review.
-    same_aspect_ratio(keep, remove, 0.005)
+    // The aspect check keeps crops, which CLIP scores as the same scene, in review; pages of
+    // one work at this score are mostly variants (a heart added, a lighter colouring).
+    keep.work_id != remove.work_id
+        && same_aspect_ratio(keep, remove, 0.005)
         && match (embeddings.get(&keep.r2_key), embeddings.get(&remove.r2_key)) {
             (Some(left), Some(right)) => cosine(left, right) >= CLIP_DUPLICATE,
             _ => false,
@@ -1283,6 +1481,14 @@ fn revalidate_candidates(
                 })
                 .collect();
             let members = members?;
+            // Crops were matched on pixels Oracle no longer holds; current members suffice.
+            if group
+                .items
+                .iter()
+                .any(|item| item.kind.starts_with("crop "))
+            {
+                return Some(group);
+            }
             let current = if response.engine == "clip" {
                 let keeper = group.items.iter().find(|item| item.keep)?;
                 let vector = embeddings.get(&keeper.r2_key)?;
@@ -1353,6 +1559,18 @@ fn revalidate_candidates(
             })
         })
         .collect();
+    // Like groups, a listed image must still read as junk from its current embedding.
+    let current: Vec<ImageFingerprint> = response
+        .junk
+        .iter()
+        .filter_map(|item| {
+            images
+                .get(&item.r2_key)
+                .filter(|image| image.work_id == item.work_id)
+                .cloned()
+        })
+        .collect();
+    response.junk = score_junk(&current, embeddings);
     response
 }
 
@@ -1394,6 +1612,17 @@ fn valid_result(result: &SimilarResult) -> bool {
                 && !pair.remove.keep
                 && pair.keep.kind == "strict"
                 && pair.remove.kind == "strict"
+        })
+        && result.response.junk.len() <= MAX_JUNK
+        && result.response.junk.iter().all(|item| {
+            !item.r2_key.is_empty()
+                && item.r2_key.len() <= 1024
+                && !item.work_id.is_empty()
+                && item.work_id.len() <= 2048
+                && item.source.len() <= 64
+                && item.title.len() <= 2048
+                && item.label.len() <= 64
+                && (0.0..=1.0).contains(&item.score)
         })
 }
 
@@ -1601,6 +1830,12 @@ fn apply_skips(mut payload: Value, skips: &[SkipRow]) -> Value {
             !group_is_skipped(&parsed, skips)
         });
     }
+    if let Some(junk) = payload.get_mut("junk").and_then(Value::as_array_mut) {
+        junk.retain(|item| {
+            serde_json::from_value::<JunkItem>(item.clone())
+                .is_ok_and(|item| !junk_is_kept(&item, skips))
+        });
+    }
     payload
 }
 
@@ -1629,6 +1864,38 @@ pub async fn handle_skip(mut req: Request, env: Env) -> Result<Response> {
         Ok(value) => value,
         Err(_) => return reject(400, "invalid json"),
     };
+    if !body.singles.is_empty() {
+        if body.singles.len() > MAX_JUNK
+            || body
+                .singles
+                .iter()
+                .any(|key| key.is_empty() || key.len() > 1024)
+        {
+            return reject(400, "invalid single skips");
+        }
+        let db = env.d1("DB")?;
+        let now = crate::js_iso_now();
+        let statements = body
+            .singles
+            .iter()
+            .map(|key| {
+                db.prepare(
+                    "INSERT INTO similar_skips (group_id, created_at, members) VALUES (?, ?, ?)
+                     ON CONFLICT(group_id) DO NOTHING",
+                )
+                .bind(&[
+                    JsValue::from_str(&skip_key_from_r2(std::iter::once(key.as_str()))),
+                    JsValue::from_str(&now),
+                    JsValue::from_str(key),
+                ])
+            })
+            .collect::<Result<Vec<_>>>()?;
+        db.batch(statements).await?;
+        return Ok(with_cors(json_response(
+            &json!({ "ok": true, "kept": body.singles.len() }),
+            200,
+        )?));
+    }
     let keys: Vec<String> = body
         .keys
         .into_iter()
@@ -1701,6 +1968,24 @@ pub async fn handle_delete(mut req: Request, env: Env) -> Result<Response> {
             guarded.push(SimilarGroup {
                 id: pair.keep.r2_key.clone(),
                 items: vec![pair.keep, pair.remove],
+            });
+        }
+        // A junk image is a group of one: deletable while listed, with no keeper to protect.
+        for item in review.result.response.junk {
+            guarded.push(SimilarGroup {
+                id: item.r2_key.clone(),
+                items: vec![SimilarItem {
+                    r2_key: item.r2_key,
+                    work_id: item.work_id,
+                    source: item.source,
+                    title: item.title,
+                    width: item.width,
+                    height: item.height,
+                    bytes: 0,
+                    kind: "junk".into(),
+                    distance: 0,
+                    keep: false,
+                }],
             });
         }
     }
@@ -2279,8 +2564,8 @@ mod tests {
         ];
         let incomplete = std::collections::HashMap::from([("a".into(), vec![1.0; CLIP_DIM])]);
         assert_eq!(
-            similar_view(&images, &incomplete, &[]),
-            similar_view(&images, &std::collections::HashMap::new(), &[])
+            similar_view(&images, &incomplete, &[], &[]),
+            similar_view(&images, &std::collections::HashMap::new(), &[], &[])
         );
     }
 
@@ -2301,6 +2586,7 @@ mod tests {
             engine: "clip".into(),
             groups: cluster_clip(&[a.clone(), b.clone()], &embeddings),
             auto_pairs: vec![],
+            junk: vec![],
         };
         assert_eq!(response.groups.len(), 1);
         let mut images = std::collections::HashMap::from([("a".into(), a), ("b".into(), b)]);
@@ -2337,6 +2623,7 @@ mod tests {
                 keep: item_from(&a, MatchKind::StrictSame, true),
                 remove: item_from(&b, MatchKind::StrictSame, false),
             }],
+            junk: vec![],
         };
         let mut images = std::collections::HashMap::from([("a".into(), a), ("b".into(), b)]);
         assert_eq!(
@@ -2372,7 +2659,7 @@ mod tests {
         assert_eq!(cluster_clip(&images, &embeddings).len(), 1);
         images[0].solid_color = true;
         assert!(cluster_clip(&images, &embeddings).is_empty());
-        assert!(similar_view(&images, &embeddings, &[]).0.is_empty());
+        assert!(similar_view(&images, &embeddings, &[], &[]).0.is_empty());
     }
 
     #[test]
@@ -2497,7 +2784,7 @@ mod tests {
         let reference = split_auto_pairs(all_pairs_reference(&images), &images);
         eprintln!("old hash view {:?}", started.elapsed());
         let started = std::time::Instant::now();
-        let (groups, pairs) = similar_view(&images, &hash_only, &[]);
+        let (groups, pairs) = similar_view(&images, &hash_only, &[], &[]);
         eprintln!(
             "new hash view {:?}, {} groups, {} pairs",
             started.elapsed(),
@@ -2691,6 +2978,145 @@ mod tests {
     }
 
     #[test]
+    fn same_work_variants_are_reviewed_but_never_auto_deleted() {
+        let images = vec![
+            fp("p0", "douyin:1", "same", 1, 200, 200, 20),
+            fp("p1", "douyin:1", "same", 1, 100, 100, 10),
+        ];
+        let embeddings = std::collections::HashMap::from([
+            ("p0".to_string(), xy_emb(1.0, 0.0)),
+            ("p1".to_string(), xy_emb(0.999, 0.044_710_2)),
+        ]);
+        let (review, auto_pairs) = similar_view(&images, &embeddings, &[], &[]);
+        assert!(auto_pairs.is_empty());
+        assert_eq!(review.len(), 1);
+        assert_eq!(review[0].items[0].r2_key, "p0");
+        let response = SimilarResponse {
+            ok: true,
+            engine: "clip".into(),
+            groups: review,
+            auto_pairs: vec![],
+            junk: vec![],
+        };
+        let by_key = images
+            .into_iter()
+            .map(|image| (image.r2_key.clone(), image))
+            .collect();
+        let checked = revalidate_candidates(response, &by_key, &embeddings);
+        assert!(checked.auto_pairs.is_empty());
+        assert_eq!(checked.groups.len(), 1);
+    }
+
+    #[test]
+    fn crops_group_under_their_best_source_and_survive_review_reads() {
+        let images = vec![
+            fp("full", "x:1", "full", 0, 2000, 1000, 50),
+            fp("copy", "x:2", "copy", u64::MAX, 1000, 500, 20),
+            fp("face", "x:3", "face", 0xAAAA_AAAA_AAAA_AAAA, 400, 600, 10),
+            fp("hand", "x:1", "hand", 0x5555_5555_5555_5555, 300, 300, 10),
+        ];
+        let pair = |crop: &str, full: &str, score: f32| CropPair {
+            crop: crop.into(),
+            full: full.into(),
+            score,
+        };
+        let crops = [
+            pair("face", "copy", 0.91),
+            pair("face", "full", 0.97),
+            pair("hand", "full", 0.93),
+            pair("gone", "full", 0.99),
+        ];
+        let (review, auto_pairs) =
+            similar_view(&images, &std::collections::HashMap::new(), &[], &crops);
+        assert!(auto_pairs.is_empty());
+        assert_eq!(review.len(), 1, "{review:?}");
+        let keys: Vec<_> = review[0]
+            .items
+            .iter()
+            .map(|item| item.r2_key.as_str())
+            .collect();
+        assert_eq!(keys, ["full", "face", "hand"]);
+        assert!(review[0].items[0].keep && !review[0].items[1].keep);
+        assert_eq!(review[0].items[1].kind, "crop 0.970");
+        let response = SimilarResponse {
+            ok: true,
+            engine: "clip".into(),
+            groups: review,
+            auto_pairs: vec![],
+            junk: vec![],
+        };
+        let mut by_key: std::collections::HashMap<_, _> = images
+            .into_iter()
+            .map(|image| (image.r2_key.clone(), image))
+            .collect();
+        let none = std::collections::HashMap::new();
+        assert_eq!(
+            revalidate_candidates(response.clone(), &by_key, &none)
+                .groups
+                .len(),
+            1
+        );
+        by_key.remove("hand");
+        assert!(revalidate_candidates(response, &by_key, &none)
+            .groups
+            .is_empty());
+    }
+
+    #[test]
+    fn junk_scores_follow_the_prompts() {
+        let prompts: JunkPrompts = serde_json::from_str(include_str!("junk_prompts.json")).unwrap();
+        let mut images = Vec::new();
+        let mut embeddings = std::collections::HashMap::new();
+        for (index, prompt) in prompts.keep.iter().chain(&prompts.junk).enumerate() {
+            let key = format!("k{index:02}");
+            images.push(fp(&key, &key, &key, 1, 10, 10, 10));
+            embeddings.insert(key, parse_clip_embedding(&prompt.embedding).unwrap());
+        }
+        // A vector that matches no prompt in particular (as test fixtures do) is not junk.
+        images.push(fp("axis", "axis", "axis", 1, 10, 10, 10));
+        embeddings.insert("axis".into(), xy_emb(0.0, 1.0));
+        let junk = score_junk(&images, &embeddings);
+        // Each junk prompt's own vector scores as junk under its own label; no keep prompt does.
+        assert_eq!(junk.len(), prompts.junk.len());
+        for item in &junk {
+            let index: usize = item.r2_key[1..]
+                .parse()
+                .expect("only prompt vectors are junk");
+            assert!(index >= prompts.keep.len(), "{item:?}");
+            assert_eq!(item.label, prompts.junk[index - prompts.keep.len()].label);
+            assert!(item.score > 0.9, "{item:?}");
+        }
+        assert!(junk.windows(2).all(|pair| pair[0].score >= pair[1].score));
+        let kept = SkipRow {
+            group_id: skip_key_from_r2(std::iter::once(junk[0].r2_key.as_str())),
+            members: junk[0].r2_key.clone(),
+        };
+        assert!(junk_is_kept(&junk[0], std::slice::from_ref(&kept)));
+        assert!(!junk_is_kept(&junk[1], &[kept]));
+        // Reads recheck the current embedding: an image that no longer reads as junk drops out.
+        let first = junk[0].r2_key.clone();
+        let by_key = images
+            .into_iter()
+            .map(|image| (image.r2_key.clone(), image))
+            .collect();
+        let response = SimilarResponse {
+            ok: true,
+            engine: "clip".into(),
+            groups: vec![],
+            auto_pairs: vec![],
+            junk: junk.clone(),
+        };
+        assert_eq!(
+            revalidate_candidates(response.clone(), &by_key, &embeddings).junk,
+            junk
+        );
+        embeddings.insert(first.clone(), xy_emb(0.0, 1.0));
+        let checked = revalidate_candidates(response, &by_key, &embeddings).junk;
+        assert_eq!(checked.len(), junk.len() - 1);
+        assert!(checked.iter().all(|item| item.r2_key != first));
+    }
+
+    #[test]
     fn clip_does_not_chain_unrelated_neighbors() {
         let images = vec![
             fp("a", "pixiv:1", "a", 1, 10, 10, 10),
@@ -2730,14 +3156,14 @@ mod tests {
         }
         add("pair-a".into(), MAX_SIMILAR_GROUPS, 1.0, 0, 20);
         add("pair-b".into(), MAX_SIMILAR_GROUPS, 0.999, u64::MAX, 10);
-        let (review, _) = similar_view(&images, &embeddings, &[]);
+        let (review, _) = similar_view(&images, &embeddings, &[], &[]);
         assert_eq!(review.len(), MAX_SIMILAR_GROUPS);
         assert_eq!(review[0].items[0].r2_key, "pair-a");
         let kept = SkipRow {
             group_id: review[0].id.clone(),
             members: String::new(),
         };
-        let (review, _) = similar_view(&images, &embeddings, &[kept]);
+        let (review, _) = similar_view(&images, &embeddings, &[kept], &[]);
         assert_eq!(review.len(), MAX_SIMILAR_GROUPS);
         assert!(review.iter().all(|group| group.items.len() == 3));
     }
@@ -2749,12 +3175,12 @@ mod tests {
             fp("high", "pixiv:2", "same", 1, 20, 20, 10),
         ];
         let none = std::collections::HashMap::new();
-        assert_eq!(similar_view(&images, &none, &[]).1.len(), 1);
+        assert_eq!(similar_view(&images, &none, &[], &[]).1.len(), 1);
         let kept = SkipRow {
             group_id: String::new(),
             members: "high\nlow".into(),
         };
-        assert!(similar_view(&images, &none, &[kept]).1.is_empty());
+        assert!(similar_view(&images, &none, &[kept], &[]).1.is_empty());
     }
 
     #[test]
@@ -2784,7 +3210,7 @@ mod tests {
             ("a".into(), xy_emb(1.0, 0.0)),
             ("b".into(), xy_emb(1.0, 0.0)),
         ]);
-        let (review, auto_pairs) = similar_view(&images, &embeddings, &[]);
+        let (review, auto_pairs) = similar_view(&images, &embeddings, &[], &[]);
         assert!(auto_pairs.is_empty());
         assert_eq!(review.len(), 1);
         assert_eq!(review[0].items[1].kind, "clip 1.000");
@@ -2815,6 +3241,7 @@ mod tests {
                 engine: "clip".into(),
                 groups: cluster_clip(&images, &embeddings),
                 auto_pairs: vec![],
+                junk: vec![],
             };
             assert_eq!(response.groups.len(), 1);
             let images = images

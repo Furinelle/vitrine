@@ -10,9 +10,9 @@ Group=ubuntu
 WorkingDirectory=/home/ubuntu/vitrine-similar
 StateDirectory=vitrine-similar
 StateDirectoryMode=0700
-ExecStart=/usr/bin/python3 /home/ubuntu/vitrine-similar/similar_compute.py --binary /home/ubuntu/vitrine-similar/vitrine-similar --state-dir /var/lib/vitrine-similar --clip-python /home/ubuntu/vitrine-clip/venv/bin/python --clip-scanner /home/ubuntu/vitrine-similar/clip_embed.py --clip-threads 4
+ExecStart=/usr/bin/python3 /home/ubuntu/vitrine-similar/similar_compute.py --binary /home/ubuntu/vitrine-similar/vitrine-similar --state-dir /var/lib/vitrine-similar --clip-python /home/ubuntu/vitrine-clip/venv/bin/python --clip-scanner /home/ubuntu/vitrine-similar/clip_embed.py --clip-threads 4 --crop-matcher /home/ubuntu/vitrine-similar/crop_match.py
 Environment=HF_HUB_OFFLINE=1 OMP_NUM_THREADS=4 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=4
-TimeoutStartSec=30min
+TimeoutStartSec=45min
 CPUQuota=400%
 MemoryMax=2G
 TasksMax=32

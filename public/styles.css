@@ -158,6 +158,9 @@ h1 { font: 500 30px/1.3 var(--serif); letter-spacing: .06em; margin-bottom: 0; }
 .similar-card.keep .similar-card-badge { color: light-dark(#376041, #b6d0bc); }
 .similar-card.to-delete { border-color: light-dark(#cf9c94, #985d53); }
 .similar-card.to-delete .similar-card-badge { color: light-dark(#a03535, #eeb1a8); }
+.curation-card.to-delete { border-color: light-dark(#cf9c94, #985d53); }
+.junk-pick { display: flex; align-items: center; gap: 8px; min-height: 32px; font-size: 13px; color: var(--muted); cursor: pointer; }
+.curation-card.to-delete .junk-pick { color: light-dark(#a03535, #eeb1a8); }
 .similar-badge-best { font-size: 11px; padding: 1px 8px; border-radius: 999px; color: var(--muted); background: var(--inset); margin-left: auto; }
 .similar-card-info { display: grid; gap: 5px; min-width: 0; }
 .similar-card-name { font: 500 14px var(--serif); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }

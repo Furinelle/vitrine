@@ -247,10 +247,12 @@ const elementMap = {
   'nav-similar': { classList: { toggle(c, f) { if (f) this[c] = true; else delete this[c]; } }, setAttribute(k, v) { this[k] = v; } },
   'nav-tags': { classList: { toggle(c, f) { if (f) this[c] = true; else delete this[c]; } }, setAttribute(k, v) { this[k] = v; } },
   'nav-curation': { classList: { toggle(c, f) { if (f) this[c] = true; else delete this[c]; } }, setAttribute(k, v) { this[k] = v; } },
+  'nav-junk': { classList: { toggle(c, f) { if (f) this[c] = true; else delete this[c]; } }, setAttribute(k, v) { this[k] = v; } },
   'view-works-section': { hidden: false },
   'similar': { hidden: true },
   'tags-view': { hidden: true },
   'curation-view': { hidden: true },
+  'junk-view': { hidden: true },
   'sidebar-sources-section': { hidden: false },
   'search-form': { style: {} },
 };
@@ -263,6 +265,7 @@ const routingContext = vm.createContext({
   loadWorks() {},
   loadTagsAdmin() { routingContext.tagsLoaded = true; },
   loadCuration() { routingContext.curationLoaded = true; },
+  loadJunk() { routingContext.junkLoaded = true; },
 });
 vm.runInContext(
   adminSource.slice(adminSource.indexOf('const VIEWS = {'), adminSource.indexOf('/* =====================================================================\n   相似图审批相关渲染与操作')),
@@ -277,6 +280,14 @@ assert.equal(elementMap['similar'].hidden, false);
 assert.equal(elementMap['nav-similar'].classList.active, true);
 assert.equal(elementMap['sidebar-sources-section'].hidden, true);
 assert.equal(elementMap['search-form'].hidden, true);
+
+routingContext.window.location.pathname = '/admin/junk';
+routingContext.syncRoute();
+assert.equal(routingContext.state.view, 'junk');
+assert.equal(routingContext.document.title, 'Vitrine · 杂图审批');
+assert.equal(elementMap['junk-view'].hidden, false);
+assert.equal(elementMap['similar'].hidden, true);
+assert.equal(routingContext.junkLoaded, true);
 
 routingContext.window.location.pathname = '/admin/furina';
 routingContext.syncRoute();
