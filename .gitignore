@@ -8,3 +8,9 @@ target/
 .DS_Store
 pkg/
 __pycache__/
+
+# Local agent tooling and drafts kept out of the public repo
+.agents/
+skills-lock.json
+.c2cignore
+docs/superpowers/
