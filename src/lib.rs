@@ -2781,7 +2781,8 @@ async fn handle_media(key: &str, req: &Request, env: &Env) -> Result<Response> {
     }
 
     let mut resize_fallback = None;
-    // Only these three variants may be generated. Check visibility above even
+    let bucket = env.bucket("MEDIA")?;
+    // Only these four widths may be generated. Check visibility above even
     // when Cloudflare already has a resized image in its internal cache.
     // Skip transformation for loopback development URLs.
     if let Some(width) = width.filter(|_| {
@@ -2794,24 +2795,44 @@ async fn handle_media(key: &str, req: &Request, env: &Env) -> Result<Response> {
         let mut source = url.clone();
         source.set_query(None);
         let accept = req.headers().get("Accept")?.unwrap_or_default();
-        let (format, format_name) = if accept.contains("image/avif") {
-            (Some(ResizeFormat::Avif), "avif")
-        } else if accept.contains("image/webp") {
+        // No AVIF: the resizer's AVIF was larger than its WebP for 17 of 20 gallery images
+        // (measured 2026-11-26), and one format per width keeps fewer copies to cache.
+        let (format, format_name) = if accept.contains("image/webp") {
             (Some(ResizeFormat::Webp), "webp")
         } else {
             (None, "source")
         };
         // The resizer revalidates its copy against this Worker on every request (two more
         // invocations and an R2 read). Keeping the finished thumbnail in the Cache API makes a
-        // repeat view cost only the visibility check above.
+        // repeat view cost only the visibility check above. v2: entries cached before Furina
+        // thumbnails went to R2 would otherwise keep them from ever being written there.
         let cache = Cache::default();
         let cache_key = format!(
-            "{}/__thumbs/v1{}?width={width}&format={format_name}",
+            "{}/__thumbs/v2{}?width={width}&format={format_name}",
             url.origin().ascii_serialization(),
             url.path()
         );
         if let Ok(Some(hit)) = cache.get(cache_key.as_str(), false).await {
             return thumb_response(req, hit, "HIT");
+        }
+        // The edge cache is per data centre. Furina thumbnails are also kept in R2, so a data
+        // centre that has not served one yet reads it back instead of resizing the original.
+        let thumb_key = format!("thumbs/v1/{decoded}/{width}.{format_name}");
+        if let Ok(Some(object)) = bucket.get(thumb_key.as_str()).execute().await {
+            if let Some(body) = object.body() {
+                let headers = Headers::new();
+                if let Some(content_type) = object.http_metadata().content_type {
+                    headers.set("Content-Type", &content_type)?;
+                }
+                headers.set("ETag", &object.http_etag())?;
+                let bytes = body.bytes().await?;
+                cache_thumb(&cache, &cache_key, &bytes, &headers).await;
+                return thumb_response(
+                    req,
+                    Response::from_bytes(bytes)?.with_headers(headers),
+                    "R2",
+                );
+            }
         }
         let mut cf = CfProperties::new();
         cf.image = Some(ResizeConfig {
@@ -2835,19 +2856,27 @@ async fn handle_media(key: &str, req: &Request, env: &Env) -> Result<Response> {
                         .unwrap_or_default(),
                 )
             {
-                // The format is in the key, so the stored copy carries no Vary. A thumbnail
-                // that cannot be stored is still served.
-                let stored = response.headers().clone();
-                if stored.set("Cache-Control", THUMB_EDGE_CACHE).is_ok()
-                    && stored.delete("Vary").is_ok()
-                {
-                    if let Ok(copy) = response.cloned() {
-                        let _ = cache
-                            .put(cache_key.as_str(), copy.with_headers(stored))
-                            .await;
+                let headers = response.headers().clone();
+                let bytes = response.bytes().await?;
+                cache_thumb(&cache, &cache_key, &bytes, &headers).await;
+                if matches!(curation::is_furina(env, &decoded).await, Ok(true)) {
+                    let stored = bucket
+                        .put(thumb_key.as_str(), bytes.clone())
+                        .http_metadata(HttpMetadata {
+                            content_type: headers.get("Content-Type")?,
+                            ..HttpMetadata::default()
+                        })
+                        .execute()
+                        .await;
+                    if let Err(error) = stored {
+                        console_warn!("thumbnail {thumb_key} not kept in R2: {error}");
                     }
                 }
-                return thumb_response(req, response, "MISS");
+                return thumb_response(
+                    req,
+                    Response::from_bytes(bytes)?.with_headers(headers),
+                    "MISS",
+                );
             }
             resize_fallback = Some(format!(
                 "{} {} {}",
@@ -2862,7 +2891,6 @@ async fn handle_media(key: &str, req: &Request, env: &Env) -> Result<Response> {
         // Unsupported/failed resizing keeps the original image usable.
     }
 
-    let bucket = env.bucket("MEDIA")?;
     let (response_body, meta, etag) = match bucket.get(decoded.as_ref()).execute().await? {
         Some(obj) => {
             let body = obj
@@ -2872,20 +2900,40 @@ async fn handle_media(key: &str, req: &Request, env: &Env) -> Result<Response> {
         }
         None => {
             // Archived to the Oracle cold store; HEAD avoids pulling the bytes.
-            let method = if req.method() == Method::Head {
-                Method::Head
-            } else {
-                Method::Get
-            };
-            let Some(cold) = cold::get(env, &decoded, method).await? else {
+            let head = req.method() == Method::Head;
+            let method = if head { Method::Head } else { Method::Get };
+            let Some(mut cold) = cold::get(env, &decoded, method).await? else {
                 return Response::error("not found", 404);
             };
+            let content_type = cold.headers().get("Content-Type")?;
             let meta = HttpMetadata {
-                content_type: cold.headers().get("Content-Type")?,
+                content_type: content_type.clone(),
                 ..HttpMetadata::default()
             };
-            let etag = cold.headers().get("ETag")?.unwrap_or_default();
-            (cold.into_parts().1, meta, etag)
+            let mut etag = cold.headers().get("ETag")?.unwrap_or_default();
+            // Furina originals belong in R2; one archived before that rule goes back on its next read.
+            if !head && matches!(curation::is_furina(env, &decoded).await, Ok(true)) {
+                let sha256 = cold.headers().get("X-Sha256")?.unwrap_or_default();
+                let bytes = cold.bytes().await?;
+                let mut put =
+                    bucket
+                        .put(decoded.as_ref(), bytes.clone())
+                        .http_metadata(HttpMetadata {
+                            content_type,
+                            ..HttpMetadata::default()
+                        });
+                if !sha256.is_empty() {
+                    put = put.custom_metadata([("sha256".to_string(), sha256)]);
+                }
+                match put.execute().await {
+                    Ok(Some(object)) => etag = object.http_etag(),
+                    Ok(None) => {}
+                    Err(error) => console_warn!("original {decoded} not restored to R2: {error}"),
+                }
+                (ResponseBody::Body(bytes), meta, etag)
+            } else {
+                (cold.into_parts().1, meta, etag)
+            }
         }
     };
 
@@ -2934,6 +2982,17 @@ async fn handle_media(key: &str, req: &Request, env: &Env) -> Result<Response> {
     Ok(Response::from_body(response_body)?.with_headers(headers))
 }
 
+/// Keep a finished thumbnail in this data centre's cache. The format is in the key, so the
+/// stored copy carries no Vary. A thumbnail that cannot be stored is still served.
+async fn cache_thumb(cache: &Cache, key: &str, bytes: &[u8], headers: &Headers) {
+    let stored = headers.clone();
+    if stored.set("Cache-Control", THUMB_EDGE_CACHE).is_ok() && stored.delete("Vary").is_ok() {
+        if let Ok(copy) = Response::from_bytes(bytes.to_vec()) {
+            let _ = cache.put(key, copy.with_headers(stored)).await;
+        }
+    }
+}
+
 /// A finished thumbnail, fresh from the resizer or out of the edge cache, as the viewer gets it.
 fn thumb_response(req: &Request, response: Response, source: &str) -> Result<Response> {
     let headers = response.headers().clone();
@@ -2951,11 +3010,9 @@ fn thumb_response(req: &Request, response: Response, source: &str) -> Result<Res
     Ok(response.with_headers(headers))
 }
 
-/// Resized output may be AVIF, which uploads never are; anything else must
-/// still pass the ingest allow-list.
+/// Resized output must still pass the ingest allow-list.
 fn resized_mime_allowed(content_type: &str) -> bool {
-    content_type.trim().eq_ignore_ascii_case("image/avif")
-        || ingest::normalize_allowed_image_mime(content_type, "").is_ok()
+    ingest::normalize_allowed_image_mime(content_type, "").is_ok()
 }
 
 fn media_not_modified(value: Option<&str>, etag: &str) -> bool {
@@ -3126,7 +3183,6 @@ mod tests {
         for width in ["160", "640", "1280", "1920"] {
             assert!(media_width(Some(width)).is_ok());
         }
-        assert!(resized_mime_allowed("image/avif"));
         assert!(resized_mime_allowed("image/webp"));
         assert!(!resized_mime_allowed("text/html"));
         assert!(!resized_mime_allowed(""));

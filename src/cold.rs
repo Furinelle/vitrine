@@ -135,6 +135,7 @@ struct ImageRow {
 
 /// GET /api/storage/images?after_created=&after_id= — gallery originals, oldest
 /// first, so the archiver moves the earliest ingests rather than other objects.
+/// Furina images are left out: they always stay in R2.
 pub async fn handle_images(url: &Url, env: &Env) -> Result<Response> {
     let param = |name: &str| {
         url.query_pairs()
@@ -142,14 +143,19 @@ pub async fn handle_images(url: &Url, env: &Env) -> Result<Response> {
             .map(|(_, value)| value.into_owned())
             .unwrap_or_default()
     };
+    let mut binds = vec![
+        JsValue::from_str(&param("after_created")),
+        JsValue::from_str(&param("after_id")),
+    ];
+    binds.extend(crate::curation::furina_binds());
+    binds.push(JsValue::from_f64(LIST_LIMIT as f64));
     let rows = env
         .d1("DB")?
-        .prepare("SELECT id,r2_key,created_at FROM images WHERE (created_at,id)>(?,?) ORDER BY created_at,id LIMIT ?")
-        .bind(&[
-            JsValue::from_str(&param("after_created")),
-            JsValue::from_str(&param("after_id")),
-            JsValue::from_f64(LIST_LIMIT as f64),
-        ])?
+        .prepare(format!(
+            "SELECT i.id,i.r2_key,i.created_at FROM images i WHERE (i.created_at,i.id)>(?,?) AND NOT {} ORDER BY i.created_at,i.id LIMIT ?",
+            crate::curation::furina_sql()
+        ))
+        .bind(&binds)?
         .all()
         .await?
         .results::<ImageRow>()?;

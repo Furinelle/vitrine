@@ -13,7 +13,8 @@ use worker::*;
 
 /// Set name → tag terms. A work belongs when a tag name, or its Japanese or English
 /// display name, contains a term (ASCII case-insensitive), as the gallery's tag search does.
-const COLLECTIONS: [(&str, &[&str]); 1] = [("furina", &["芙宁娜", "芙芙", "furina", "フリーナ"])];
+const FURINA: &[&str] = &["芙宁娜", "芙芙", "furina", "フリーナ"];
+const COLLECTIONS: [(&str, &[&str]); 1] = [("furina", FURINA)];
 const MAX_KEYS: usize = 2000;
 
 #[derive(Deserialize, Serialize)]
@@ -52,10 +53,61 @@ const IMAGE_COLUMNS: &str =
     "i.r2_key, i.page_index, w.id AS work_id, w.title, w.author_name, w.author_url, \
      w.source, w.source_url, w.created_at, f.width, f.height";
 
+/// A work tag `wt` (display names in `t`) contains one of `term_count` terms; bind `term_binds`.
+fn tag_match_sql(term_count: usize) -> String {
+    vec!["lower(wt.tag) LIKE ? OR lower(t.ja) LIKE ? OR lower(t.en) LIKE ?"; term_count]
+        .join(" OR ")
+}
+
+fn term_binds(terms: &[&str]) -> Vec<JsValue> {
+    terms
+        .iter()
+        .flat_map(|term| {
+            let like = JsValue::from_str(&format!("%{}%", term.to_ascii_lowercase()));
+            [like.clone(), like.clone(), like]
+        })
+        .collect()
+}
+
+/// True for image `i` while it is, or may still become, a Furina image: kept, or of a work
+/// tagged Furina that nobody excluded. These originals never go to the cold store and their
+/// thumbnails are kept in R2. Bind `furina_binds()` for its placeholders.
+pub fn furina_sql() -> String {
+    format!(
+        "COALESCE((SELECT c.verdict = 'keep' FROM image_curation c \
+           WHERE c.collection = 'furina' AND c.r2_key = i.r2_key), EXISTS ( \
+           SELECT 1 FROM work_tags wt LEFT JOIN tag_items t ON t.name = wt.tag \
+           WHERE wt.work_id = i.work_id AND ({})))",
+        tag_match_sql(FURINA.len())
+    )
+}
+
+pub fn furina_binds() -> Vec<JsValue> {
+    term_binds(FURINA)
+}
+
+/// Whether the original stored at `r2_key` is a Furina image (see `furina_sql`).
+pub async fn is_furina(env: &Env, r2_key: &str) -> Result<bool> {
+    #[derive(Deserialize)]
+    struct Row {
+        furina: i64,
+    }
+    let mut binds = furina_binds();
+    binds.push(JsValue::from_str(r2_key));
+    let row = env
+        .d1("DB")?
+        .prepare(format!(
+            "SELECT {} AS furina FROM images i WHERE i.r2_key = ? LIMIT 1",
+            furina_sql()
+        ))
+        .bind(&binds)?
+        .first::<Row>(None)
+        .await?;
+    Ok(row.is_some_and(|row| row.furina == 1))
+}
+
 fn candidates_sql(term_count: usize) -> String {
-    let matches =
-        vec!["lower(wt.tag) LIKE ? OR lower(t.ja) LIKE ? OR lower(t.en) LIKE ?"; term_count]
-            .join(" OR ");
+    let matches = tag_match_sql(term_count);
     format!(
         "SELECT {IMAGE_COLUMNS}, c.verdict FROM images i \
          JOIN works w ON w.id = i.work_id \
@@ -130,10 +182,7 @@ pub async fn handle_list(req: Request, env: Env) -> Result<Response> {
         return json_response(&json!({"ok": false, "error": "unknown collection"}), 404);
     };
     let mut binds = vec![JsValue::from_str(&collection)];
-    for term in terms {
-        let like = JsValue::from_str(&format!("%{}%", term.to_ascii_lowercase()));
-        binds.extend([like.clone(), like.clone(), like]);
-    }
+    binds.extend(term_binds(terms));
     let images = env
         .d1("DB")?
         .prepare(candidates_sql(terms.len()))
@@ -238,6 +287,13 @@ mod tests {
         let sql = candidates_sql(4);
         assert_eq!(sql.matches('?').count(), 1 + 4 * 3);
         assert!(sql.contains("w.deleted_at IS NULL"));
+    }
+
+    #[test]
+    fn furina_sql_binds_three_names_per_term() {
+        let sql = furina_sql();
+        assert_eq!(sql.matches('?').count(), FURINA.len() * 3);
+        assert!(sql.contains("c.verdict = 'keep'") && sql.contains("wt.work_id = i.work_id"));
     }
 
     #[test]
