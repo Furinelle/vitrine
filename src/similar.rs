@@ -399,11 +399,13 @@ pub fn parse_clip_embedding(hex: &str) -> Option<Vec<f32>> {
     if bytes.len() != CLIP_DIM * 4 {
         return None;
     }
-    let mut out = Vec::with_capacity(CLIP_DIM);
-    for chunk in bytes.chunks_exact(4) {
-        let arr: [u8; 4] = chunk.try_into().ok()?;
-        out.push(f32::from_le_bytes(arr));
-    }
+    // The length check above leaves no remainder.
+    let out: Vec<f32> = bytes
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|chunk| f32::from_le_bytes(*chunk))
+        .collect();
     out.iter().all(|value| value.is_finite()).then_some(out)
 }
 
